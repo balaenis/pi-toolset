@@ -23,6 +23,10 @@ Implement LSP support for Pi. Before acting, identify the deliverable, constrain
 
 After a change, run the most relevant check: targeted tests for changed behavior, type checks, lint, or `hk`. If validation cannot run, state why and give the next best check.
 
+# Testing
+
+- If there are suitable test instruction steps, put them in the README.
+
 ## Stop Rules
 
 - Ask before: replacing an entire implementation, destructive or irreversible actions, changing secrets, or acting outside the request scope
