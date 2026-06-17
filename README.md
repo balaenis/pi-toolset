@@ -20,6 +20,10 @@ pi lsp support
 - `mise run lint:fix` - Fix linting issues
 - `mise run format` - Format code with Prettier
 
+## Manual validation
+
+- Phase 2 passive diagnostics fixture: `fixtures/phase2-diagnostics/README.md`
+
 ## Release
 
 See the [RELEASE.md](RELEASE.md) file for instructions on how to release a new version of the module.

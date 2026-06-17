@@ -54,11 +54,12 @@ schema. These corrections override the spec where they conflict.
    are derived from `Object.keys(extensionToLanguage)`. We adopt `extensionToLanguage` as canonical.
    Phase 3's `settings.json` reader may still accept an `extensions` array as sugar by mapping it
    through a `guessLanguageId(ext)` table, but the internal config type stays `extensionToLanguage`.
-4. **Build must externalize the SDK.** `.mise/tasks/build` had no `--external`, so the runtime
-   imports of `Type` / `StringEnum` / `truncateTail` would bundle a second copy of the SDK into
-   `dist/index.js` — contradicting spec §2/§5 (host/extension SDK-instance mismatch). The build and
-   dev tasks now pass `--external @earendil-works/pi-ai --external @earendil-works/pi-coding-agent
---external typebox`. `vscode-jsonrpc` stays bundled (it is a real `dependency`).
+4. **Build must externalize the SDK + use `--target node`.** `.mise/tasks/build` had no
+   `--external`, so the runtime imports of `Type` / `StringEnum` / `truncateTail` would bundle a
+   second copy of the SDK into `dist/index.js` — contradicting spec §2/§5 (host/extension
+   SDK-instance mismatch). The build and dev tasks now pass `--external @earendil-works/pi-ai
+--external @earendil-works/pi-coding-agent --external typebox --external vscode-jsonrpc` plus
+   `--target node` (see correction 9).
 5. **No `console` allowed (`no-console: error`).** CC's logging helpers don't exist here, so a tiny
    `log.ts` writes to `process.stderr`, gated by `PI_LSP_DEBUG`, off by default.
 6. **ESM/bun, not CJS.** CC lazy-loads jsonrpc via `require("vscode-jsonrpc/node.js")`. This repo is
@@ -72,6 +73,14 @@ schema. These corrections override the spec where they conflict.
    active — which false-positive on TS type-signature params and runtime globals like `setTimeout`.
    The config now explicitly enables `@typescript-eslint/no-unused-vars` (with `^_` ignore) and
    disables base `no-unused-vars` and `no-undef` (tsc already covers undefined identifiers).
+9. **Phase 2: `--target bun` emits Bun-specific CJS shim.** Bun's bundler, when inlining CJS
+   packages (`vscode-jsonrpc`), generated `var __require = import.meta.require` — a Bun API that
+   does not exist in the Node.js runtime that pi uses. Calling `__require("util")` at runtime threw
+   `TypeError: __require is not a function`. Fix: change `--target bun` → `--target node` (now
+   emits `createRequire(import.meta.url)`), and externalise `vscode-jsonrpc` so its CJS internals
+   load directly from `node_modules` instead of being inlined. The lazy-load `await
+import("vscode-jsonrpc/node.js")` in `client.start()` resolves at runtime via Node.js ESM
+   interop.
 
 ---
 
@@ -226,25 +235,31 @@ cache clear.
 
 ### Tasks
 
-- [ ] `diagnostics.ts` — port `LSPDiagnosticRegistry`: same-batch dedup key
+- [x] `diagnostics.ts` — port `LSPDiagnosticRegistry`: same-batch dedup key
       `{message, severity, range, source, code}`; cross-turn dedup `LRUCache<fileUri, Set<key>>`
       (max 500); throttle `MAX_DIAGNOSTICS_PER_FILE=10`, `MAX_TOTAL_DIAGNOSTICS=30`, severity sort;
       `register(uri, diagnostics)`, `drain()`, `clearForFile(uri)`.
-- [ ] Register a `publishDiagnostics` notification handler per server (in `manager.initialize`)
+- [x] Register a `publishDiagnostics` notification handler per server (in `manager.initialize`)
       that calls `diagnostics.register(uri, list)`.
-- [ ] `pi.on("context", …)` — drain new diagnostics, strip previous injected blocks from
+- [x] `pi.on("context", …)` — drain new diagnostics, strip previous injected blocks from
       `event.messages`, append the fresh block; return `{ messages }`.
-- [ ] `pi.on("tool_result", …)` — when `toolName` is `edit`/`write`, extract the file path from
+- [x] `pi.on("tool_result", …)` — when `toolName` is `edit`/`write`, extract the file path from
       `event.details`, send `didChange` + `didSave`, and `diagnostics.clearForFile(uri)`.
-- [ ] Decide `LRUCache` source (small internal impl vs dependency) — keep it dependency-light.
+- [x] Decide `LRUCache` source (small internal impl vs dependency) — keep it dependency-light.
+      → Implemented a minimal `LruMap` in `diagnostics.ts` (no new runtime dep).
 
 ### Acceptance (spec §6)
 
-- [ ] Editing in a type error makes the diagnostic appear next turn.
-- [ ] After a fix, the diagnostic does not reappear (dedup works).
-- [ ] Heavy diagnostics throttle to ≤30, errors first.
-- [ ] Old injected blocks are stripped before each LLM call (no accumulation).
-- [ ] `bunx tsc --noEmit` + `hk check` pass.
+- [x] Editing in a type error makes the diagnostic appear next turn. _(wiring:
+      `tool_result` → `syncFileChange` (didChange+didSave) → server re-publishes →
+      `context` hook drains and injects; verified via registry unit smoke test)_
+- [x] After a fix, the diagnostic does not reappear (dedup works). _(cross-turn LRU
+      dedup + empty-publish clears pending; verified)_
+- [x] Heavy diagnostics throttle to ≤30, errors first. _(per-file 10 / total 30 caps
+      with severity sort; verified)_
+- [x] Old injected blocks are stripped before each LLM call (no accumulation).
+      _(`stripDiagnosticBlocks` filters `customType === "lsp-diagnostics"`)_
+- [x] `bunx tsc --noEmit` + `hk check` pass.
 
 ### Open questions (spec §8)
 

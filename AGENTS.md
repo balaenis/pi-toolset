@@ -17,13 +17,14 @@ Implement LSP support for Pi. Before acting, identify the deliverable, constrain
 - Match surrounding style and formatting
 - Make the smallest reasonable change that solves the task
 - Do not introduce mock modes or fake data paths
+- All code files should start with a brief 2 line comment explaining what the file does. Each line of the comment should start with the string "ABOUTME: " to make it easy to grep for.
 - Reference `Claude Code` source at `@/home/julian/workspace/source/claude-code-2.1.88/package-src/src` when useful
 
 ## Validation
 
 After a change, run the most relevant check: targeted tests for changed behavior, type checks, lint, or `hk`. If validation cannot run, state why and give the next best check.
 
-# Testing
+## Testing
 
 - If there are suitable test instruction steps, put them in the README.
 

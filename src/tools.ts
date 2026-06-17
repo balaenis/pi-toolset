@@ -66,17 +66,25 @@ export function registerLspTool(pi: ExtensionAPI): void {
 async function runLsp(params: Params, cwd: string): Promise<AgentToolResult<LspToolDetails>> {
   // Wait for any in-flight initialization, then verify a server is connected.
   await waitForInitialization();
+  const manager = getManager();
+  if (!manager) {
+    return textResult('LSP server manager is not initialized.', params, {
+      ready: false,
+    });
+  }
   if (!isLspConnected()) {
+    // Surface the concrete failure so the user can act (e.g. missing binary,
+    // crash) instead of a generic "not ready". Errors are only logged under
+    // PI_LSP_DEBUG, so without this the cause would be invisible.
+    const errors = Array.from(manager.getAllServers().values())
+      .filter((s) => s.state === 'error' && s.lastError)
+      .map((s) => `${s.name}: ${s.lastError!.message}`);
+    const detail = errors.length > 0 ? ` Last error: ${errors.join('; ')}` : '';
     return textResult(
-      'LSP server is not ready. It may still be starting, or no server is configured for this file type.',
+      `LSP server is not ready. It may still be starting, or no server is configured for this file type.${detail}`,
       params,
       { ready: false }
     );
-  }
-
-  const manager = getManager();
-  if (!manager) {
-    return textResult('LSP server manager is not initialized.', params);
   }
 
   const absolutePath = path.resolve(cwd, params.filePath);

@@ -1,9 +1,12 @@
 // ABOUTME: Multi-server routing, file synchronization, and the global manager singleton.
 // ABOUTME: Trimmed merge of Claude Code's LSPServerManager + manager.ts, adapted to Pi lifecycle.
 
+import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { PublishDiagnosticsParams } from 'vscode-languageserver-protocol';
 import { getAllLspServers } from './config.ts';
+import * as diagnostics from './diagnostics.ts';
 import { createLSPServerInstance, type LSPServerInstance } from './instance.ts';
 import { errorMessage, logError, logForDebugging } from './log.ts';
 import type { ScopedLspServerConfig } from './types.ts';
@@ -33,6 +36,8 @@ export type LSPServerManager = {
   saveFile(filePath: string): Promise<void>;
   /** Synchronize file close to LSP server (sends didClose notification) */
   closeFile(filePath: string): Promise<void>;
+  /** Re-sync a file after an external edit: reads disk, sends didChange + didSave */
+  syncFileChange(filePath: string): Promise<void>;
   /** Check if a file is already open on a compatible LSP server */
   isFileOpen(filePath: string): boolean;
 };
@@ -114,6 +119,28 @@ export function createLSPServerManager(): LSPServerManager {
             return params.items.map(() => null);
           }
         );
+
+        // Route passive diagnostics into the registry. Registered before start()
+        // so the handler is queued and applied when the connection comes up.
+        instance.onNotification('textDocument/publishDiagnostics', (params: unknown) => {
+          try {
+            const p = params as PublishDiagnosticsParams;
+            if (!p || typeof p !== 'object' || !('uri' in p) || !('diagnostics' in p)) {
+              logForDebugging(
+                `LSP: ${serverName} sent invalid publishDiagnostics (missing uri/diagnostics)`
+              );
+              return;
+            }
+            diagnostics.register(p.uri, p.diagnostics ?? []);
+          } catch (error) {
+            // Isolate per-server failures so one bad publish can't break the loop.
+            logError(
+              new Error(
+                `LSP: ${serverName} publishDiagnostics handler failed: ${errorMessage(error)}`
+              )
+            );
+          }
+        });
       } catch (error) {
         const err = error as Error;
         logError(new Error(`Failed to initialize LSP server ${serverName}: ${err.message}`));
@@ -331,6 +358,30 @@ export function createLSPServerManager(): LSPServerManager {
     }
   }
 
+  /**
+   * Re-sync a file after an external edit (e.g. the agent's edit/write tool).
+   *
+   * Reads the current disk content and sends didChange + didSave so the LSP
+   * server re-publishes diagnostics for the updated file. Falls back to didOpen
+   * via changeFile when the file has not been opened on the server yet.
+   */
+  async function syncFileChange(filePath: string): Promise<void> {
+    const server = getServerForFile(filePath);
+    if (!server) return;
+
+    let content: string;
+    try {
+      content = await readFile(filePath, { encoding: 'utf-8' });
+    } catch (error) {
+      // File may have been deleted or is unreadable; nothing to sync.
+      logForDebugging(`LSP: syncFileChange skipped ${filePath}: ${errorMessage(error)}`);
+      return;
+    }
+
+    await changeFile(filePath, content);
+    await saveFile(filePath);
+  }
+
   function isFileOpen(filePath: string): boolean {
     const fileUri = pathToFileURL(path.resolve(filePath)).href;
     return openedFiles.has(fileUri);
@@ -347,6 +398,7 @@ export function createLSPServerManager(): LSPServerManager {
     changeFile,
     saveFile,
     closeFile,
+    syncFileChange,
     isFileOpen,
   };
 }

@@ -16,7 +16,7 @@ import { errorMessage, logForDebugging } from './log.ts';
  * Handles URI decoding and gracefully falls back to un-decoded path if malformed.
  * Only uses relative paths when shorter and not starting with ../../
  */
-function formatUri(uri: string | undefined, cwd?: string): string {
+export function formatUri(uri: string | undefined, cwd?: string): string {
   // Handle undefined/null URIs - this indicates malformed LSP data
   if (!uri) {
     logForDebugging(

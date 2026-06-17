@@ -1,9 +1,23 @@
 // ABOUTME: Pi LSP extension entry point and session lifecycle wiring.
-// ABOUTME: Lazily starts the LSP manager on session_start and tears it down on session_shutdown.
+// ABOUTME: Lazily starts the LSP manager on session_start, injects passive
+// ABOUTME: diagnostics via the context hook, and re-syncs files after edits.
 
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { initializeManager, shutdownManager } from './manager.ts';
+import { isEditToolResult, isWriteToolResult } from '@earendil-works/pi-coding-agent';
+import * as diagnostics from './diagnostics.ts';
+import {
+  initializeManager,
+  getManager,
+  shutdownManager,
+  waitForInitialization,
+} from './manager.ts';
 import { registerLspTool } from './tools.ts';
+
+/** customType tag used for injected diagnostic blocks so they can be stripped. */
+const DIAGNOSTIC_CUSTOM_TYPE = 'lsp-diagnostics';
 
 export default function (pi: ExtensionAPI): void {
   // No process/timer/watcher work in the factory body — registering the tool is
@@ -12,12 +26,72 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on('session_start', (_event, ctx) => {
     // Synchronous, non-blocking, idempotent. Servers are lazily started on the
-    // first tool call, not here.
+    // first tool call (or the first edit, via syncFileChange), not here.
     initializeManager(ctx.cwd);
   });
 
   pi.on('session_shutdown', async () => {
-    // Idempotent: fires on quit/reload/new/resume/fork. Tears down all servers.
+    // Idempotent: fires on quit/reload/new/resume/fork. Tears down all servers
+    // and clears diagnostic state so the next session starts clean.
     await shutdownManager();
+    diagnostics.resetAll();
+  });
+
+  // Inject passive diagnostics before each LLM call. Diagnostics drained here
+  // are ephemeral (transformContext output is not persisted to the transcript),
+  // so stripping prior blocks is a safety net rather than the common path.
+  pi.on('context', (event, ctx) => {
+    const messages = stripDiagnosticBlocks(event.messages);
+    const block = diagnostics.drain(ctx.cwd);
+    if (block) {
+      messages.push({
+        role: 'custom',
+        customType: DIAGNOSTIC_CUSTOM_TYPE,
+        content: block,
+        display: false,
+        timestamp: Date.now(),
+      });
+    }
+    return { messages };
+  });
+
+  // After the agent edits or writes a file, re-sync it to the LSP server so it
+  // re-publishes diagnostics, and clear the file's dedup cache so new issues can
+  // surface even if they match previously delivered ones.
+  pi.on('tool_result', async (event, ctx) => {
+    if (!isEditToolResult(event) && !isWriteToolResult(event)) return;
+    if (event.isError) return;
+
+    const input = event.input as { path?: string };
+    if (!input.path) return;
+
+    const absolutePath = path.resolve(ctx.cwd, input.path);
+    const uri = pathToFileURL(absolutePath).href;
+
+    diagnostics.clearForFile(uri);
+
+    // Make sure the manager is ready, then push the disk content to the server.
+    // Best-effort: never let a sync failure disrupt the agent.
+    try {
+      await waitForInitialization();
+      const manager = getManager();
+      if (manager) {
+        await manager.syncFileChange(absolutePath);
+      }
+    } catch (error) {
+      // Logged inside the manager; swallow here to keep the hook non-disruptive.
+      void error;
+    }
+  });
+}
+
+/**
+ * Remove any previously injected diagnostic custom messages so they cannot
+ * accumulate if a future change persists transformContext output.
+ */
+function stripDiagnosticBlocks(messages: AgentMessage[]): AgentMessage[] {
+  return messages.filter((m) => {
+    if (m.role !== 'custom') return true;
+    return (m as { customType?: string }).customType !== DIAGNOSTIC_CUSTOM_TYPE;
   });
 }
