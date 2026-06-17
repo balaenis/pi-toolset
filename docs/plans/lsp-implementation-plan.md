@@ -258,7 +258,8 @@ cache clear.
 ## 6. Phase 3 — Multi-server + config + remaining operations
 
 **Deliver:** `config.ts` reading `settings.json`; `manager` multi-language routing; the other 6
-operations; gitignore filtering; optional `symbol-context.ts`.
+operations; gitignore filtering; optional `symbol-context.ts`; optional reference-completeness
+priming for cold-start workspaces.
 
 ### Tasks
 
@@ -276,6 +277,11 @@ operations; gitignore filtering; optional `symbol-context.ts`.
 - [ ] `filterGitIgnoredLocations` — `git check-ignore` in batches of 50, 5s timeout, for
       location-returning operations.
 - [ ] `symbol-context.ts` (optional) — first-64KB symbol extraction for richer tool rendering.
+- [ ] `findReferences` workspace completeness (optional) — verify cold-start behavior for
+      references in unopened files. Do **not** eagerly `didOpen` whole repos by default; if a
+      server cannot reliably return workspace-wide references, document the limitation and consider
+      opt-in, bounded workspace priming (extension allowlist + gitignore + max files/max bytes)
+      before reference queries.
 
 ### Acceptance (spec §6)
 
@@ -283,6 +289,8 @@ operations; gitignore filtering; optional `symbol-context.ts`.
 - [ ] Adding/removing a server in `settings.json` takes effect after `/reload`.
 - [ ] callHierarchy two-step returns incoming/outgoing calls.
 - [ ] `.gitignore`d files are excluded from results.
+- [ ] Optional: cold-start `findReferences` behavior for unopened files is documented; if workspace
+      priming is enabled, it is opt-in, bounded, and respects gitignore/size limits.
 - [ ] `bunx tsc --noEmit` + `hk check` pass.
 
 ---
