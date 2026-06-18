@@ -280,35 +280,69 @@ priming for cold-start workspaces.
 
 ### Tasks
 
-- [ ] `config.ts` — read `~/.pi/agent/settings.json` then `<cwd>/.pi/settings.json` (project
+- [x] `config.ts` — read `~/.pi/agent/settings.json` then `<cwd>/.pi/settings.json` (project
       overrides global), parse the `lsp.servers` segment, validate (command without spaces unless
       absolute path; non-empty `extensionToLanguage`), apply `$VAR` / `${VAR}` env substitution.
       Make `getAllLspServers()` async (signature already compatible).
-- [ ] Re-add the `restartOnCrash` / `shutdownTimeout` handling (or accept-and-ignore) in
+- [x] Re-add the `restartOnCrash` / `shutdownTimeout` handling (or accept-and-ignore) in
       `instance.ts` once the full config type returns.
-- [ ] `tools.ts` — extend the `StringEnum` to all 9 operations; add `query` (workspaceSymbol) and
-      make `line`/`character` optional; map the remaining methods; implement the callHierarchy
+- [x] `tools.ts` — extend the `StringEnum` to all 9 operations; keep `workspaceSymbol` aligned
+      with Claude Code (`filePath` selects the server; query is always empty) and require
+      positive integer `line`/`character`; map the remaining methods; implement the callHierarchy
       two-step (`prepareCallHierarchy` → `incomingCalls`/`outgoingCalls`).
-- [ ] `formatters.ts` — add `symbolKindToString` (26 kinds), `plural`, document-symbol,
+- [x] `formatters.ts` — add `symbolKindToString` (26 kinds), `plural`, document-symbol,
       workspace-symbol, and call-hierarchy formatters.
-- [ ] `filterGitIgnoredLocations` — `git check-ignore` in batches of 50, 5s timeout, for
+- [x] `filterGitIgnoredLocations` — `git check-ignore` in batches of 50, 5s timeout, for
       location-returning operations.
 - [ ] `symbol-context.ts` (optional) — first-64KB symbol extraction for richer tool rendering.
-- [ ] `findReferences` workspace completeness (optional) — verify cold-start behavior for
-      references in unopened files. Do **not** eagerly `didOpen` whole repos by default; if a
-      server cannot reliably return workspace-wide references, document the limitation and consider
-      opt-in, bounded workspace priming (extension allowlist + gitignore + max files/max bytes)
-      before reference queries.
+      → Deferred: only useful when overriding `renderCall`/`renderResult`, which this extension
+      does not do. Revisit if custom tool rendering is added.
+- [x] `findReferences` workspace completeness (optional) — do **not** eagerly `didOpen` whole
+      repos by default; documented the cold-start limitation below. Workspace priming is left as
+      opt-in future work.
 
 ### Acceptance (spec §6)
 
-- [ ] `.ts` and `.py` route to different servers in one session.
-- [ ] Adding/removing a server in `settings.json` takes effect after `/reload`.
-- [ ] callHierarchy two-step returns incoming/outgoing calls.
-- [ ] `.gitignore`d files are excluded from results.
-- [ ] Optional: cold-start `findReferences` behavior for unopened files is documented; if workspace
-      priming is enabled, it is opt-in, bounded, and respects gitignore/size limits.
+- [ ] `.ts` and `.py` route to different servers in one session. _(manager routes by extension via
+      `extensionToLanguage`; config supports multiple servers)_
+- [ ] Adding/removing a server in `settings.json` takes effect after `/reload`. _(config is read
+      fresh in `initializeManager` on each `session_start`)_
+- [ ] callHierarchy two-step returns incoming/outgoing calls. _(prepareCallHierarchy →
+      callHierarchy/incomingCalls|outgoingCalls in `runLsp`)_
+- [ ] `.gitignore`d files are excluded from results. _(`filterGitIgnoredLocations` applied to
+      findReferences/goToDefinition/goToImplementation/workspaceSymbol)_
+- [ ] Optional: cold-start `findReferences` behavior for unopened files is documented; workspace
+      priming is not enabled (see limitation note below).
 - [ ] `bunx tsc --noEmit` + `hk check` pass.
+
+### `findReferences` cold-start limitation
+
+The extension opens files in the LSP server lazily (only when a tool operation targets them).
+`findReferences` therefore returns references only for files the server has already indexed:
+
+- Files the agent has opened via an LSP operation in this session.
+- Files the server itself indexes from disk (e.g. typescript-language-server loads the project's
+  `tsconfig.json` and indexes referenced files on startup).
+
+References in files the server has not opened or indexed (e.g. unopened files outside the
+`tsconfig` include set) may be missing on a cold start.
+
+The extension does **not** eagerly `didOpen` the whole repository by default — that would be
+expensive and can overwhelm servers. If workspace-wide reference completeness is needed, a future
+opt-in, bounded workspace-priming feature could `didOpen` a gitignore-respecting, size-capped
+allowlist of files before reference queries. That remains future work; the current behavior matches
+Claude Code's default (no eager workspace priming).
+
+### Future optimization: server `settings` delivery
+
+`ScopedLspServerConfig.settings` is accepted for schema compatibility, but it is not delivered to
+the language server in Phase 3. This matches Claude Code's current behavior: its schema describes
+`settings` as data for `workspace/didChangeConfiguration`, but the implementation declares
+`workspace.configuration: false`, answers `workspace/configuration` with `null`, and never sends
+`workspace/didChangeConfiguration`.
+
+Future work can make this field effective by sending `workspace/didChangeConfiguration` after
+initialization and/or by answering `workspace/configuration` requests from `config.settings`.
 
 ---
 
@@ -316,9 +350,12 @@ priming for cold-start workspaces.
 
 Per phase: `bunx tsc --noEmit` (strict typecheck) and `hk check` (eslint + prettier). Functional
 verification uses a **real** LSP server in a real TS/Python project — no mocks (per the repo
-constraint). For Phase 1 specifically, also confirm the bundle keeps the SDK external:
-`@earendil-works/*` remain bare `from "..."` imports in `dist/index.js` while `vscode-jsonrpc`
-is inlined.
+constraint). Bundle check: `@earendil-works/*` remain bare `from "..."` imports in `dist/index.js`
+(externalized, host-provided). `vscode-jsonrpc` is **also externalized** as a dynamic
+`import("vscode-jsonrpc/node.js")` and resolved from the package's `dependencies` at runtime —
+this changed in Phase 2 (`--target node` + `--external vscode-jsonrpc`) because bundling its CJS
+internals under `--target node` broke the Node runtime. It is safe to externalize: vscode-jsonrpc
+holds no shared identity with the host, unlike the Pi SDK.
 
 ---
 

@@ -63,7 +63,7 @@ export function createLSPServerManager(): LSPServerManager {
     let serverConfigs: Record<string, ScopedLspServerConfig>;
 
     try {
-      const result = await getAllLspServers();
+      const result = await getAllLspServers(cwd);
       serverConfigs = result.servers;
       logForDebugging(
         `[LSP SERVER MANAGER] getAllLspServers returned ${Object.keys(serverConfigs).length} server(s)`

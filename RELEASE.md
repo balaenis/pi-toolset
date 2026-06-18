@@ -7,17 +7,16 @@ It follows two release channels:
 - **Pre-release**: Normal PRs merged to main create `x.x.x-next.J` versions published to the `next` npm dist-tag for testing and feedback.
 - **Stable Releases**: Release PRs merged to main create computed version and publish to the `latest` npm dist-tag.
 
-You can also trigger manual releases in the follow ways: 
+You can also trigger manual releases in the follow ways:
 
 - Push a tag in the format `v{semver}` (e.g. `v1.2.3`)
 - Run the `publish.yml` workflow manually from the GitHub Actions tab and supply a channel 'latest' or 'next'.
 
-
 ## First Release
 
-Before automated releases will work, you need to perform the first release manually. 
+Before automated releases will work, you need to perform the first release manually.
 
-Why: 
+Why:
 
 - This uses [Npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers).
 - The first release creates the npm package on npmjs.com.
@@ -25,14 +24,15 @@ Why:
 
 ### Steps
 
-1. make sure the `package.json` is correct: 
-  - is the version `0.0.1` ? 
-  - is the pkg name correct? Did you forget to set the scope if needed?
-  - do you have the right keywords? 
-  - do you have the right repository field?
-  - do you have the right author field?
+1. make sure the `package.json` is correct:
 
-2. run `npm login` to authenticate with npm. 
+- is the version `0.0.1` ?
+- is the pkg name correct? Did you forget to set the scope if needed?
+- do you have the right keywords?
+- do you have the right repository field?
+- do you have the right author field?
+
+2. run `npm login` to authenticate with npm.
 
 3. run `mise build` to build the module.
 
@@ -44,7 +44,6 @@ Why:
    - **Workflow filename**: `publish.yml` (the release workflow filename)
 
 6. [Restrict token access](https://docs.npmjs.com/trusted-publishers#recommended-restrict-token-access-when-using-trusted-publishers) for maximum security.
-
 
 ## Release Workflow
 

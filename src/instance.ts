@@ -85,6 +85,8 @@ export function createLSPServerInstance(
   let startTime: Date | undefined;
   let lastError: Error | undefined;
   let restartCount = 0;
+  // Counts crash recoveries across this instance lifetime; do not reset after
+  // successful start, or restartOnCrash can loop forever.
   let crashRecoveryCount = 0;
   // Propagate crash state so ensureServerStarted can restart on next use.
   // Without this, state stays 'running' after crash and the server is never
@@ -93,6 +95,28 @@ export function createLSPServerInstance(
     state = 'error';
     lastError = error;
     crashRecoveryCount++;
+
+    // restartOnCrash: best-effort auto-restart, bounded by maxRestarts. Never
+    // throws — failures just leave the server in 'error' for the next
+    // ensureServerStarted to retry. The client guards onCrash with !isStopping,
+    // so this only fires on genuinely unexpected exits.
+    if (config.restartOnCrash) {
+      const maxRestarts = config.maxRestarts ?? 3;
+      if (crashRecoveryCount > maxRestarts) {
+        logForDebugging(
+          `LSP server '${name}' crashed but restartOnCrash gave up (exceeded ${maxRestarts} restarts)`
+        );
+        return;
+      }
+      logForDebugging(`LSP server '${name}' crashed; restartOnCrash restarting…`);
+      start().catch((startError) => {
+        logError(
+          new Error(
+            `restartOnCrash auto-restart failed for '${name}': ${(startError as Error).message}`
+          )
+        );
+      });
+    }
   });
 
   /**
@@ -217,7 +241,6 @@ export function createLSPServerInstance(
 
       state = 'running';
       startTime = new Date();
-      crashRecoveryCount = 0;
       logForDebugging(`LSP server instance started: ${name}`);
     } catch (error) {
       // Clean up the spawned child process on timeout/error
@@ -234,17 +257,33 @@ export function createLSPServerInstance(
   /**
    * Stops the LSP server gracefully.
    *
-   * If already stopped or stopping, returns immediately.
-   * On failure, sets state to 'error', logs for monitoring, and throws.
+   * If already stopped or stopping, returns immediately. When `shutdownTimeout`
+   * is configured, the graceful shutdown is raced against a timer; on timeout
+   * the process is still killed by `client.stop()`'s finally block, and we
+   * mark the server stopped rather than erroring.
    */
   async function stop(): Promise<void> {
     if (state === 'stopped' || state === 'stopping') {
       return;
     }
 
+    state = 'stopping';
     try {
-      state = 'stopping';
-      await client.stop();
+      if (config.shutdownTimeout !== undefined) {
+        try {
+          await withTimeout(
+            client.stop(),
+            config.shutdownTimeout,
+            `LSP server '${name}' graceful shutdown timed out after ${config.shutdownTimeout}ms`
+          );
+        } catch (error) {
+          // Timeout or shutdown error: client.stop()'s finally already killed
+          // the process. Don't surface shutdown hiccups as errors.
+          logForDebugging(`LSP server '${name}' stop completed with: ${(error as Error).message}`);
+        }
+      } else {
+        await client.stop();
+      }
       state = 'stopped';
       logForDebugging(`LSP server instance stopped: ${name}`);
     } catch (error) {

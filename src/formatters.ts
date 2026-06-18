@@ -3,11 +3,17 @@
 
 import { relative } from 'node:path';
 import type {
+  CallHierarchyIncomingCall,
+  CallHierarchyItem,
+  CallHierarchyOutgoingCall,
+  DocumentSymbol,
   Hover,
   Location,
   LocationLink,
   MarkedString,
   MarkupContent,
+  SymbolInformation,
+  SymbolKind,
 } from 'vscode-languageserver-types';
 import { errorMessage, logForDebugging } from './log.ts';
 
@@ -197,6 +203,49 @@ export function formatFindReferencesResult(result: Location[] | null, cwd?: stri
 }
 
 /**
+ * Returns "item" for count 1, "items" otherwise. Tiny local helper to avoid a
+ * utility dependency.
+ */
+export function plural(count: number, word: string): string {
+  return count === 1 ? word : `${word}s`;
+}
+
+/**
+ * Maps a SymbolKind enum value (1–26) to a readable string.
+ */
+export function symbolKindToString(kind: SymbolKind): string {
+  const kinds: Record<number, string> = {
+    1: 'File',
+    2: 'Module',
+    3: 'Namespace',
+    4: 'Package',
+    5: 'Class',
+    6: 'Method',
+    7: 'Property',
+    8: 'Field',
+    9: 'Constructor',
+    10: 'Enum',
+    11: 'Interface',
+    12: 'Function',
+    13: 'Variable',
+    14: 'Constant',
+    15: 'String',
+    16: 'Number',
+    17: 'Boolean',
+    18: 'Array',
+    19: 'Object',
+    20: 'Key',
+    21: 'Null',
+    22: 'EnumMember',
+    23: 'Struct',
+    24: 'Event',
+    25: 'Operator',
+    26: 'TypeParameter',
+  };
+  return kinds[kind] ?? 'Unknown';
+}
+
+/**
  * Extracts text content from MarkupContent or MarkedString.
  */
 function extractMarkupText(contents: MarkupContent | MarkedString | MarkedString[]): string {
@@ -241,4 +290,208 @@ export function formatHoverResult(result: Hover | null, _cwd?: string): string {
   }
 
   return content;
+}
+
+/**
+ * Formats a single DocumentSymbol node with indentation, recursing into children.
+ */
+function formatDocumentSymbolNode(symbol: DocumentSymbol, indent = 0): string[] {
+  const lines: string[] = [];
+  const prefix = '  '.repeat(indent);
+  const kind = symbolKindToString(symbol.kind);
+
+  let line = `${prefix}${symbol.name} (${kind})`;
+  if (symbol.detail) {
+    line += ` ${symbol.detail}`;
+  }
+  line += ` - Line ${symbol.range.start.line + 1}`;
+  lines.push(line);
+
+  if (symbol.children && symbol.children.length > 0) {
+    for (const child of symbol.children) {
+      lines.push(...formatDocumentSymbolNode(child, indent + 1));
+    }
+  }
+  return lines;
+}
+
+/**
+ * Formats documentSymbol result. LSP allows either DocumentSymbol[]
+ * (hierarchical, with `range`) or SymbolInformation[] (flat, with `location`);
+ * the first element decides which formatter handles the result.
+ */
+export function formatDocumentSymbolResult(
+  result: DocumentSymbol[] | SymbolInformation[] | null,
+  cwd?: string
+): string {
+  if (!result || result.length === 0) {
+    return 'No symbols found in document. This may occur if the file is empty, not supported by the LSP server, or if the server has not fully indexed the file.';
+  }
+
+  const first = result[0];
+  if (first && 'location' in first) {
+    return formatWorkspaceSymbolResult(result as SymbolInformation[], cwd);
+  }
+
+  const lines: string[] = ['Document symbols:'];
+  for (const symbol of result as DocumentSymbol[]) {
+    lines.push(...formatDocumentSymbolNode(symbol));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Formats workspaceSymbol result (flat list of SymbolInformation grouped by file).
+ */
+export function formatWorkspaceSymbolResult(
+  result: SymbolInformation[] | null,
+  cwd?: string
+): string {
+  if (!result || result.length === 0) {
+    return 'No symbols found in workspace. This may occur if the workspace is empty, or if the LSP server has not finished indexing the project.';
+  }
+
+  const validSymbols = result.filter((sym) => sym && sym.location && sym.location.uri);
+  if (validSymbols.length === 0) {
+    return 'No symbols found in workspace. This may occur if the workspace is empty, or if the LSP server has not finished indexing the project.';
+  }
+
+  const lines: string[] = [
+    `Found ${validSymbols.length} ${plural(validSymbols.length, 'symbol')} in workspace:`,
+  ];
+
+  const byFile = groupByFile(validSymbols, cwd);
+  for (const [filePath, symbols] of byFile) {
+    lines.push(`\n${filePath}:`);
+    for (const symbol of symbols) {
+      const kind = symbolKindToString(symbol.kind);
+      const line = symbol.location.range.start.line + 1;
+      let symbolLine = `  ${symbol.name} (${kind}) - Line ${line}`;
+      if (symbol.containerName) {
+        symbolLine += ` in ${symbol.containerName}`;
+      }
+      lines.push(symbolLine);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Formats a single CallHierarchyItem with its location.
+ */
+function formatCallHierarchyItem(item: CallHierarchyItem, cwd?: string): string {
+  if (!item.uri) {
+    logForDebugging('formatCallHierarchyItem: CallHierarchyItem has undefined URI', {
+      level: 'warn',
+    });
+    return `${item.name} (${symbolKindToString(item.kind)}) - <unknown location>`;
+  }
+  const filePath = formatUri(item.uri, cwd);
+  const line = item.range.start.line + 1;
+  const kind = symbolKindToString(item.kind);
+  let result = `${item.name} (${kind}) - ${filePath}:${line}`;
+  if (item.detail) {
+    result += ` [${item.detail}]`;
+  }
+  return result;
+}
+
+/**
+ * Formats prepareCallHierarchy result (the call hierarchy item(s) at a position).
+ */
+export function formatPrepareCallHierarchyResult(
+  result: CallHierarchyItem[] | null,
+  cwd?: string
+): string {
+  if (!result || result.length === 0) {
+    return 'No call hierarchy item found at this position';
+  }
+  if (result.length === 1) {
+    return `Call hierarchy item: ${formatCallHierarchyItem(result[0]!, cwd)}`;
+  }
+  const lines = [`Found ${result.length} call hierarchy items:`];
+  for (const item of result) {
+    lines.push(`  ${formatCallHierarchyItem(item, cwd)}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Formats incomingCalls result (functions/methods that call the target).
+ */
+export function formatIncomingCallsResult(
+  result: CallHierarchyIncomingCall[] | null,
+  cwd?: string
+): string {
+  if (!result || result.length === 0) {
+    return 'No incoming calls found (nothing calls this function)';
+  }
+
+  const lines = [`Found ${result.length} incoming ${plural(result.length, 'call')}:`];
+  const byFile = new Map<string, CallHierarchyIncomingCall[]>();
+  for (const call of result) {
+    if (!call.from) continue;
+    const filePath = formatUri(call.from.uri, cwd);
+    const existing = byFile.get(filePath);
+    if (existing) existing.push(call);
+    else byFile.set(filePath, [call]);
+  }
+
+  for (const [filePath, calls] of byFile) {
+    lines.push(`\n${filePath}:`);
+    for (const call of calls) {
+      if (!call.from) continue;
+      const kind = symbolKindToString(call.from.kind);
+      const line = call.from.range.start.line + 1;
+      let callLine = `  ${call.from.name} (${kind}) - Line ${line}`;
+      if (call.fromRanges && call.fromRanges.length > 0) {
+        const callSites = call.fromRanges
+          .map((r) => `${r.start.line + 1}:${r.start.character + 1}`)
+          .join(', ');
+        callLine += ` [calls at: ${callSites}]`;
+      }
+      lines.push(callLine);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Formats outgoingCalls result (functions/methods called by the target).
+ */
+export function formatOutgoingCallsResult(
+  result: CallHierarchyOutgoingCall[] | null,
+  cwd?: string
+): string {
+  if (!result || result.length === 0) {
+    return 'No outgoing calls found (this function calls nothing)';
+  }
+
+  const lines = [`Found ${result.length} outgoing ${plural(result.length, 'call')}:`];
+  const byFile = new Map<string, CallHierarchyOutgoingCall[]>();
+  for (const call of result) {
+    if (!call.to) continue;
+    const filePath = formatUri(call.to.uri, cwd);
+    const existing = byFile.get(filePath);
+    if (existing) existing.push(call);
+    else byFile.set(filePath, [call]);
+  }
+
+  for (const [filePath, calls] of byFile) {
+    lines.push(`\n${filePath}:`);
+    for (const call of calls) {
+      if (!call.to) continue;
+      const kind = symbolKindToString(call.to.kind);
+      const line = call.to.range.start.line + 1;
+      let callLine = `  ${call.to.name} (${kind}) - Line ${line}`;
+      if (call.fromRanges && call.fromRanges.length > 0) {
+        const callSites = call.fromRanges
+          .map((r) => `${r.start.line + 1}:${r.start.character + 1}`)
+          .join(', ');
+        callLine += ` [called from: ${callSites}]`;
+      }
+      lines.push(callLine);
+    }
+  }
+  return lines.join('\n');
 }

@@ -15,19 +15,19 @@ Claude Code(下称 CC)的 LSP 模块中约 70% 是与宿主无关的纯逻辑(JS
 
 ## 2. 移植映射表
 
-| CC 模块                                   | 宿主依赖     | Pi 对应机制                                                  | 复杂度         |
-| ----------------------------------------- | ------------ | ----------------------------------------------------------- | -------------- |
-| `LSPClient`(spawn + JSON-RPC)            | 无(纯 Node) | `node:child_process` + `vscode-jsonrpc`,直接照搬           | 低·直接复用    |
-| `LSPServerInstance`(状态机/重试/崩溃恢复) | 无(纯逻辑)  | 模块级闭包单例                                              | 低·直接复用    |
-| `LSPServerManager`(多 server 路由/文件同步) | 无(纯逻辑) | 同上                                                        | 低·直接复用    |
-| `manager.ts`(全局单例生命周期)           | 启动/退出时机 | `session_start` 内 lazy spawn,`session_shutdown` 内 kill   | 中·改造时机    |
-| **诊断被动推送**                          | **上下文注入** | **`context` hook 重写 messages / `before_agent_start.message`** | **中·核心改造** |
-| `LSPTool`(9 种操作)                      | 工具注册     | `pi.registerTool({ parameters, execute })`                  | 低·机械改写    |
-| `formatters.ts` / `symbolContext.ts`      | 无           | 直接照搬                                                    | 低·直接复用    |
-| gitignore 过滤(`git check-ignore`)      | 无           | `ctx.exec("git", ...)` 或直接 spawn                         | 低·直接复用    |
-| **配置系统**(plugin `.lsp.json`)        | CC plugin 体系 | **需重写** → 读 `settings.json` 自定义段或内置配置表        | 中·必须重写    |
-| UI 渲染(折叠/展开/推荐菜单)             | CC 专有 UI   | `renderResult` 可选;推荐菜单用 `ctx.ui.select`             | 低·可后置/裁剪 |
-| 错误通知轮询                              | CC hooks     | `ctx.ui.notify` + 定时器                                    | 低·可后置      |
+| CC 模块                                     | 宿主依赖       | Pi 对应机制                                                     | 复杂度          |
+| ------------------------------------------- | -------------- | --------------------------------------------------------------- | --------------- |
+| `LSPClient`(spawn + JSON-RPC)               | 无(纯 Node)    | `node:child_process` + `vscode-jsonrpc`,直接照搬                | 低·直接复用     |
+| `LSPServerInstance`(状态机/重试/崩溃恢复)   | 无(纯逻辑)     | 模块级闭包单例                                                  | 低·直接复用     |
+| `LSPServerManager`(多 server 路由/文件同步) | 无(纯逻辑)     | 同上                                                            | 低·直接复用     |
+| `manager.ts`(全局单例生命周期)              | 启动/退出时机  | `session_start` 内 lazy spawn,`session_shutdown` 内 kill        | 中·改造时机     |
+| **诊断被动推送**                            | **上下文注入** | **`context` hook 重写 messages / `before_agent_start.message`** | **中·核心改造** |
+| `LSPTool`(9 种操作)                         | 工具注册       | `pi.registerTool({ parameters, execute })`                      | 低·机械改写     |
+| `formatters.ts` / `symbolContext.ts`        | 无             | 直接照搬                                                        | 低·直接复用     |
+| gitignore 过滤(`git check-ignore`)          | 无             | `ctx.exec("git", ...)` 或直接 spawn                             | 低·直接复用     |
+| **配置系统**(plugin `.lsp.json`)            | CC plugin 体系 | **需重写** → 读 `settings.json` 自定义段或内置配置表            | 中·必须重写     |
+| UI 渲染(折叠/展开/推荐菜单)                 | CC 专有 UI     | `renderResult` 可选;推荐菜单用 `ctx.ui.select`                  | 低·可后置/裁剪  |
+| 错误通知轮询                                | CC hooks       | `ctx.ui.notify` + 定时器                                        | 低·可后置       |
 
 ## 3. 三个关键集成点
 
@@ -44,11 +44,11 @@ TypeBox schema 用 `Type.Object(...)`;枚举字段必须用 `@earendil-works/pi-
 
 CC 的"被动诊断"是 Agent 无需主动请求、由 LSP server 自动推送的能力。Pi 提供三种可叠加机制:
 
-| 机制                                  | 时机                  | 适用场景                                       |
-| ------------------------------------- | --------------------- | ---------------------------------------------- |
-| `context` hook                        | 每次 LLM 调用前       | 注入当前诊断 + 剥离上一轮旧诊断(最贴近 CC)   |
-| `before_agent_start` 返回 `message`   | 每个用户回合开始      | 注入隐藏消息(`display:false`)                |
-| `sendMessage({ deliverAs:"nextTurn" })` | LSP server 异步 push 时 | 带外触发,排队到下一回合                       |
+| 机制                                    | 时机                    | 适用场景                                   |
+| --------------------------------------- | ----------------------- | ------------------------------------------ |
+| `context` hook                          | 每次 LLM 调用前         | 注入当前诊断 + 剥离上一轮旧诊断(最贴近 CC) |
+| `before_agent_start` 返回 `message`     | 每个用户回合开始        | 注入隐藏消息(`display:false`)              |
+| `sendMessage({ deliverAs:"nextTurn" })` | LSP server 异步 push 时 | 带外触发,排队到下一回合                    |
 
 CC 的 `LSPDiagnosticRegistry`(LRU 去重 + 限流 30 条 + severity 排序)是纯逻辑,原样保留;只需把"出队"那一步接到 `context` hook 上。**推荐方案**:`context` hook 每次调用前注入新诊断块并剥离旧块,避免上下文堆积——这是对 CC 自动推送行为最忠实的复刻。
 
@@ -76,13 +76,13 @@ Pi **没有** `file_edit` 事件。替代方案:监听 `tool_result` 事件,当 
 
 ## 5. 风险与缺口
 
-| 项                         | 说明                                                                 | 缓解                                          |
-| -------------------------- | -------------------------------------------------------------------- | --------------------------------------------- |
-| 无 attachment 一等概念     | 诊断以消息注入,需管理注入/剥离避免上下文堆积                        | `context` hook 出队 + 剥离旧块                |
-| 无文件编辑事件             | 只能拦 `edit`/`write` 工具;外部编辑不可见                           | 依赖 LSP 文件监听或自建 `fs.watch`            |
-| `vscode-jsonrpc` 依赖      | ~129KB,需进扩展自己的 `package.json` 的 `dependencies`              | 目录式扩展 + 独立 `package.json`              |
-| TUI-only UI 在非 TUI 失效  | 推荐菜单等需守卫                                                     | `ctx.hasUI` / `ctx.mode === "tui"` 判断       |
-| 进程时机约束               | 不能在 factory spawn                                                 | `session_start` lazy 启动,`session_shutdown` 清理 |
+| 项                        | 说明                                                   | 缓解                                              |
+| ------------------------- | ------------------------------------------------------ | ------------------------------------------------- |
+| 无 attachment 一等概念    | 诊断以消息注入,需管理注入/剥离避免上下文堆积           | `context` hook 出队 + 剥离旧块                    |
+| 无文件编辑事件            | 只能拦 `edit`/`write` 工具;外部编辑不可见              | 依赖 LSP 文件监听或自建 `fs.watch`                |
+| `vscode-jsonrpc` 依赖     | ~129KB,需进扩展自己的 `package.json` 的 `dependencies` | 目录式扩展 + 独立 `package.json`                  |
+| TUI-only UI 在非 TUI 失效 | 推荐菜单等需守卫                                       | `ctx.hasUI` / `ctx.mode === "tui"` 判断           |
+| 进程时机约束              | 不能在 factory spawn                                   | `session_start` lazy 启动,`session_shutdown` 清理 |
 
 ## 6. 复杂度评估与分阶段建议
 

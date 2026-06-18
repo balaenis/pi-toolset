@@ -105,9 +105,9 @@ interface LSPClient {
 合并 CC 的 `LSPServerManager.ts` + `manager.ts`。数据结构:
 
 ```ts
-servers: Map<serverName, LSPServerInstance>
-extensionMap: Map<ext, serverName[]>      // ".ts" → ["typescript"]
-openedFiles: Map<uri, serverName>
+servers: Map<serverName, LSPServerInstance>;
+extensionMap: Map<ext, serverName[]>; // ".ts" → ["typescript"]
+openedFiles: Map<uri, serverName>;
 ```
 
 文件同步协议(幂等):
@@ -121,7 +121,7 @@ closeFile(path)           → didClose
 
 `workspace/configuration` 请求返回 `items.map(() => null)`。
 保留 generation counter 防 stale init。
-导出 `getManager()` / `isLspConnected()` 供工具的 `isEnabled` 判断。
+导出 `getManager()` / `isLspConnected()` 供工具 `execute` 内判断 LSP 是否就绪。
 
 ### 4.4 `diagnostics.ts` — 被动诊断
 
@@ -136,8 +136,8 @@ closeFile(path)           → didClose
 
 ```ts
 interface DiagnosticRegistry {
-  register(uri: string, diagnostics: Diagnostic[]): void;   // publishDiagnostics handler 调用
-  drain(): string | null;                                    // 出队 + 格式化为注入文本块
+  register(uri: string, diagnostics: Diagnostic[]): void; // publishDiagnostics handler 调用
+  drain(): string | null; // 出队 + 格式化为注入文本块
   clearForFile(uri: string): void;
 }
 ```
@@ -147,34 +147,39 @@ interface DiagnosticRegistry {
 采用**单工具 + discriminated union 输入**(贴近 CC `lspToolInputSchema`)。`operation` 用 `StringEnum`:
 
 ```ts
-import { Type, StringEnum } from "@earendil-works/pi-ai";
+import { Type, StringEnum } from '@earendil-works/pi-ai';
 
 const parameters = Type.Object({
   operation: StringEnum([
-    "goToDefinition", "findReferences", "hover",
-    "documentSymbol", "workspaceSymbol", "goToImplementation",
-    "prepareCallHierarchy", "incomingCalls", "outgoingCalls",
+    'goToDefinition',
+    'findReferences',
+    'hover',
+    'documentSymbol',
+    'workspaceSymbol',
+    'goToImplementation',
+    'prepareCallHierarchy',
+    'incomingCalls',
+    'outgoingCalls',
   ]),
-  file: Type.Optional(Type.String()),     // workspaceSymbol 不需要
-  line: Type.Optional(Type.Number()),     // 1-based
-  character: Type.Optional(Type.Number()),
-  query: Type.Optional(Type.String()),    // workspaceSymbol 用
+  filePath: Type.String(), // 用于选择/初始化对应 server
+  line: Type.Integer({ minimum: 1 }), // 1-based
+  character: Type.Integer({ minimum: 1 }),
 });
 ```
 
 操作 → LSP method 映射(同 CC):
 
-| operation             | LSP method                          |
-| --------------------- | ----------------------------------- |
-| goToDefinition        | textDocument/definition             |
-| findReferences        | textDocument/references             |
-| hover                 | textDocument/hover                  |
-| documentSymbol        | textDocument/documentSymbol         |
-| workspaceSymbol       | workspace/symbol                    |
-| goToImplementation    | textDocument/implementation         |
-| prepareCallHierarchy  | textDocument/prepareCallHierarchy   |
-| incomingCalls         | callHierarchy/incomingCalls         |
-| outgoingCalls         | callHierarchy/outgoingCalls         |
+| operation            | LSP method                                                      |
+| -------------------- | --------------------------------------------------------------- |
+| goToDefinition       | textDocument/definition                                         |
+| findReferences       | textDocument/references                                         |
+| hover                | textDocument/hover                                              |
+| documentSymbol       | textDocument/documentSymbol                                     |
+| workspaceSymbol      | workspace/symbol                                                |
+| goToImplementation   | textDocument/implementation                                     |
+| prepareCallHierarchy | textDocument/prepareCallHierarchy                               |
+| incomingCalls        | textDocument/prepareCallHierarchy → callHierarchy/incomingCalls |
+| outgoingCalls        | textDocument/prepareCallHierarchy → callHierarchy/outgoingCalls |
 
 `execute` 流程(同 CC):
 
@@ -188,7 +193,7 @@ const parameters = Type.Object({
 
 ### 4.6 `formatters.ts` / `symbol-context.ts`
 
-照搬 CC 同名文件:`formatUri()`、`symbolKindToString()`(27 种)、`groupByFile()`;符号提取只读前 64KB。
+照搬 CC 同名文件:`formatUri()`、`symbolKindToString()`(26 种)、`groupByFile()`;符号提取只读前 64KB。
 
 ### 4.7 `config.ts` — 配置(必须重写)
 
@@ -201,52 +206,57 @@ const parameters = Type.Object({
       "typescript": {
         "command": "typescript-language-server",
         "args": ["--stdio"],
-        "extensions": [".ts", ".tsx", ".js", ".jsx"],
-        "env": {},                       // 支持 ${VAR} 替换
+        "extensionToLanguage": {
+          ".ts": "typescript",
+          ".tsx": "typescriptreact",
+          ".js": "javascript",
+          ".jsx": "javascriptreact",
+        },
+        "env": {}, // 支持 ${VAR} 替换；也接受 `extensions` 作为 sugar
         "startupTimeout": 10000,
-        "maxRestarts": 3
-      }
-    }
-  }
+        "maxRestarts": 3,
+      },
+    },
+  },
 }
 ```
 
-保留 CC 的 Zod 校验(`command` 不含空格除非绝对路径)、`$VAR` / `${VAR}` 环境变量替换。删去 `${CLAUDE_PLUGIN_ROOT}` 等 plugin 专有项。初版可内置一份默认配置表作为兜底。
+保留 CC 的校验逻辑(`command` 不含空格除非绝对路径)、`$VAR` / `${VAR}` 环境变量替换。删去 `${CLAUDE_PLUGIN_ROOT}` 等 plugin 专有项。初版可内置一份默认配置表作为兜底。
 
 ### 4.8 `index.ts` — 扩展入口与生命周期
 
 ```ts
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 export default function (pi: ExtensionAPI): void {
   // 不在此 spawn 任何进程
 
-  pi.on("session_start", async (_event, ctx) => {
-    await initManager(ctx.cwd);          // lazy 启动配置中的 server
+  pi.on('session_start', async (_event, ctx) => {
+    await initManager(ctx.cwd); // lazy 启动配置中的 server
   });
 
-  pi.on("session_shutdown", async () => {
-    await shutdownManager();             // 幂等
+  pi.on('session_shutdown', async () => {
+    await shutdownManager(); // 幂等
   });
 
   // 编辑后同步 + 诊断清理
-  pi.on("tool_result", async (event) => {
-    if (event.toolName === "edit" || event.toolName === "write") {
+  pi.on('tool_result', async (event) => {
+    if (event.toolName === 'edit' || event.toolName === 'write') {
       const path = extractPath(event);
-      await getManager()?.changeFileFromDisk(path);   // didChange + didSave
+      await getManager()?.changeFileFromDisk(path); // didChange + didSave
       diagnostics.clearForFile(toUri(path));
     }
   });
 
   // 被动诊断注入:每次 LLM 调用前,注入新诊断、剥离旧诊断块
-  pi.on("context", (event) => {
+  pi.on('context', (event) => {
     const block = diagnostics.drain();
     const messages = stripPreviousDiagnosticBlocks(event.messages);
     if (block) messages.push(makeDiagnosticMessage(block));
     return { messages };
   });
 
-  registerLspTool(pi);                   // 4.5
+  registerLspTool(pi); // 4.5
 }
 ```
 
@@ -263,13 +273,13 @@ export default function (pi: ExtensionAPI): void {
 ```jsonc
 {
   "dependencies": {
-    "vscode-jsonrpc": "^8.2.1"
+    "vscode-jsonrpc": "^8.2.1",
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-ai": "*",
-    "typebox": "*"
-  }
+    "typebox": "*",
+  },
 }
 ```
 
@@ -282,7 +292,8 @@ export default function (pi: ExtensionAPI): void {
 **交付**:`client.ts` + `instance.ts` + 单 server(硬编码 typescript-language-server)+ `goToDefinition` / `findReferences` / `hover`。
 
 **验收**:
-- [ ] 在一个 TS 项目中调用 `goToDefinition` 返回正确 `file:line:col`
+
+- [ ] 在一个 TS 项目中调用 `goToDefinition` 返回正确 `filePath:line:col`
 - [ ] `findReferences` 返回多文件引用并按文件分组
 - [ ] `hover` 返回类型签名
 - [ ] server 启动失败时工具返回明确错误而非崩溃
@@ -294,6 +305,7 @@ export default function (pi: ExtensionAPI): void {
 **交付**:`diagnostics.ts` + `context` hook 注入 + `tool_result` 触发 `didChange` / 清理。
 
 **验收**:
+
 - [ ] 编辑引入类型错误后,下一回合上下文出现该诊断
 - [ ] 修复后诊断不再重复出现(去重生效)
 - [ ] 大量诊断时限流到 ≤30 条且 Error 优先
@@ -305,6 +317,7 @@ export default function (pi: ExtensionAPI): void {
 **交付**:`manager.ts` 多语言路由 + `config.ts`(settings.json)+ callHierarchy / workspaceSymbol / documentSymbol / goToImplementation + gitignore 过滤。
 
 **验收**:
+
 - [ ] 同会话内 `.ts` 与 `.py` 路由到不同 server
 - [ ] `settings.json` 增删 server 后 `/reload` 生效
 - [ ] callHierarchy 两步调用返回 incoming/outgoing
