@@ -154,6 +154,10 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
             const crashError = new Error(`LSP server ${serverName} crashed with exit code ${code}`);
             logError(crashError);
             onCrash?.(crashError);
+            // Dispose the JSON-RPC connection so any pending requests (e.g. the
+            // initialize handshake) are rejected immediately rather than hanging
+            // indefinitely.
+            connection?.dispose();
           }
         });
 
@@ -179,6 +183,9 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
             startFailed = true;
             startError = error;
             logError(new Error(`LSP server ${serverName} connection error: ${error.message}`));
+            // Dispose the connection so any pending requests (e.g. initialize)
+            // are rejected immediately rather than hanging indefinitely.
+            connection?.dispose();
           }
         });
 

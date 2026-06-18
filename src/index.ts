@@ -14,6 +14,7 @@ import {
   shutdownManager,
   waitForInitialization,
 } from './manager.ts';
+import { maybeNotifyMissingServer } from './notifications.ts';
 import { registerLspTool } from './tools.ts';
 
 /** customType tag used for injected diagnostic blocks so they can be stripped. */
@@ -76,6 +77,18 @@ export default function (pi: ExtensionAPI): void {
       await waitForInitialization();
       const manager = getManager();
       if (manager) {
+        const server = manager.getServerForFile(absolutePath);
+        // Notify when no server covers the file, or when a configured server
+        // previously failed to start (e.g. binary not on PATH, bad args, crash).
+        if (!server || server.state === 'error') {
+          maybeNotifyMissingServer(
+            absolutePath,
+            ctx,
+            'edit',
+            server?.name,
+            server?.lastError?.message
+          );
+        }
         await manager.syncFileChange(absolutePath);
       }
     } catch (error) {

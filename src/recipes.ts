@@ -1,0 +1,184 @@
+// ABOUTME: Built-in LSP server recipes, PATH executable discovery, and install-hint lookup.
+// ABOUTME: Drives zero-config activation when no user lsp.servers config exists or covers a given file.
+
+import { accessSync, constants, statSync } from 'node:fs';
+import * as path from 'node:path';
+import { logForDebugging } from './log.ts';
+import type { ScopedLspServerConfig } from './types.ts';
+
+/**
+ * A built-in LSP server recipe. Recipes are advisory: a recipe is only
+ * activated when its `command` is found on `PATH`, and user-configured
+ * servers always win on server name and covered extensions.
+ */
+export interface LspServerRecipe {
+  /** Server name used in the manager's server map. */
+  name: string;
+  /** Executable looked up on PATH. */
+  command: string;
+  /** Optional command arguments. */
+  args?: string[];
+  /** Extension → LSP languageId mapping for routing and didOpen. */
+  extensionToLanguage: Record<string, string>;
+  /** Human-readable install hint shown when the command is not on PATH. */
+  installHint: string;
+}
+
+/**
+ * The first-iteration built-in recipe set. Order is significant: the first
+ * recipe whose extension matches an unsupported file determines the install
+ * hint surfaced to the user.
+ */
+export const BUILTIN_RECIPES: readonly LspServerRecipe[] = [
+  {
+    name: 'typescript',
+    command: 'typescript-language-server',
+    args: ['--stdio'],
+    extensionToLanguage: {
+      '.ts': 'typescript',
+      '.tsx': 'typescriptreact',
+      '.js': 'javascript',
+      '.jsx': 'javascriptreact',
+      '.mjs': 'javascript',
+      '.cjs': 'javascript',
+      '.mts': 'typescript',
+      '.cts': 'typescript',
+    },
+    installHint:
+      'Install `typescript-language-server` and `typescript` (for example `npm install -g typescript typescript-language-server`) and ensure the command is on PATH.',
+  },
+  {
+    name: 'python',
+    command: 'pyright-langserver',
+    args: ['--stdio'],
+    extensionToLanguage: {
+      '.py': 'python',
+      '.pyw': 'python',
+    },
+    installHint:
+      'Install `pyright` (for example `npm install -g pyright`) and ensure `pyright-langserver` is on PATH.',
+  },
+  {
+    name: 'rust',
+    command: 'rust-analyzer',
+    extensionToLanguage: {
+      '.rs': 'rust',
+    },
+    installHint:
+      'Install `rust-analyzer` (for example `rustup component add rust-analyzer` or an OS package) and ensure it is on PATH.',
+  },
+  {
+    name: 'go',
+    command: 'gopls',
+    extensionToLanguage: {
+      '.go': 'go',
+    },
+    installHint:
+      'Install `gopls` (for example `go install golang.org/x/tools/gopls@latest`) and ensure it is on PATH.',
+  },
+];
+
+/** Windows executable suffixes consulted when the command has no extension. */
+const WINDOWS_EXEC_SUFFIXES = ['.exe', '.cmd', '.bat', '.com'];
+
+/**
+ * Locate `command` on `PATH`. Returns the absolute path when found, otherwise
+ * undefined. Absolute paths are checked directly; relative entries with a path
+ * separator are resolved against `cwd`.
+ *
+ * On POSIX the file must be executable (X_OK). On Windows, executability is
+ * inferred from the suffix list when `command` lacks an extension.
+ */
+export function findExecutable(
+  command: string,
+  pathValue: string | undefined = process.env.PATH
+): string | undefined {
+  if (!command) return undefined;
+
+  const isWindows = process.platform === 'win32';
+  const sep = isWindows ? ';' : ':';
+  const candidates = expandCandidates(command, isWindows);
+
+  // Absolute or path-bearing commands are tried directly.
+  if (path.isAbsolute(command) || command.includes(path.sep) || command.includes('/')) {
+    for (const c of candidates) {
+      if (isExecutableFile(c, isWindows)) return c;
+    }
+    return undefined;
+  }
+
+  if (!pathValue) return undefined;
+
+  for (const dir of pathValue.split(sep)) {
+    if (!dir) continue;
+    for (const variant of candidates) {
+      const candidate = path.join(dir, variant);
+      if (isExecutableFile(candidate, isWindows)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+function expandCandidates(command: string, isWindows: boolean): string[] {
+  if (!isWindows) return [command];
+  const ext = path.extname(command).toLowerCase();
+  if (ext && WINDOWS_EXEC_SUFFIXES.includes(ext)) return [command];
+  return [command, ...WINDOWS_EXEC_SUFFIXES.map((s) => command + s)];
+}
+
+function isExecutableFile(filePath: string, isWindows: boolean): boolean {
+  try {
+    const st = statSync(filePath);
+    if (!st.isFile()) return false;
+    if (isWindows) return true;
+    accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect built-in recipes whose command is on PATH. Returns a record keyed by
+ * server name suitable for merging into the configured server map.
+ */
+export function getDetectedRecipeServers(
+  pathValue: string | undefined = process.env.PATH
+): Record<string, ScopedLspServerConfig> {
+  const out: Record<string, ScopedLspServerConfig> = {};
+  for (const recipe of BUILTIN_RECIPES) {
+    const resolved = findExecutable(recipe.command, pathValue);
+    if (!resolved) continue;
+    out[recipe.name] = {
+      command: recipe.command,
+      args: recipe.args ? [...recipe.args] : undefined,
+      extensionToLanguage: { ...recipe.extensionToLanguage },
+      startupTimeout: 10000,
+      maxRestarts: 3,
+      transport: 'stdio',
+    };
+    logForDebugging(`recipes: detected ${recipe.name} (${recipe.command} -> ${resolved})`);
+  }
+  return out;
+}
+
+/**
+ * Look up the install hint for a known file extension. Returns undefined when
+ * no built-in recipe handles the extension.
+ */
+export function getRecipeHintForExtension(ext: string): string | undefined {
+  if (!ext) return undefined;
+  const normalized = ext.toLowerCase();
+  for (const recipe of BUILTIN_RECIPES) {
+    if (recipe.extensionToLanguage[normalized]) return recipe.installHint;
+  }
+  return undefined;
+}
+
+/**
+ * Whether any built-in recipe claims this extension. Used to decide if a
+ * "missing server" notification has actionable guidance to offer.
+ */
+export function recipeCoversExtension(ext: string): boolean {
+  return getRecipeHintForExtension(ext) !== undefined;
+}

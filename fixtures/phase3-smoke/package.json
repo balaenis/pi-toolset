@@ -6,7 +6,14 @@
   "scripts": {
     "check": "tsc --noEmit",
     "reset": "bash scripts/reset.sh",
-    "pi": "bash scripts/run-pi-lsp.sh"
+    "pi": "bash scripts/run-pi-lsp.sh explicit",
+    "pi-zero": "bash scripts/run-pi-lsp.sh zero",
+    "pi-missing-pyright": "bash scripts/run-pi-lsp.sh missing-pyright",
+    "pi-broken-python": "bash scripts/run-pi-lsp.sh broken-python",
+    "pi-bad-args": "bash scripts/run-pi-lsp.sh bad-args",
+    "pi-all-invalid": "bash scripts/run-pi-lsp.sh all-invalid",
+    "pi-user-ts-only": "bash scripts/run-pi-lsp.sh user-ts-only",
+    "pi-name-collision": "bash scripts/run-pi-lsp.sh name-collision"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

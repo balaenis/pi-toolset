@@ -7,7 +7,11 @@ import { pathToFileURL } from 'node:url';
 import { StringEnum, Type } from '@earendil-works/pi-ai';
 import type { Static } from '@earendil-works/pi-ai';
 import { truncateTail } from '@earendil-works/pi-coding-agent';
-import type { AgentToolResult, ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type {
+  AgentToolResult,
+  ExtensionAPI,
+  ExtensionContext,
+} from '@earendil-works/pi-coding-agent';
 import type {
   CallHierarchyIncomingCall,
   CallHierarchyItem,
@@ -31,6 +35,11 @@ import {
 import { filterGitIgnoredLocations } from './gitignore.ts';
 import { errorMessage, logError } from './log.ts';
 import { getManager, isLspConnected, waitForInitialization } from './manager.ts';
+import {
+  formatFailedStartMessage,
+  formatMissingServerMessage,
+  maybeNotifyMissingServer,
+} from './notifications.ts';
 import type { LspToolDetails } from './types.ts';
 
 const MAX_LSP_FILE_SIZE_BYTES = 10_000_000;
@@ -99,21 +108,18 @@ export function registerLspTool(pi: ExtensionAPI): void {
     description: DESCRIPTION,
     parameters: PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return runLsp(params, ctx.cwd);
+      return runLsp(params, ctx);
     },
   });
 }
 
-async function runLsp(params: Params, cwd: string): Promise<AgentToolResult<LspToolDetails>> {
+async function runLsp(
+  params: Params,
+  ctx: ExtensionContext
+): Promise<AgentToolResult<LspToolDetails>> {
+  const cwd = ctx.cwd;
   // Wait for any in-flight initialization, then verify a server is connected.
   await waitForInitialization();
-  if (!isLspConnected()) {
-    return textResult(
-      'LSP server is not ready. It may still be starting, or no server is configured for this file type.',
-      params,
-      { ready: false }
-    );
-  }
 
   const manager = getManager();
   if (!manager) {
@@ -121,6 +127,28 @@ async function runLsp(params: Params, cwd: string): Promise<AgentToolResult<LspT
   }
 
   const absolutePath = path.resolve(cwd, params.filePath);
+
+  if (!isLspConnected()) {
+    // Distinguish "server exists but failed to start" from "no server at all".
+    // The former shows the error reason; the latter shows an install hint.
+    const server = manager.getServerForFile(absolutePath);
+    if (server && server.state === 'error') {
+      const message = formatFailedStartMessage(server.name, server.lastError?.message);
+      maybeNotifyMissingServer(
+        params.filePath,
+        ctx,
+        'tool',
+        server.name,
+        server.lastError?.message
+      );
+      return textResult(message, params, { ready: false });
+    }
+    const hint = formatMissingServerMessage(params.filePath);
+    maybeNotifyMissingServer(params.filePath, ctx, 'tool');
+    const base =
+      'LSP server is not ready. It may still be starting, or no server is configured for this file type.';
+    return textResult(hint ? `${base}\n\n${hint}` : base, params, { ready: false });
+  }
 
   // SECURITY: skip filesystem stat for UNC paths to avoid NTLM credential leaks.
   const isUnc = absolutePath.startsWith('\\\\') || absolutePath.startsWith('//');
@@ -158,10 +186,10 @@ async function runLsp(params: Params, cwd: string): Promise<AgentToolResult<LspT
 
     let result = await manager.sendRequest(absolutePath, method, lspParams);
     if (result === undefined) {
-      return textResult(
-        `No LSP server available for file type: ${path.extname(absolutePath)}`,
-        params
-      );
+      const hint = formatMissingServerMessage(params.filePath);
+      maybeNotifyMissingServer(params.filePath, ctx, 'tool');
+      const base = `No LSP server available for file type: ${path.extname(absolutePath)}`;
+      return textResult(hint ? `${base}\n\n${hint}` : base, params);
     }
 
     // callHierarchy two-step: incoming/outgoing need the prepareCallHierarchy
@@ -201,6 +229,21 @@ async function runLsp(params: Params, cwd: string): Promise<AgentToolResult<LspT
 
     return withFormatted(params, formatted, resultCount, fileCount);
   } catch (error) {
+    // When the server exists but failed to start (e.g. binary not on PATH,
+    // bad args, crash), surface a "failed to start" message with the error
+    // reason — NOT "no server configured", because a server IS configured.
+    const server = manager.getServerForFile(absolutePath);
+    if (server && server.state === 'error') {
+      const message = formatFailedStartMessage(server.name, server.lastError?.message);
+      maybeNotifyMissingServer(
+        params.filePath,
+        ctx,
+        'tool',
+        server.name,
+        server.lastError?.message
+      );
+      return textResult(message, params);
+    }
     logError(
       new Error(
         `LSP tool request failed for ${params.operation} on ${params.filePath}: ${errorMessage(error)}`

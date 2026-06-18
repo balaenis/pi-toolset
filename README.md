@@ -83,9 +83,20 @@ Both files use JSONC syntax (comments are allowed).
 ¹ Either `extensionToLanguage` or `extensions` must be present; `extensionToLanguage` takes precedence.
 ² When `extensions` is used without `extensionToLanguage`, the extension guesses `languageId` from a built-in table (covers TS/JS, Python, Rust, Go, Java, C/C++, C#, and ~20 others). Unknown extensions fall back to `"plaintext"`.
 
-### Default server
+### Zero-config autodetection
 
-When no `lsp.servers` are configured (or all entries are invalid), the extension falls back to a hardcoded `typescript-language-server` entry that covers `.ts` / `.tsx` / `.js` / `.jsx` / `.mjs` / `.cjs` / `.mts` / `.cts`.
+With no `lsp.servers` block in `settings.json`, the extension scans `PATH` for the following built-in recipes and enables each one whose command is found:
+
+| Recipe     | Command                      | Args      | Extensions                                                   | Install hint                                            |
+| ---------- | ---------------------------- | --------- | ------------------------------------------------------------ | ------------------------------------------------------- |
+| TypeScript | `typescript-language-server` | `--stdio` | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts` | `npm install -g typescript typescript-language-server`  |
+| Python     | `pyright-langserver`         | `--stdio` | `.py`, `.pyw`                                                | `npm install -g pyright`                                |
+| Rust       | `rust-analyzer`              | none      | `.rs`                                                        | `rustup component add rust-analyzer` (or an OS package) |
+| Go         | `gopls`                      | none      | `.go`                                                        | `go install golang.org/x/tools/gopls@latest`            |
+
+User entries in `lsp.servers` are authoritative: a built-in recipe is skipped when its server name collides with a user entry **or** when any of its extensions are already covered by a user entry. Recipes still supplement uncovered languages. Invalid user entries do not disable autodetection for unrelated languages.
+
+When the agent edits a file or invokes the `lsp` tool for an extension covered by a recipe but the matching binary is missing on `PATH`, the extension surfaces a single non-blocking warning (`ctx.ui.notify(…, "warning")`) with an actionable install hint and includes the same hint in the tool's text output. Notifications are deduplicated per session by extension and reason.
 
 ## Limitations
 

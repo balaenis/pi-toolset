@@ -243,15 +243,12 @@ export function createLSPServerInstance(
       };
 
       initPromise = client.initialize(initParams);
-      if (config.startupTimeout !== undefined) {
-        await withTimeout(
-          initPromise,
-          config.startupTimeout,
-          `LSP server '${name}' timed out after ${config.startupTimeout}ms during initialization`
-        );
-      } else {
-        await initPromise;
-      }
+      const timeout = config.startupTimeout ?? 30000;
+      await withTimeout(
+        initPromise,
+        timeout,
+        `LSP server '${name}' timed out after ${timeout}ms during initialization`
+      );
 
       state = 'running';
       startTime = new Date();
@@ -283,20 +280,17 @@ export function createLSPServerInstance(
 
     state = 'stopping';
     try {
-      if (config.shutdownTimeout !== undefined) {
-        try {
-          await withTimeout(
-            client.stop(),
-            config.shutdownTimeout,
-            `LSP server '${name}' graceful shutdown timed out after ${config.shutdownTimeout}ms`
-          );
-        } catch (error) {
-          // Timeout or shutdown error: client.stop()'s finally already killed
-          // the process. Don't surface shutdown hiccups as errors.
-          logForDebugging(`LSP server '${name}' stop completed with: ${(error as Error).message}`);
-        }
-      } else {
-        await client.stop();
+      const timeout = config.shutdownTimeout ?? 10000;
+      try {
+        await withTimeout(
+          client.stop(),
+          timeout,
+          `LSP server '${name}' graceful shutdown timed out after ${timeout}ms`
+        );
+      } catch (error) {
+        // Timeout or shutdown error: client.stop()'s finally already killed
+        // the process. Don't surface shutdown hiccups as errors.
+        logForDebugging(`LSP server '${name}' stop completed with: ${(error as Error).message}`);
       }
       state = 'stopped';
       logForDebugging(`LSP server instance stopped: ${name}`);

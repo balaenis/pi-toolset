@@ -1,10 +1,11 @@
-// ABOUTME: LSP server config source — reads settings.json (global + project) with a hardcoded fallback.
-// ABOUTME: Validates the lsp.servers segment and applies $VAR/${VAR} env substitution.
+// ABOUTME: LSP server config source — reads settings.json and appends detected recipe servers.
+// ABOUTME: Validates lsp.servers, preserves user precedence, and applies env substitution.
 
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { logError, logForDebugging } from './log.ts';
+import { getDetectedRecipeServers } from './recipes.ts';
 import type { LspTransport, ScopedLspServerConfig } from './types.ts';
 
 /**
@@ -254,10 +255,12 @@ function stripJsonc(text: string): string {
  * Get all configured LSP servers.
  *
  * Reads `lsp.servers` from `~/.pi/agent/settings.json` then `<cwd>/.pi/settings.json`
- * (project overrides global). When no config is present, falls back to a hardcoded
- * typescript-language-server entry so the extension is useful out of the box.
+ * (project overrides global), normalizes user entries, then appends built-in
+ * recipes detected on PATH for any languages the user has not already covered.
  *
- * Already async to match the signature callers use.
+ * - With no valid user config: returns just the autodetected recipes (zero-config).
+ * - With user config: user server names and user-covered extensions win; recipes
+ *   are added only for uncovered languages and non-conflicting server names.
  */
 export async function getAllLspServers(cwd: string): Promise<{
   servers: Record<string, ScopedLspServerConfig>;
@@ -279,22 +282,47 @@ export async function getAllLspServers(cwd: string): Promise<{
     ...projectServers,
   };
 
-  if (Object.keys(merged).length === 0) {
-    logForDebugging('config: no lsp.servers found, using hardcoded typescript fallback');
-    return { servers: hardcodedFallback() };
-  }
-
-  const servers: Record<string, ScopedLspServerConfig> = {};
+  const userServers: Record<string, ScopedLspServerConfig> = {};
   for (const [name, raw] of Object.entries(merged)) {
     const normalized = normalizeServer(name, raw);
     if (normalized) {
-      servers[name] = normalized;
+      userServers[name] = normalized;
+    }
+    logForDebugging(`User server '${name}': ${normalized?.command}`);
+  }
+
+  const recipes = getDetectedRecipeServers();
+  const userCoveredExtensions = new Set<string>();
+  for (const cfg of Object.values(userServers)) {
+    for (const ext of Object.keys(cfg.extensionToLanguage)) {
+      userCoveredExtensions.add(ext.toLowerCase());
     }
   }
 
+  // Start with the user-validated entries, then layer recipes that do not
+  // collide on server name or any covered extension.
+  const servers: Record<string, ScopedLspServerConfig> = { ...userServers };
+  for (const [name, cfg] of Object.entries(recipes)) {
+    if (servers[name]) {
+      logForDebugging(
+        `config: skipping detected recipe '${name}' — already covered by user config`
+      );
+      continue;
+    }
+    const recipeExts = Object.keys(cfg.extensionToLanguage).map((e) => e.toLowerCase());
+    const overlap = recipeExts.some((ext) => userCoveredExtensions.has(ext));
+    if (overlap) {
+      logForDebugging(
+        `config: skipping detected recipe '${name}' — extensions overlap user config`
+      );
+      continue;
+    }
+    servers[name] = cfg;
+  }
+
   if (Object.keys(servers).length === 0) {
-    logForDebugging('config: all lsp.servers entries invalid, using hardcoded fallback');
-    return { servers: hardcodedFallback() };
+    logForDebugging('config: no user lsp.servers and no recipe binaries on PATH');
+    return { servers: {} };
   }
 
   logForDebugging(
@@ -311,27 +339,4 @@ function extractServers(
   const lsp = settings['lsp'] as RawLspConfig | undefined;
   if (!lsp || typeof lsp !== 'object' || !lsp.servers) return {};
   return lsp.servers as Record<string, RawServerConfig>;
-}
-
-/** Hardcoded typescript-language-server fallback used when no settings.json config exists. */
-function hardcodedFallback(): Record<string, ScopedLspServerConfig> {
-  return {
-    typescript: {
-      command: 'typescript-language-server',
-      args: ['--stdio'],
-      extensionToLanguage: {
-        '.ts': 'typescript',
-        '.tsx': 'typescriptreact',
-        '.js': 'javascript',
-        '.jsx': 'javascriptreact',
-        '.mjs': 'javascript',
-        '.cjs': 'javascript',
-        '.mts': 'typescript',
-        '.cts': 'typescript',
-      },
-      startupTimeout: 10000,
-      maxRestarts: 3,
-      transport: 'stdio',
-    },
-  };
 }

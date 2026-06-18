@@ -433,12 +433,12 @@ user configuration.
 
 ### Built-in recipe set for the first iteration
 
-| Recipe | Command | Args | Extensions | Install hint text |
-| ------ | ------- | ---- | ---------- | ----------------- |
+| Recipe     | Command                      | Args      | Extensions                                                   | Install hint text                                                                                                                                               |
+| ---------- | ---------------------------- | --------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | TypeScript | `typescript-language-server` | `--stdio` | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts` | Install `typescript-language-server` and `typescript` (for example `npm install -g typescript typescript-language-server`) and ensure the command is on `PATH`. |
-| Python | `pyright-langserver` | `--stdio` | `.py`, `.pyw` | Install `pyright` (for example `npm install -g pyright`) and ensure `pyright-langserver` is on `PATH`. |
-| Rust | `rust-analyzer` | none | `.rs` | Install `rust-analyzer` (for example `rustup component add rust-analyzer` or an OS package) and ensure it is on `PATH`. |
-| Go | `gopls` | none | `.go` | Install `gopls` (for example `go install golang.org/x/tools/gopls@latest`) and ensure it is on `PATH`. |
+| Python     | `pyright-langserver`         | `--stdio` | `.py`, `.pyw`                                                | Install `pyright` (for example `npm install -g pyright`) and ensure `pyright-langserver` is on `PATH`.                                                          |
+| Rust       | `rust-analyzer`              | none      | `.rs`                                                        | Install `rust-analyzer` (for example `rustup component add rust-analyzer` or an OS package) and ensure it is on `PATH`.                                         |
+| Go         | `gopls`                      | none      | `.go`                                                        | Install `gopls` (for example `go install golang.org/x/tools/gopls@latest`) and ensure it is on `PATH`.                                                          |
 
 ### Tasks
 
@@ -454,16 +454,16 @@ recipes are available on the current `PATH`.
 
 **Steps:**
 
-- [ ] Define `LspServerRecipe` with `name`, `command`, `args`, `extensionToLanguage`, and
+- [x] Define `LspServerRecipe` with `name`, `command`, `args`, `extensionToLanguage`, and
       `installHint`.
-- [ ] Add recipes for TypeScript, Python, Rust, and Go using the table above.
-- [ ] Implement `findExecutable(command, pathValue = process.env.PATH)` using real filesystem checks
+- [x] Add recipes for TypeScript, Python, Rust, and Go using the table above.
+- [x] Implement `findExecutable(command, pathValue = process.env.PATH)` using real filesystem checks
       against PATH entries; support executable files on POSIX and `.exe/.cmd/.bat` suffixes on
       Windows.
-- [ ] Implement `getDetectedRecipeServers(pathValue?)` that returns
+- [x] Implement `getDetectedRecipeServers(pathValue?)` that returns
       `Record<string, ScopedLspServerConfig>` for recipes whose command exists.
-- [ ] Implement `getRecipeHintForExtension(ext)` for missing-server guidance.
-- [ ] Test detection with temporary executable files placed in a temporary PATH directory.
+- [x] Implement `getRecipeHintForExtension(ext)` for missing-server guidance.
+- [x] Test detection with temporary executable files placed in a temporary PATH directory.
 
 **Validation:**
 
@@ -483,20 +483,20 @@ languages. User server names and user-covered extensions always win.
 
 **Steps:**
 
-- [ ] Normalize global/project user entries first, preserving the existing project-over-global server
+- [x] Normalize global/project user entries first, preserving the existing project-over-global server
       name merge behavior.
-- [ ] Build a covered-extension set from normalized user entries.
-- [ ] Return `getDetectedRecipeServers()` instead of the current hardcoded TypeScript fallback when
+- [x] Build a covered-extension set from normalized user entries.
+- [x] Return `getDetectedRecipeServers()` instead of the current hardcoded TypeScript fallback when
       no valid user entries exist.
-- [ ] When valid user entries exist, append each detected recipe only if its server name does not
+- [x] When valid user entries exist, append each detected recipe only if its server name does not
       collide with a user server name and none of its extensions are already in the user
       covered-extension set.
-- [ ] Cover both conflict paths in tests: same server name with different extensions, and different
+- [x] Cover both conflict paths in tests: same server name with different extensions, and different
       server name with overlapping extensions.
-- [ ] If a user block exists but all entries are invalid, fall back to detected recipes and keep the
+- [x] If a user block exists but all entries are invalid, fall back to detected recipes and keep the
       validation errors in the debug/error log; invalid entries should not disable zero-config support
       for unrelated languages.
-- [ ] Update README configuration docs to explain zero-config autodetection and user-config
+- [x] Update README configuration docs to explain zero-config autodetection and user-config
       precedence.
 
 **Validation:**
@@ -520,14 +520,14 @@ clear install/configuration hint without interrupting the agent loop.
 
 **Steps:**
 
-- [ ] Implement `maybeNotifyMissingServer(filePath, ctx, reason)` that checks `ctx.hasUI`, looks up
+- [x] Implement `maybeNotifyMissingServer(filePath, ctx, reason)` that checks `ctx.hasUI`, looks up
       `getRecipeHintForExtension(path.extname(filePath))`, and calls `ctx.ui.notify(message,
-      "warning")` once per session for each extension/reason pair.
-- [ ] In `tools.ts`, pass `ctx` to `runLsp`; when `manager.sendRequest()` returns `undefined`, include
+"warning")` once per session for each extension/reason pair.
+- [x] In `tools.ts`, pass `ctx` to `runLsp`; when `manager.sendRequest()` returns `undefined`, include
       the same install hint in the returned text and call `maybeNotifyMissingServer(..., "tool")`.
-- [ ] In `index.ts` `tool_result`, after edit/write success and before or after `syncFileChange`, call
+- [x] In `index.ts` `tool_result`, after edit/write success and before or after `syncFileChange`, call
       the notifier when `manager.getServerForFile(absolutePath)` is absent.
-- [ ] Keep notifications non-blocking; do not call `confirm`, do not write settings, and do not run
+- [x] Keep notifications non-blocking; do not call `confirm`, do not write settings, and do not run
       installation commands.
 
 **Validation:**
@@ -550,10 +550,25 @@ clear install/configuration hint without interrupting the agent loop.
 **Steps:**
 
 - [ ] Run a TypeScript fixture with `typescript-language-server` on PATH and no `.pi/settings.json`.
+      _(documented in `fixtures/phase3-smoke/README.md` Z0/Z1; pending real Pi smoke)_
 - [ ] Run a Python fixture with `pyright-langserver` on PATH and no `.pi/settings.json`.
-- [ ] Run a known-extension fixture where the relevant binary is absent from PATH.
-- [ ] Run an explicit `.pi/settings.json` fixture and verify conflicting recipes are skipped while
-      unrelated detected recipes still supplement it.
+      _(documented in `fixtures/phase3-smoke/README.md` Z0/Z1; pending real Pi smoke)_
+- [ ] Run a known-extension fixture where the relevant binary is absent from PATH (zero-config).
+      _(documented in `fixtures/phase3-smoke/README.md` Z2; pending real Pi smoke)_
+- [ ] Run a user-configured fixture where the binary is absent from PATH (ENOENT path).
+      _(documented in `fixtures/phase3-smoke/README.md` Z3/Z4; pending real Pi smoke)_
+- [ ] Run a user-configured fixture where the command spawns but crashes due to invalid args.
+      _(documented in `fixtures/phase3-smoke/README.md` Z10; pending real Pi smoke)_
+- [ ] Run a fixture where all user entries are invalid and verify recipe fallback.
+      _(documented in `fixtures/phase3-smoke/README.md` Z5; pending real Pi smoke)_
+- [ ] Run a fixture where user covers one language and recipe supplements another.
+      _(documented in `fixtures/phase3-smoke/README.md` Z6; pending real Pi smoke)_
+- [ ] Run a fixture where user server name collides with recipe name and verify recipe is skipped.
+      _(documented in `fixtures/phase3-smoke/README.md` Z7; pending real Pi smoke)_
+- [ ] Run a fixture with an unknown extension and verify no notification or hint appears.
+      _(documented in `fixtures/phase3-smoke/README.md` Z8; pending real Pi smoke)_
+- [ ] Run a fixture that validates per-reason notification dedup (tool vs edit).
+      _(documented in `fixtures/phase3-smoke/README.md` Z9; pending real Pi smoke)_
 
 **Validation:**
 
@@ -565,16 +580,21 @@ clear install/configuration hint without interrupting the agent loop.
 ### Acceptance
 
 - [ ] With no `lsp.servers` configuration and `typescript-language-server` on PATH, `.ts/.tsx/.js`
-      files route to the autodetected TypeScript server.
+      files route to the autodetected TypeScript server. _(unit: `config.test.ts` — `returns the
+typescript recipe when typescript-language-server is on PATH`; real smoke: phase3 Z1)_
 - [ ] With no `lsp.servers` configuration and `pyright-langserver` on PATH, `.py` files route to the
-      autodetected Python server.
+      autodetected Python server. _(unit: `config.test.ts` — `detects multiple recipes when
+multiple binaries exist`, plus `recipes.test.ts` extension mapping; real smoke: phase3 Z1)_
 - [ ] With no matching binary on PATH, the first LSP request or edit/write for a known extension shows
       one non-blocking `ctx.ui.notify(..., "warning")` install hint and the tool result includes the
-      same actionable guidance.
+      same actionable guidance. _(implemented in `notifications.ts` + tools.ts/index.ts; per-session
+      dedup by extension/reason; real smoke: phase3 Z2)_
 - [ ] With user `lsp.servers` entries present, autodetected recipes are skipped only when they collide
-      by server name or covered extension; unrelated recipes are still added.
+      by server name or covered extension; unrelated recipes are still added. _(unit:
+      `config.test.ts` — user precedence and supplementation cases)_
 - [ ] `settings.json` remains supported exactly as documented, including project-over-global
-      override and `extensions` sugar.
+      override and `extensions` sugar. _(unit: `config.test.ts` — `project overrides global on
+server-name collision`; existing `extensions` sugar path in `normalizeServer` unchanged)_
 
 ---
 

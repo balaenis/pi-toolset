@@ -1,3 +1,4 @@
+// entry point
 import { secret } from './ignored.js';
 
 export function callee() {
