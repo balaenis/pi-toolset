@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { getAllLspServers } from './config.ts';
+import { getAllLspServers } from '../src/config.ts';
 
 const isWindows = process.platform === 'win32';
 

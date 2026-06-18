@@ -11,7 +11,7 @@ import {
   getDetectedRecipeServers,
   getRecipeHintForExtension,
   recipeCoversExtension,
-} from './recipes.ts';
+} from '../src/recipes.ts';
 
 const isWindows = process.platform === 'win32';
 

@@ -425,9 +425,9 @@ user configuration.
   has no active server and the recipe registry has a known install hint.
 - Modify: `README.md` — document zero-config autodetection, supported built-in recipes, and the
   rule that explicit user servers override recipes by server name and covered extensions.
-- Test: `src/recipes.test.ts` — temp-PATH executable discovery and extension matching without relying
+- Test: `tests/recipes.test.ts` — temp-PATH executable discovery and extension matching without relying
   on real system binaries.
-- Test: `src/config.test.ts` — no-user-config recipe fallback, user-config precedence, recipe
+- Test: `tests/config.test.ts` — no-user-config recipe fallback, user-config precedence, recipe
   supplementation for uncovered languages, invalid user-config behavior, and TypeScript fallback
   replacement.
 
@@ -450,7 +450,7 @@ recipes are available on the current `PATH`.
 **Files:**
 
 - Create: `src/recipes.ts`
-- Test: `src/recipes.test.ts`
+- Test: `tests/recipes.test.ts`
 
 **Steps:**
 
@@ -467,7 +467,7 @@ recipes are available on the current `PATH`.
 
 **Validation:**
 
-- Run: `bun test src/recipes.test.ts`
+- Run: `bun test tests/recipes.test.ts`
 - Expected: recipe detection passes without depending on host-installed LSP binaries.
 
 #### Task 7.2: Replace hardcoded fallback with autodetected recipes
@@ -478,7 +478,7 @@ languages. User server names and user-covered extensions always win.
 **Files:**
 
 - Modify: `src/config.ts`
-- Test: `src/config.test.ts`
+- Test: `tests/config.test.ts`
 - Modify: `README.md`
 
 **Steps:**
@@ -501,7 +501,7 @@ languages. User server names and user-covered extensions always win.
 
 **Validation:**
 
-- Run: `bun test src/config.test.ts`
+- Run: `bun test tests/config.test.ts`
 - Expected: no-config sessions use detected recipes; explicit config overrides conflicting recipes;
   detected recipes still fill uncovered languages; invalid explicit entries do not suppress unrelated
   recipes.
