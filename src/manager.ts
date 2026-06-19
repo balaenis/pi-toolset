@@ -28,6 +28,10 @@ export type LSPServerManager = {
   sendRequest<T>(filePath: string, method: string, params: unknown): Promise<T | undefined>;
   /** Get all server instances */
   getAllServers(): Map<string, LSPServerInstance>;
+  /** Aggregated live counts across all server instances. */
+  getStateCounts(): { running: number; starting: number; error: number };
+  /** Subscribe to any per-instance state change. Returns an unsubscribe. */
+  onServersChanged(listener: () => void): () => void;
   /** Synchronize file open to LSP server (sends didOpen notification) */
   openFile(filePath: string, content: string): Promise<void>;
   /** Synchronize file change to LSP server (sends didChange notification) */
@@ -54,6 +58,17 @@ export function createLSPServerManager(): LSPServerManager {
   const extensionMap: Map<string, string[]> = new Map();
   // Track which files have been opened on which servers (URI -> server name)
   const openedFiles: Map<string, string> = new Map();
+  const stateChangeListeners: Set<() => void> = new Set();
+
+  function notifyServersChanged(): void {
+    for (const listener of stateChangeListeners) {
+      try {
+        listener();
+      } catch (error) {
+        logError(new Error(`LSP statusLine listener threw: ${errorMessage(error)}`));
+      }
+    }
+  }
 
   /**
    * Initialize the manager by loading all configured LSP servers.
@@ -105,7 +120,9 @@ export function createLSPServerManager(): LSPServerManager {
         }
 
         // Create server instance
-        const instance = createLSPServerInstance(serverName, config);
+        const instance = createLSPServerInstance(serverName, config, undefined, () => {
+          notifyServersChanged();
+        });
         servers.set(serverName, instance);
 
         // Register handler for workspace/configuration requests from the server.
@@ -165,6 +182,7 @@ export function createLSPServerManager(): LSPServerManager {
     servers.clear();
     extensionMap.clear();
     openedFiles.clear();
+    stateChangeListeners.clear();
 
     const errors = results
       .map((r, i) =>
@@ -244,6 +262,35 @@ export function createLSPServerManager(): LSPServerManager {
 
   function getAllServers(): Map<string, LSPServerInstance> {
     return servers;
+  }
+
+  function getStateCounts(): { running: number; starting: number; error: number } {
+    let running = 0;
+    let starting = 0;
+    let error = 0;
+    for (const server of servers.values()) {
+      switch (server.state) {
+        case 'running':
+          running++;
+          break;
+        case 'starting':
+          starting++;
+          break;
+        case 'error':
+          error++;
+          break;
+        default:
+          break;
+      }
+    }
+    return { running, starting, error };
+  }
+
+  function onServersChanged(listener: () => void): () => void {
+    stateChangeListeners.add(listener);
+    return () => {
+      stateChangeListeners.delete(listener);
+    };
   }
 
   async function openFile(filePath: string, content: string): Promise<void> {
@@ -394,6 +441,8 @@ export function createLSPServerManager(): LSPServerManager {
     ensureServerStarted,
     sendRequest,
     getAllServers,
+    getStateCounts,
+    onServersChanged,
     openFile,
     changeFile,
     saveFile,

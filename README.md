@@ -22,6 +22,19 @@ Results from location-returning operations (`findReferences`, `goToDefinition`, 
 
 When no server is configured for a file type, or the server is still starting, the tool returns a clear text message instead of an error.
 
+### StatusLine indicator
+
+The extension renders a passive, non-interactive LSP health indicator in Pi's footer that reflects the live runtime state of LSP servers:
+
+```
+LSP ⚡ 2          — two servers are running
+LSP ⚡ 2 …1       — two running, one starting (dim)
+LSP ⚡ 2 ✕1       — two running, one in error (red)
+(hidden)        — no servers are starting/running/in error
+```
+
+The indicator is a live snapshot, not a `ready/total` summary: configured-but-stopped servers are not counted, and an `✗` failure clears as soon as a retry succeeds (e.g. crash auto-restart or a re-triggered tool call). The segment is hidden entirely when all tracked counts are zero so the footer stays quiet at session start.
+
 ## Configuration
 
 LSP servers are configured through a dedicated config file (separate from Pi's shared `settings.json`, to avoid key collisions with other extensions). The extension reads two files (project overrides global):

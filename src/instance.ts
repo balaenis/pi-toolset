@@ -83,9 +83,16 @@ export type LSPServerInstance = {
 export function createLSPServerInstance(
   name: string,
   config: ScopedLspServerConfig,
-  clientFactory: LSPClientFactory = createLSPClient
+  clientFactory: LSPClientFactory = createLSPClient,
+  onStateChange?: (state: LspServerState) => void
 ): LSPServerInstance {
   let state: LspServerState = 'stopped';
+
+  function setState(next: LspServerState): void {
+    if (next === state) return;
+    state = next;
+    onStateChange?.(next);
+  }
   let startTime: Date | undefined;
   let lastError: Error | undefined;
   let restartCount = 0;
@@ -102,7 +109,7 @@ export function createLSPServerInstance(
   // Without this, state stays 'running' after crash and the server is never
   // restarted (zombie state).
   const client = clientFactory(name, (error) => {
-    state = 'error';
+    setState('error');
     lastError = error;
     crashRecoveryCount++;
 
@@ -186,7 +193,7 @@ export function createLSPServerInstance(
 
     let initPromise: Promise<unknown> | undefined;
     try {
-      state = 'starting';
+      setState('starting');
       startupAttemptCount++;
       logForDebugging(`Starting LSP server instance: ${name}`);
 
@@ -279,7 +286,7 @@ export function createLSPServerInstance(
         `LSP server '${name}' timed out after ${timeout}ms during initialization`
       );
 
-      state = 'running';
+      setState('running');
       startTime = new Date();
       lastError = undefined;
       startupFailureClassification = undefined;
@@ -289,7 +296,7 @@ export function createLSPServerInstance(
     } catch (error) {
       // Prevent unhandled rejection from abandoned initialize promise.
       initPromise?.catch(() => {});
-      state = 'error';
+      setState('error');
       const classification = classifyStartupFailure(error);
       startupFailureClassification = classification;
       startupRetryExhausted = classification.retryable && startupAttemptCount >= maxRestarts;
@@ -323,7 +330,7 @@ export function createLSPServerInstance(
       return;
     }
 
-    state = 'stopping';
+    setState('stopping');
     try {
       const timeout = config.shutdownTimeout ?? 10000;
       try {
@@ -334,10 +341,10 @@ export function createLSPServerInstance(
         // errors.
         logForDebugging(`LSP server '${name}' stop completed with: ${(error as Error).message}`);
       }
-      state = 'stopped';
+      setState('stopped');
       logForDebugging(`LSP server instance stopped: ${name}`);
     } catch (error) {
-      state = 'error';
+      setState('error');
       lastError = error as Error;
       logError(error);
       throw error;

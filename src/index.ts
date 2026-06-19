@@ -15,25 +15,49 @@ import {
   waitForInitialization,
 } from './manager.ts';
 import { maybeNotifyMissingServer } from './notifications.ts';
+import { formatLspStatus } from './statusline.ts';
 import { registerLspTool } from './tools.ts';
 
 /** customType tag used for injected diagnostic blocks so they can be stripped. */
 const DIAGNOSTIC_CUSTOM_TYPE = 'lsp-diagnostics';
+
+/** Status segment key used to identify the LSP indicator in setStatus. */
+const LSP_STATUS_KEY = 'lsp';
 
 export default function (pi: ExtensionAPI): void {
   // No process/timer/watcher work in the factory body — registering the tool is
   // pure metadata. All process spawning is deferred to first tool use.
   registerLspTool(pi);
 
+  let unsubscribeLspStatus: (() => void) | undefined;
+
   pi.on('session_start', (_event, ctx) => {
     // Synchronous, non-blocking, idempotent. Servers are lazily started on the
     // first tool call (or the first edit, via syncFileChange), not here.
     initializeManager(ctx.cwd);
+
+    const manager = getManager();
+    if (!manager) return;
+
+    const render = (): void => {
+      const text = formatLspStatus(manager.getStateCounts(), (color, str) =>
+        ctx.ui.theme.fg(color, str)
+      );
+      ctx.ui.setStatus(LSP_STATUS_KEY, text);
+    };
+
+    unsubscribeLspStatus?.();
+    unsubscribeLspStatus = manager.onServersChanged(render);
+    render();
   });
 
-  pi.on('session_shutdown', async () => {
+  pi.on('session_shutdown', async (_event, ctx) => {
     // Idempotent: fires on quit/reload/new/resume/fork. Tears down all servers
     // and clears diagnostic state so the next session starts clean.
+    unsubscribeLspStatus?.();
+    unsubscribeLspStatus = undefined;
+    ctx.ui.setStatus(LSP_STATUS_KEY, undefined);
+
     await shutdownManager();
     diagnostics.resetAll();
   });
