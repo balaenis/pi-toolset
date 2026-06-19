@@ -16,8 +16,10 @@ export type StatusColorFn = (color: 'border' | 'dim' | 'error', text: string) =>
 /**
  * Format the LSP statusLine segment from a live counts snapshot.
  *
- * Returns `undefined` when all tracked counts are zero so callers can clear
- * the segment via `setStatus(key, undefined)` instead of rendering "LSP 0".
+ * Philosophy: ambient when healthy, loud when broken. The base `⚡LSP` label
+ * stays visible whenever any server is tracked; only abnormal states append
+ * extra segments. Returns `undefined` when nothing is tracked so callers can
+ * clear the segment via `setStatus(key, undefined)`.
  */
 export function formatLspStatus(counts: LspStatusCounts, fg: StatusColorFn): string | undefined {
   const { running, starting, error } = counts;
@@ -26,14 +28,11 @@ export function formatLspStatus(counts: LspStatusCounts, fg: StatusColorFn): str
   }
 
   const parts: string[] = [`${fg('border', '⚡')}LSP`];
-  if (running > 0) {
-    parts.push(`🟢${running}`);
-  }
   if (starting > 0) {
-    parts.push(fg('dim', `🟡${starting}`));
+    parts.push(fg('dim', `…${starting}`));
   }
   if (error > 0) {
-    parts.push(fg('error', `🔴${error}`));
+    parts.push(fg('error', `✕${error}`));
   }
   return parts.join(' ');
 }
