@@ -163,6 +163,16 @@ export const BUILTIN_RECIPES: readonly LspServerRecipe[] = [
     installHint:
       'Install `vscode-langservers-extracted` (for example `npm install -g vscode-langservers-extracted`) which provides `vscode-css-language-server` on PATH.',
   },
+  {
+    name: 'vue',
+    command: 'vue-language-server',
+    args: ['--stdio'],
+    extensionToLanguage: {
+      '.vue': 'vue',
+    },
+    installHint:
+      'Install `@vue/language-server` (for example `npm install -g @vue/language-server`) and ensure `vue-language-server` is on PATH.',
+  },
 ];
 
 /** Windows executable suffixes consulted when the command has no extension. */

@@ -123,6 +123,7 @@ describe('getDetectedRecipeServers', () => {
     makeExecutable(dir, 'yaml-language-server');
     makeExecutable(dir, 'vscode-html-language-server');
     makeExecutable(dir, 'vscode-css-language-server');
+    makeExecutable(dir, 'vue-language-server');
     const detected = getDetectedRecipeServers(dir);
     const names = Object.keys(detected).sort();
     expect(names).toEqual([
@@ -135,6 +136,7 @@ describe('getDetectedRecipeServers', () => {
       'lua',
       'python',
       'typescript',
+      'vue',
       'yaml',
     ]);
     expect(detected.python!.extensionToLanguage['.py']).toBe('python');
@@ -144,6 +146,8 @@ describe('getDetectedRecipeServers', () => {
     expect(detected.bash!.args).toEqual(['start']);
     expect(detected.json!.extensionToLanguage['.jsonc']).toBe('jsonc');
     expect(detected.css!.extensionToLanguage['.scss']).toBe('scss');
+    expect(detected.vue!.extensionToLanguage['.vue']).toBe('vue');
+    expect(detected.vue!.args).toEqual(['--stdio']);
   });
 });
 
@@ -171,6 +175,7 @@ describe('recipe hint helpers', () => {
     expect(recipeCoversExtension('.yaml')).toBe(true);
     expect(recipeCoversExtension('.html')).toBe(true);
     expect(recipeCoversExtension('.css')).toBe(true);
+    expect(recipeCoversExtension('.vue')).toBe(true);
     expect(recipeCoversExtension('.foo')).toBe(false);
   });
 });

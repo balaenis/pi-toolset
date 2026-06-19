@@ -131,6 +131,7 @@ With no `servers` block in `config.json`, the extension scans `PATH` for the fol
 | YAML       | `yaml-language-server`        | `--stdio` | `.yaml`, `.yml`                                                                       | `npm install -g yaml-language-server`                                                                                                 |
 | HTML       | `vscode-html-language-server` | `--stdio` | `.html`, `.htm`                                                                       | `npm install -g vscode-langservers-extracted`                                                                                         |
 | CSS        | `vscode-css-language-server`  | `--stdio` | `.css`, `.scss`, `.less`                                                              | `npm install -g vscode-langservers-extracted`                                                                                         |
+| Vue        | `vue-language-server`         | `--stdio` | `.vue`                                                                                | `npm install -g @vue/language-server`                                                                                                 |
 
 User entries in `servers` are authoritative: a built-in recipe is skipped when its server name collides with a user entry **or** when any of its extensions are already covered by a user entry. Recipes still supplement uncovered languages. Invalid user entries do not disable autodetection for unrelated languages.
 
