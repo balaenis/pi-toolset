@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { StringEnum, Type } from '@earendil-works/pi-ai';
 import type { Static } from '@earendil-works/pi-ai';
+import { Text } from '@earendil-works/pi-tui';
 import { truncateTail } from '@earendil-works/pi-coding-agent';
 import type {
   AgentToolResult,
@@ -109,6 +110,54 @@ export function registerLspTool(pi: ExtensionAPI): void {
     parameters: PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return runLsp(params, ctx);
+    },
+    renderCall(args, theme, _context) {
+      let text = theme.fg('dim', 'LSP › ');
+      text += theme.fg('toolTitle', theme.bold(args.operation));
+      text += theme.fg('dim', ' ');
+      text += theme.fg('accent', args.filePath);
+      if (args.line && args.character) {
+        text += theme.fg('dim', `:${args.line}:${args.character}`);
+      }
+      return new Text(text, 0, 0);
+    },
+    renderResult(result, { expanded, isPartial }, theme, _context) {
+      if (isPartial) return new Text(theme.fg('warning', 'Querying...'), 0, 0);
+
+      const details = result.details as LspToolDetails | undefined;
+      const content = result.content[0];
+
+      if (content?.type !== 'text') {
+        return new Text(theme.fg('error', 'No output'), 0, 0);
+      }
+
+      if (details?.ready === false) {
+        const firstLine = content.text.split('\n')[0];
+        return new Text(theme.fg('warning', firstLine), 0, 0);
+      }
+
+      let text = '';
+      if (details?.resultCount !== undefined || details?.fileCount !== undefined) {
+        const rc = details?.resultCount ?? 0;
+        const fc = details?.fileCount ?? 0;
+        text += theme.fg(rc > 0 ? 'success' : 'dim', `${rc} result${rc !== 1 ? 's' : ''}`);
+        if (fc > 0) {
+          text += theme.fg('dim', ` in ${fc} file${fc !== 1 ? 's' : ''}`);
+        }
+        if (details?.truncated) {
+          text += theme.fg('warning', ' [truncated]');
+        }
+      } else {
+        text = theme.fg('success', 'Done');
+      }
+
+      if (expanded && content.text) {
+        text += '\n' + theme.fg('dim', content.text);
+      } else if (content.text.trim()) {
+        text += theme.fg('muted', ' · ctrl+o to expand');
+      }
+
+      return new Text(text, 0, 0);
     },
   });
 }
