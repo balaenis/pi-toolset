@@ -19,6 +19,13 @@ function key(ext: string, reason: MissingServerReason): string {
   return `${reason}:${ext.toLowerCase()}`;
 }
 
+function failedStartKey(errorDetail?: string): string {
+  const detail = errorDetail?.toLowerCase() ?? '';
+  if (detail.includes('startup retry limit exceeded')) return 'retry-exhausted';
+  if (detail.includes('not retrying because')) return 'non-retryable';
+  return 'failed';
+}
+
 /**
  * Format the message for the "no server configured" case (zero-config with no
  * recipe binary on PATH). Includes the recipe install hint.
@@ -42,8 +49,13 @@ export function formatMissingServerMessage(filePath: string): string | undefined
  * it just failed to start for some other reason).
  */
 export function formatFailedStartMessage(serverName: string, errorDetail?: string): string {
-  const reason = errorDetail ? `: ${errorDetail}` : '';
-  return `LSP server '${serverName}' failed to start${reason}.`;
+  const prefix = `LSP server '${serverName}' failed to start`;
+  if (!errorDetail) return `${prefix}.`;
+
+  const detail = errorDetail.startsWith(`${prefix}: `)
+    ? errorDetail.slice(`${prefix}: `.length)
+    : errorDetail;
+  return `${prefix}: ${detail}.`;
 }
 
 /**
@@ -79,7 +91,9 @@ export function maybeNotifyMissingServer(
   }
   if (!message) return;
 
-  const k = serverName ? `${reason}:${ext}:${serverName}` : key(ext, reason);
+  const k = serverName
+    ? `${reason}:${ext}:${serverName}:${failedStartKey(errorDetail)}`
+    : key(ext, reason);
   if (notified.has(k)) return;
   notified.add(k);
 

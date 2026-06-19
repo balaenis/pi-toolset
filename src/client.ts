@@ -9,6 +9,9 @@ import type {
   ServerCapabilities,
 } from 'vscode-languageserver-protocol';
 import { errorMessage, logError, logForDebugging } from './log.ts';
+import { attachStartupErrorMetadata, type StartupErrorMetadata } from './startup-errors.ts';
+
+const STARTUP_STDERR_LIMIT_BYTES = 8 * 1024;
 
 /**
  * LSP client interface.
@@ -32,7 +35,7 @@ export type LSPClient = {
     method: string,
     handler: (params: TParams) => TResult | Promise<TResult>
   ) => void;
-  stop: () => Promise<void>;
+  stop: (options?: { shutdownTimeout?: number }) => Promise<void>;
 };
 
 /**
@@ -52,6 +55,7 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
   let startFailed = false;
   let startError: Error | undefined;
   let isStopping = false; // Track intentional shutdown to avoid spurious error logging
+  let startupStderr = '';
   // Queue handlers registered before connection ready (lazy initialization support)
   const pendingHandlers: Array<{
     method: string;
@@ -66,6 +70,23 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
     if (startFailed) {
       throw startError || new Error(`LSP server ${serverName} failed to start`);
     }
+  }
+
+  function appendStartupStderr(data: Buffer): string {
+    const output = data.toString();
+    startupStderr = `${startupStderr}${output}`.slice(-STARTUP_STDERR_LIMIT_BYTES);
+    return output.trim();
+  }
+
+  function markStartupError<T extends Error>(
+    error: T,
+    phase: NonNullable<StartupErrorMetadata['phase']>
+  ): T {
+    return attachStartupErrorMetadata(error, {
+      spawnCode: getErrorCode(error),
+      startupStderr,
+      phase,
+    });
   }
 
   return {
@@ -85,6 +106,12 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
         cwd?: string;
       }
     ): Promise<void> {
+      startFailed = false;
+      startError = undefined;
+      startupStderr = '';
+      capabilities = undefined;
+      isInitialized = false;
+
       try {
         // Lazy-load vscode-jsonrpc so its transport code is only evaluated when
         // a server is actually started, not at module import time.
@@ -117,7 +144,7 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
           };
           const onError = (error: Error): void => {
             cleanup();
-            reject(error);
+            reject(markStartupError(error, 'start'));
           };
           const cleanup = (): void => {
             spawnedProcess.removeListener('spawn', onSpawn);
@@ -127,10 +154,10 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
           spawnedProcess.once('error', onError);
         });
 
-        // Capture stderr for server diagnostics and errors
+        // Capture bounded stderr for startup classification and server diagnostics
         if (childProcess.stderr) {
           childProcess.stderr.on('data', (data: Buffer) => {
-            const output = data.toString().trim();
+            const output = appendStartupStderr(data);
             if (output) {
               logForDebugging(`[LSP SERVER ${serverName}] ${output}`);
             }
@@ -140,18 +167,25 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
         // Handle process errors (after successful spawn, e.g., crash during operation)
         childProcess.on('error', (error) => {
           if (!isStopping) {
+            const startupError = markStartupError(error, 'start');
             startFailed = true;
-            startError = error;
-            logError(new Error(`LSP server ${serverName} failed to start: ${error.message}`));
+            startError = startupError;
+            logError(
+              new Error(`LSP server ${serverName} failed to start: ${startupError.message}`)
+            );
           }
         });
 
         childProcess.on('exit', (code, _signal) => {
           if (code !== 0 && code !== null && !isStopping) {
+            const wasInitialized = isInitialized;
             isInitialized = false;
-            startFailed = false;
-            startError = undefined;
-            const crashError = new Error(`LSP server ${serverName} crashed with exit code ${code}`);
+            startFailed = !wasInitialized;
+            const crashError = markStartupError(
+              new Error(`LSP server ${serverName} crashed with exit code ${code}`),
+              'exit'
+            );
+            startError = crashError;
             logError(crashError);
             onCrash?.(crashError);
             // Dispose the JSON-RPC connection so any pending requests (e.g. the
@@ -180,9 +214,12 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
         connection.onError(([error, _message, _code]) => {
           // Only log if not intentionally stopping (avoid spurious errors during shutdown)
           if (!isStopping) {
+            const startupError = markStartupError(error, 'connection');
             startFailed = true;
-            startError = error;
-            logError(new Error(`LSP server ${serverName} connection error: ${error.message}`));
+            startError = startupError;
+            logError(
+              new Error(`LSP server ${serverName} connection error: ${startupError.message}`)
+            );
             // Dispose the connection so any pending requests (e.g. initialize)
             // are rejected immediately rather than hanging indefinitely.
             connection?.dispose();
@@ -192,8 +229,15 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
         connection.onClose(() => {
           // Only treat as error if not intentionally stopping
           if (!isStopping) {
+            const wasInitialized = isInitialized;
             isInitialized = false;
-            // Don't set startFailed here - the connection may close after graceful shutdown
+            if (!wasInitialized && !startFailed) {
+              startFailed = true;
+              startError = markStartupError(
+                new Error(`LSP server ${serverName} connection closed during startup`),
+                'connection'
+              );
+            }
             logForDebugging(`LSP server ${serverName} connection closed`);
           }
         });
@@ -232,8 +276,9 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
         logForDebugging(`LSP client started for ${serverName}`);
       } catch (error) {
         const err = error as Error;
-        logError(new Error(`LSP server ${serverName} failed to start: ${err.message}`));
-        throw error;
+        const startupError = markStartupError(err, 'start');
+        logError(new Error(`LSP server ${serverName} failed to start: ${startupError.message}`));
+        throw startupError;
       }
     },
 
@@ -257,9 +302,10 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
 
         return result;
       } catch (error) {
-        const err = error as Error;
-        logError(new Error(`LSP server ${serverName} initialize failed: ${err.message}`));
-        throw error;
+        const err = (startError ?? error) as Error;
+        const startupError = markStartupError(err, 'initialize');
+        logError(new Error(`LSP server ${serverName} initialize failed: ${startupError.message}`));
+        throw startupError;
       }
     },
 
@@ -338,17 +384,34 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
       connection.onRequest(method, handler);
     },
 
-    async stop(): Promise<void> {
+    async stop(options?: { shutdownTimeout?: number }): Promise<void> {
       let shutdownError: Error | undefined;
+      const activeConnection = connection;
+      const activeChildProcess = childProcess;
+      const ownsCurrentResources =
+        connection === activeConnection && childProcess === activeChildProcess;
+      let shutdownPromise: Promise<void> | undefined;
 
       // Mark as stopping to prevent error handlers from logging spurious errors
       isStopping = true;
 
       try {
-        if (connection) {
+        if (activeConnection) {
           // Try to send shutdown request and exit notification
-          await connection.sendRequest('shutdown', {});
-          await connection.sendNotification('exit', {});
+          shutdownPromise = (async () => {
+            await activeConnection.sendRequest('shutdown', {});
+            await activeConnection.sendNotification('exit', {});
+          })();
+
+          if (options?.shutdownTimeout !== undefined) {
+            await withTimeout(
+              shutdownPromise,
+              options.shutdownTimeout,
+              `LSP server ${serverName} shutdown timed out after ${options.shutdownTimeout}ms`
+            );
+          } else {
+            await shutdownPromise;
+          }
         }
       } catch (error) {
         const err = error as Error;
@@ -356,41 +419,51 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
         shutdownError = err;
         // Continue to cleanup despite shutdown failure
       } finally {
-        // Always cleanup resources, even if shutdown/exit failed
-        if (connection) {
+        // Avoid unhandled rejections if the timeout wins before shutdown settles.
+        shutdownPromise?.catch(() => {});
+
+        // Always cleanup the resources that belonged to this stop call, even if
+        // shutdown/exit failed or a later start replaced the client fields.
+        if (activeConnection) {
           try {
-            connection.dispose();
+            activeConnection.dispose();
           } catch (error) {
             // Log but don't throw - disposal errors are less critical
             logForDebugging(`Connection disposal failed for ${serverName}: ${errorMessage(error)}`);
           }
-          connection = undefined;
+          if (connection === activeConnection) {
+            connection = undefined;
+          }
         }
 
-        if (childProcess) {
+        if (activeChildProcess) {
           // Remove event listeners to prevent memory leaks
-          childProcess.removeAllListeners('error');
-          childProcess.removeAllListeners('exit');
-          if (childProcess.stdin) {
-            childProcess.stdin.removeAllListeners('error');
+          activeChildProcess.removeAllListeners('error');
+          activeChildProcess.removeAllListeners('exit');
+          if (activeChildProcess.stdin) {
+            activeChildProcess.stdin.removeAllListeners('error');
           }
-          if (childProcess.stderr) {
-            childProcess.stderr.removeAllListeners('data');
+          if (activeChildProcess.stderr) {
+            activeChildProcess.stderr.removeAllListeners('data');
           }
 
           try {
-            childProcess.kill();
+            activeChildProcess.kill();
           } catch (error) {
             // Process might already be dead, which is fine
             logForDebugging(
               `Process kill failed for ${serverName} (may already be dead): ${errorMessage(error)}`
             );
           }
-          childProcess = undefined;
+          if (childProcess === activeChildProcess) {
+            childProcess = undefined;
+          }
         }
 
-        isInitialized = false;
-        capabilities = undefined;
+        if (ownsCurrentResources) {
+          isInitialized = false;
+          capabilities = undefined;
+        }
         isStopping = false; // Reset for potential restart
         // Don't reset startFailed - preserve error state for diagnostics
         // startFailed and startError remain as-is
@@ -408,4 +481,17 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
       }
     },
   };
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout((rej, msg) => rej(new Error(msg)), ms, reject, message);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer!));
 }

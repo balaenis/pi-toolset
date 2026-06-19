@@ -13,17 +13,12 @@ Implement LSP support for Pi. Before acting, identify the deliverable, constrain
 ## Constraints
 
 - Keep comments to a minimum — let the code speak for itself
-- Match surrounding style and formatting
-- Make the smallest reasonable change that solves the task
-- Do not introduce mock modes or fake data paths
-- Every code file must start with a 2-line ABOUTME comment describing what it does (each line starts with "ABOUTME: ")
-- Reference `Claude Code` source at `@/home/julian/workspace/source/claude-code-2.1.88/package-src/src` when useful
 
 ### Development
 
 Use `mise` to manage the development environment; `bun` as the package manager; `bunx` for one-off tools.
 
-- `mise run typercheck` — TypeScript type check
+- `mise run typecheck` — TypeScript type check
 - `mise run build` — Build the module
 - `mise run test` — Run tests
 - `hk check` — eslint + prettier
@@ -43,3 +38,7 @@ After a change, run the most relevant check: targeted tests for changed behavior
 
 - Ask before: replacing an entire implementation, destructive or irreversible actions, changing secrets, or acting outside the request scope
 - Stop and report when a change requires more context than available
+
+## References
+
+- Claude Code source at `@/home/julian/workspace/source/claude-code-2.1.88/package-src/src`

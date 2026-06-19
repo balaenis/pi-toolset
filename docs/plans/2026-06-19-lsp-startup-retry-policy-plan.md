@@ -13,7 +13,7 @@
 
 **Architecture:** Add a small startup-failure classifier and retry policy to the single-server state machine in `src/instance.ts`. `src/client.ts` will preserve enough structured startup failure evidence, especially spawn error codes and bounded stderr, so `instance.ts` can decide whether the next `ensureServerStarted()` should retry or immediately return the stored permanent failure. `manager.ts`, `index.ts`, and `tools.ts` keep their current lazy-start flow, but their user-facing messages should surface the non-retryable reason.
 
-**Tech Stack:** TypeScript, Node child process spawn, `vscode-jsonrpc`, Vitest, existing `mise` tasks (`mise run typercheck`, `mise run test`, `mise run build`, `hk check`).
+**Tech Stack:** TypeScript, Node child process spawn, `vscode-jsonrpc`, Vitest, existing `mise` tasks (`mise run typecheck`, `mise run test`, `mise run build`, `hk check`).
 
 ---
 
@@ -111,7 +111,7 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 **Validation:**
 
-- Run: `mise run typercheck`
+- Run: `mise run typecheck`
 - Expected: no TypeScript errors from the new metadata helper.
 
 ### Task 3: Enforce retry policy in the server instance state machine
@@ -164,7 +164,7 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 **Validation:**
 
-- Run: `mise run typercheck`
+- Run: `mise run typecheck`
 - Expected: user-facing message code compiles and no call sites lose required arguments.
 
 ### Task 5: Document configuration and recovery behavior
@@ -192,7 +192,7 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 - Run: `bun test tests/startup-errors.test.ts tests/instance-startup-retry.test.ts`
 - Expected: classifier and retry policy tests pass.
-- Run: `mise run typercheck`
+- Run: `mise run typecheck`
 - Expected: TypeScript check passes.
 - Run: `mise run build`
 - Expected: package builds successfully.

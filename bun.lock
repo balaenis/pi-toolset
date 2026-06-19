@@ -27,8 +27,8 @@
         "vscode-languageserver-protocol": "^3.17.5",
       },
       "peerDependencies": {
-        "@earendil-works/pi-ai": "^0.79.7",
-        "@earendil-works/pi-coding-agent": "^0.79.7",
+        "@earendil-works/pi-ai": "*",
+        "@earendil-works/pi-coding-agent": "*",
         "typebox": "*",
       },
     },

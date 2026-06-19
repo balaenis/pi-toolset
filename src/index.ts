@@ -92,6 +92,11 @@ export default function (pi: ExtensionAPI): void {
         await manager.syncFileChange(absolutePath);
       }
     } catch (error) {
+      const manager = getManager();
+      const server = manager?.getServerForFile(absolutePath);
+      if (server?.state === 'error') {
+        maybeNotifyMissingServer(absolutePath, ctx, 'edit', server.name, server.lastError?.message);
+      }
       // Logged inside the manager; swallow here to keep the hook non-disruptive.
       void error;
     }

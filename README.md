@@ -72,14 +72,34 @@ Both files use JSONC syntax (comments are allowed).
 | `initializationOptions` | no       | `{}`        | Passed to the server during `initialize`.                                                                              |
 | `settings`              | no       | —           | Accepted for schema compatibility; **not delivered to the server** yet. See [optimization note](#future-optimization). |
 | `workspaceFolder`       | no       | session cwd | Overrides the workspace root sent to the server.                                                                       |
-| `startupTimeout`        | no       | no timeout  | Max ms to wait for server startup.                                                                                     |
-| `shutdownTimeout`       | no       | no timeout  | Max ms to wait for graceful shutdown before killing the process.                                                       |
+| `startupTimeout`        | no       | `30000`     | Max ms to wait for server initialization before treating startup as retryable failure.                                 |
+| `shutdownTimeout`       | no       | `10000`     | Max ms to wait for graceful shutdown before killing the process.                                                       |
 | `restartOnCrash`        | no       | `false`     | Auto-restart the server when it crashes unexpectedly. Bounded by `maxRestarts`.                                        |
-| `maxRestarts`           | no       | `3`         | Max restart attempts (both manual and crash-recovery).                                                                 |
+| `maxRestarts`           | no       | `3`         | Max manual restart, crash-recovery, and retryable startup attempts.                                                    |
 | `transport`             | no       | `"stdio"`   | Accepted for compatibility; only `"stdio"` is implemented.                                                             |
 
 ¹ Either `extensionToLanguage` or `extensions` must be present; `extensionToLanguage` takes precedence.
 ² When `extensions` is used without `extensionToLanguage`, the extension guesses `languageId` from a built-in table (covers TS/JS, Python, Rust, Go, Java, C/C++, C#, and ~20 others). Unknown extensions fall back to `"plaintext"`.
+
+### Startup failures and retries
+
+Startup failures are split into permanent failures and retryable failures.
+
+Permanent failures are not retried automatically because they require a configuration or environment fix:
+
+- missing executable or invalid command/workspace path (`ENOENT`, `ENOTDIR`, `EISDIR`, `ENAMETOOLONG`)
+- executable permission or format errors (`EACCES`, `EPERM`, `ENOEXEC`)
+- clearly invalid CLI arguments, such as unknown options or missing option values
+- clearly invalid initialization/configuration text from the server, such as invalid `initializationOptions`, invalid configuration, unsupported transport, or failed config parsing
+
+Retryable failures are tried again on the next LSP use until the startup attempt limit is reached:
+
+- initialization timeout (`startupTimeout`, default `30000` ms)
+- early JSON-RPC connection close without a permanent error pattern
+- early non-zero process exit without a permanent stderr pattern
+- unknown initialization errors
+
+`maxRestarts` also caps retryable startup attempts. With the default `maxRestarts: 3`, Pi will make at most three startup attempts for an unknown/retryable failure, then leave the server blocked with a retry-limit message. Fixing a permanent startup failure currently requires correcting the config or `PATH` and reloading/restarting the Pi session; this version does not watch config changes or expose a reset command.
 
 ### Zero-config autodetection
 

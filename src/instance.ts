@@ -4,8 +4,9 @@
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { InitializeParams } from 'vscode-languageserver-protocol';
-import { createLSPClient } from './client.ts';
+import { createLSPClient, type LSPClient } from './client.ts';
 import { errorMessage, logError, logForDebugging, sleep } from './log.ts';
+import { classifyStartupFailure, type StartupFailureClassification } from './startup-errors.ts';
 import type { LspServerState, ScopedLspServerConfig } from './types.ts';
 
 /**
@@ -25,6 +26,8 @@ const MAX_RETRIES_FOR_TRANSIENT_ERRORS = 3;
  * Actual delays: 500ms, 1000ms, 2000ms
  */
 const RETRY_BASE_DELAY_MS = 500;
+
+export type LSPClientFactory = (name: string, onCrash?: (error: Error) => void) => LSPClient;
 
 /**
  * LSP server instance interface returned by createLSPServerInstance.
@@ -79,7 +82,8 @@ export type LSPServerInstance = {
  */
 export function createLSPServerInstance(
   name: string,
-  config: ScopedLspServerConfig
+  config: ScopedLspServerConfig,
+  clientFactory: LSPClientFactory = createLSPClient
 ): LSPServerInstance {
   let state: LspServerState = 'stopped';
   let startTime: Date | undefined;
@@ -91,10 +95,13 @@ export function createLSPServerInstance(
   // In-flight start() promise so concurrent callers await the same startup
   // instead of racing a not-yet-healthy server.
   let startingPromise: Promise<void> | undefined;
+  let startupFailureClassification: StartupFailureClassification | undefined;
+  let startupAttemptCount = 0;
+  let startupRetryExhausted = false;
   // Propagate crash state so ensureServerStarted can restart on next use.
   // Without this, state stays 'running' after crash and the server is never
   // restarted (zombie state).
-  const client = createLSPClient(name, (error) => {
+  const client = clientFactory(name, (error) => {
     state = 'error';
     lastError = error;
     crashRecoveryCount++;
@@ -131,7 +138,7 @@ export function createLSPServerInstance(
    */
   async function start(): Promise<void> {
     if (state === 'running') return;
-    if (state === 'starting' && startingPromise) {
+    if (startingPromise) {
       await startingPromise;
       return;
     }
@@ -144,9 +151,30 @@ export function createLSPServerInstance(
   }
 
   async function doStart(): Promise<void> {
+    const maxRestarts = config.maxRestarts ?? 3;
+
+    if (startupFailureClassification && !startupFailureClassification.retryable) {
+      const error = lastError ?? new Error(`LSP server '${name}' startup failure is not retryable`);
+      logError(error);
+      throw error;
+    }
+
+    if (
+      startupRetryExhausted ||
+      (startupFailureClassification?.retryable && startupAttemptCount >= maxRestarts)
+    ) {
+      startupRetryExhausted = true;
+      const reason = startupFailureClassification ? `: ${startupFailureClassification.reason}` : '';
+      const error = new Error(
+        `LSP server '${name}' startup retry limit exceeded after ${startupAttemptCount} attempt(s)${reason}`
+      );
+      lastError = error;
+      logError(error);
+      throw error;
+    }
+
     // Cap crash-recovery attempts so a persistently crashing server doesn't
     // spawn unbounded child processes on every incoming request.
-    const maxRestarts = config.maxRestarts ?? 3;
     if (state === 'error' && crashRecoveryCount > maxRestarts) {
       const error = new Error(
         `LSP server '${name}' exceeded max crash recovery attempts (${maxRestarts})`
@@ -159,6 +187,7 @@ export function createLSPServerInstance(
     let initPromise: Promise<unknown> | undefined;
     try {
       state = 'starting';
+      startupAttemptCount++;
       logForDebugging(`Starting LSP server instance: ${name}`);
 
       // Start the client
@@ -252,16 +281,32 @@ export function createLSPServerInstance(
 
       state = 'running';
       startTime = new Date();
+      lastError = undefined;
+      startupFailureClassification = undefined;
+      startupAttemptCount = 0;
+      startupRetryExhausted = false;
       logForDebugging(`LSP server instance started: ${name}`);
     } catch (error) {
-      // Clean up the spawned child process on timeout/error
-      client.stop().catch(() => {});
-      // Prevent unhandled rejection from abandoned initialize promise
+      // Prevent unhandled rejection from abandoned initialize promise.
       initPromise?.catch(() => {});
       state = 'error';
-      lastError = error as Error;
-      logError(error);
-      throw error;
+      const classification = classifyStartupFailure(error);
+      startupFailureClassification = classification;
+      startupRetryExhausted = classification.retryable && startupAttemptCount >= maxRestarts;
+      lastError = new Error(
+        `LSP server '${name}' failed to start: ${errorMessage(error)} (${classification.reason})`
+      );
+      logError(lastError);
+
+      try {
+        await client.stop({ shutdownTimeout: config.shutdownTimeout ?? 10000 });
+      } catch (stopError) {
+        logForDebugging(
+          `LSP server '${name}' cleanup after failed startup completed with: ${errorMessage(stopError)}`
+        );
+      }
+
+      throw lastError;
     }
   }
 
@@ -282,14 +327,11 @@ export function createLSPServerInstance(
     try {
       const timeout = config.shutdownTimeout ?? 10000;
       try {
-        await withTimeout(
-          client.stop(),
-          timeout,
-          `LSP server '${name}' graceful shutdown timed out after ${timeout}ms`
-        );
+        await client.stop({ shutdownTimeout: timeout });
       } catch (error) {
-        // Timeout or shutdown error: client.stop()'s finally already killed
-        // the process. Don't surface shutdown hiccups as errors.
+        // Timeout or shutdown error: client.stop() already disposed the
+        // connection and killed the process. Don't surface shutdown hiccups as
+        // errors.
         logForDebugging(`LSP server '${name}' stop completed with: ${(error as Error).message}`);
       }
       state = 'stopped';

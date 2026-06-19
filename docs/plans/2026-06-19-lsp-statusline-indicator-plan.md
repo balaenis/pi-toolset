@@ -2,7 +2,7 @@
 
 **Goal:** Show a passive, non-interactive LSP health indicator in Pi's statusLine that reflects the current snapshot of lazily-started LSP servers — how many are running, starting, or failed — and updates in real time as server states change (including async crash-restart and backoff-retry transitions).
 
-**Inputs:** User request on 2026-06-19 (UX discussion). Display format like `LSP 2`. Constraints from the user: non-interactive (pure status display); servers are passively/lazily started (only discovered after editing a matching file triggers startup); a failed server *will* be retried, so its state can change over time — the indicator must therefore be a live snapshot, not a tombstone. Repository evidence from `src/types.ts`, `src/instance.ts`, `src/manager.ts`, `src/index.ts`.
+**Inputs:** User request on 2026-06-19 (UX discussion). Display format like `LSP 2`. Constraints from the user: non-interactive (pure status display); servers are passively/lazily started (only discovered after editing a matching file triggers startup); a failed server _will_ be retried, so its state can change over time — the indicator must therefore be a live snapshot, not a tombstone. Repository evidence from `src/types.ts`, `src/instance.ts`, `src/manager.ts`, `src/index.ts`.
 
 **Assumptions:**
 
@@ -14,18 +14,18 @@
 
 **Architecture:** The single-server state machine in `src/instance.ts` currently mutates a closure-local `let state` at 7 sites with no notification when state changes. The core change is to route every state mutation through a single `setState()` setter that fires an `onStateChange` callback. `src/manager.ts` aggregates per-instance state-change signals into a single manager-level subscription (`onServersChanged`). `src/index.ts` (the Pi extension entry) subscribes to that signal and renders the aggregated counts via `ctx.ui.setStatus('lsp', …)`. This is genuinely event-driven and requires no polling — critically, it captures the async `restartOnCrash` (`instance.ts:97`) and `-32801` backoff-retry transitions that do NOT occur on any file-edit/tool-result event path, so a failed→retry→running recovery updates the statusLine without waiting for the next user edit.
 
-**Tech Stack:** TypeScript, Pi extension API (`ctx.ui.setStatus`), Vitest, existing `mise` tasks (`mise run typercheck`, `mise run test`, `mise run build`, `hk check`).
+**Tech Stack:** TypeScript, Pi extension API (`ctx.ui.setStatus`), Vitest, existing `mise` tasks (`mise run typecheck`, `mise run test`, `mise run build`, `hk check`).
 
 ---
 
 ## State → Display Mapping
 
-| Display bucket | Renders as | `LspServerState` (`src/types.ts:6`) | Color |
-|---|---|---|---|
-| ready (primary count) | `LSP N` | `running` | default |
-| starting (in-flight) | `…N` suffix | `starting` | dim |
-| failed | `✗N` suffix | `error` | red |
-| (not counted) | — | `stopped`, `stopping` | — |
+| Display bucket        | Renders as  | `LspServerState` (`src/types.ts:6`) | Color   |
+| --------------------- | ----------- | ----------------------------------- | ------- |
+| ready (primary count) | `LSP N`     | `running`                           | default |
+| starting (in-flight)  | `…N` suffix | `starting`                          | dim     |
+| failed                | `✗N` suffix | `error`                             | red     |
+| (not counted)         | —           | `stopped`, `stopping`               | —       |
 
 ### Render rules
 
@@ -36,7 +36,7 @@ LSP 2 ✗1       at least one error                   red ✗, disappears when r
 (hidden)       zero known servers                   setStatus('lsp', undefined)
 ```
 
-The failed count is a *live snapshot*: because a failed server is retried (crash auto-restart or `error → starting → running`), `✗1` must disappear once recovery succeeds. This is why event-driven refresh (not edit-triggered refresh) is required.
+The failed count is a _live snapshot_: because a failed server is retried (crash auto-restart or `error → starting → running`), `✗1` must disappear once recovery succeeds. This is why event-driven refresh (not edit-triggered refresh) is required.
 
 ---
 
@@ -91,7 +91,7 @@ pi.on('session_start', (_event, ctx) => {
 
 ## Validation
 
-- `mise run typercheck` — types compile.
+- `mise run typecheck` — types compile.
 - `mise run test` — new formatter and state-change tests pass, existing suite green.
 - `hk check` — eslint + prettier clean.
 - Manual: edit a file matching a configured server → indicator appears as `LSP 1` (or `…1` then `LSP 1`); edit a file whose server is misconfigured → `✗1` in red; confirm a recovering server clears `✗` without further edits.
