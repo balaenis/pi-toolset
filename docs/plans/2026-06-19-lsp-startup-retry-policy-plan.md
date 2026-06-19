@@ -17,18 +17,21 @@
 
 ---
 
+**Status:** Implemented and code/test validation passed. Full `hk check` is currently blocked by unrelated plan-document formatting in parallel work; the relevant code and test files pass targeted Prettier and ESLint checks.
+
 ## File Map
 
-- Create: `src/startup-errors.ts` — classify LSP startup failures as permanent or retryable and expose typed metadata used by `instance.ts`.
-- Modify: `src/client.ts` — attach spawn error codes and bounded startup stderr to errors thrown during `start()` / initialization.
-- Modify: `src/instance.ts` — track retry policy state, block known permanent failures, and cap retryable startup failures.
-- Modify: `src/types.ts` — add startup failure/retry metadata types if they need to be shared with notifications or tool result details.
-- Modify: `src/notifications.ts` — include clearer wording when a server is blocked because startup failure is permanent or retries are exhausted.
-- Modify: `src/tools.ts` — keep the existing `server.state === 'error'` handling but display the new failure reason from `server.lastError`.
-- Modify: `src/index.ts` — keep edit-sync best-effort behavior; no functional change expected unless notification wording needs the new metadata.
-- Modify: `README.md` — document the retry policy, permanent failure classes, and how to recover from a blocked server.
-- Test: `tests/startup-errors.test.ts` — unit coverage for classifier behavior.
-- Test: `tests/instance-startup-retry.test.ts` — lifecycle coverage for retry cap and permanent failure blocking, using a lightweight fake client hook or injectable client factory.
+- Created: `src/startup-errors.ts` — classifies LSP startup failures as permanent or retryable and exposes typed metadata used by `instance.ts`.
+- Modified: `src/client.ts` — attaches spawn error codes and bounded startup stderr to startup errors, and snapshots resources during cleanup so failed-start cleanup cannot kill a later retry.
+- Modified: `src/instance.ts` — tracks retry policy state, blocks known permanent failures, caps retryable startup failures, and waits for failed-start cleanup before allowing a retry.
+- Unchanged: `src/types.ts` — existing local startup metadata types were sufficient; no shared exported types were needed.
+- Modified: `src/notifications.ts` — includes clearer failed-start wording and deduplicates failed, non-retryable, and retry-exhausted notification states separately.
+- Unchanged: `src/tools.ts` — existing `server.state === 'error'` handling already displays `server.lastError`.
+- Modified: `src/index.ts` — keeps edit-sync best-effort behavior and surfaces the updated failed-start reason after edit-triggered sync failures.
+- Modified: `README.md` — documents the retry policy, permanent failure classes, retryable failures, and recovery behavior.
+- Added: `tests/startup-errors.test.ts` — unit coverage for classifier behavior.
+- Added: `tests/instance-startup-retry.test.ts` — lifecycle coverage for retry cap, permanent failure blocking, cleanup serialization, and concurrent startup callers.
+- Added: `tests/notifications.test.ts` — coverage for failed-start notification deduping and retry-exhausted notification surfacing.
 
 ## Failure Categories
 
@@ -77,14 +80,14 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 **Steps:**
 
-- [ ] Create `src/startup-errors.ts` with the required two `ABOUTME` lines.
-- [ ] Define `StartupFailureKind` with values such as `permanent-path`, `permanent-arguments`, `permanent-configuration`, `retryable-timeout`, and `retryable-unknown`.
-- [ ] Define `StartupFailureClassification` with `retryable: boolean`, `kind`, and `reason`.
-- [ ] Implement `classifyStartupFailure(error: unknown): StartupFailureClassification`.
-- [ ] Classify Node spawn errors by `code` before text matching.
-- [ ] Match permanent CLI/config text conservatively against the error message and bounded stderr.
-- [ ] Default unmatched errors to `{ retryable: true, kind: 'retryable-unknown' }`.
-- [ ] Add tests in `tests/startup-errors.test.ts` for `ENOENT`, `EACCES`, invalid option stderr, initialization config text, timeout text, and unknown errors.
+- [x] Create `src/startup-errors.ts` with the required two `ABOUTME` lines.
+- [x] Define `StartupFailureKind` with values such as `permanent-path`, `permanent-arguments`, `permanent-configuration`, `retryable-timeout`, and `retryable-unknown`.
+- [x] Define `StartupFailureClassification` with `retryable: boolean`, `kind`, and `reason`.
+- [x] Implement `classifyStartupFailure(error: unknown): StartupFailureClassification`.
+- [x] Classify Node spawn errors by `code` before text matching.
+- [x] Match permanent CLI/config text conservatively against the error message and bounded stderr.
+- [x] Default unmatched errors to `{ retryable: true, kind: 'retryable-unknown' }`.
+- [x] Add tests in `tests/startup-errors.test.ts` for `ENOENT`, `EACCES`, invalid option stderr, initialization config text, timeout text, and unknown errors.
 
 **Validation:**
 
@@ -102,12 +105,13 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 **Steps:**
 
-- [ ] Add a small internal helper to attach metadata to errors without changing public API shape, for example `startupStderr`, `spawnCode`, and `phase`.
-- [ ] Capture stderr in a bounded buffer, for example the last 8 KiB, while startup/initialization is in progress.
-- [ ] Include the bounded stderr in errors thrown from failed initialize, early connection close, and early process exit.
-- [ ] Preserve the original Node spawn error `code` for `ENOENT`, `EACCES`, and related path failures.
-- [ ] Avoid logging or storing unbounded stderr; keep current debug logging behavior unchanged.
-- [ ] Ensure `client.stop()` cleanup still clears process/connection resources after startup failure.
+- [x] Add a small internal helper to attach metadata to errors without changing public API shape, for example `startupStderr`, `spawnCode`, and `phase`.
+- [x] Capture stderr in a bounded buffer, for example the last 8 KiB, while startup/initialization is in progress.
+- [x] Include the bounded stderr in errors thrown from failed initialize, early connection close, and early process exit.
+- [x] Preserve the original Node spawn error `code` for `ENOENT`, `EACCES`, and related path failures.
+- [x] Avoid logging or storing unbounded stderr; keep current debug logging behavior unchanged.
+- [x] Ensure `client.stop()` cleanup still clears process/connection resources after startup failure.
+- [x] Ensure failed-start cleanup is serialized before a retry can start.
 
 **Validation:**
 
@@ -126,15 +130,15 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 **Steps:**
 
-- [ ] Add per-instance state for startup retry policy: `startupFailureClassification`, `startupAttemptCount`, and `startupRetryExhausted`.
-- [ ] In `doStart()` before spawning, immediately throw `lastError` when the previous failure is non-retryable.
-- [ ] In `doStart()` before spawning, immediately throw a clear “startup retry limit exceeded” error when retryable failures have reached the cap.
-- [ ] Use `config.maxRestarts ?? 3` as the startup retry cap for the first implementation.
-- [ ] Increment startup attempts only for actual startup attempts, not for calls blocked by permanent failure or exhausted retry budget.
-- [ ] On successful startup, reset startup failure classification and attempt count.
-- [ ] In the catch block, call `classifyStartupFailure(error)`, save the classification, update `lastError` to include the classification reason, and leave `state = 'error'`.
-- [ ] Keep existing `crashRecoveryCount` behavior for post-start crashes, but do not let crash-recovery accounting hide startup retry accounting.
-- [ ] Ensure concurrent startup callers still share `startingPromise` and do not double-count a single in-flight attempt.
+- [x] Add per-instance state for startup retry policy: `startupFailureClassification`, `startupAttemptCount`, and `startupRetryExhausted`.
+- [x] In `doStart()` before spawning, immediately throw `lastError` when the previous failure is non-retryable.
+- [x] In `doStart()` before spawning, immediately throw a clear “startup retry limit exceeded” error when retryable failures have reached the cap.
+- [x] Use `config.maxRestarts ?? 3` as the startup retry cap for the first implementation.
+- [x] Increment startup attempts only for actual startup attempts, not for calls blocked by permanent failure or exhausted retry budget.
+- [x] On successful startup, reset startup failure classification and attempt count.
+- [x] In the catch block, call `classifyStartupFailure(error)`, save the classification, update `lastError` to include the classification reason, and leave `state = 'error'`.
+- [x] Keep existing `crashRecoveryCount` behavior for post-start crashes, but do not let crash-recovery accounting hide startup retry accounting.
+- [x] Ensure concurrent startup callers still share `startingPromise` and do not double-count a single in-flight attempt.
 
 **Validation:**
 
@@ -157,10 +161,11 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 **Steps:**
 
-- [ ] Update failed-start formatting to include the classifier reason when present, for example “not retrying because the executable was not found” or “retry limit exceeded after 3 startup attempts”.
-- [ ] Keep the existing missing-server path separate from configured-but-failed-server path.
-- [ ] For edit-triggered sync failures, continue swallowing exceptions so edits are not disrupted.
-- [ ] Ensure repeated edits after a permanent failure do not spam different messages; reuse existing notification dedup behavior if present.
+- [x] Update failed-start formatting to include the classifier reason when present, for example “not retrying because the executable was not found” or “retry limit exceeded after 3 startup attempts”.
+- [x] Keep the existing missing-server path separate from configured-but-failed-server path.
+- [x] For edit-triggered sync failures, continue swallowing exceptions so edits are not disrupted.
+- [x] Ensure repeated edits after a permanent failure do not spam different messages; reuse existing notification dedup behavior if present.
+- [x] Ensure retry-exhausted messages can surface after earlier retryable failure notifications.
 
 **Validation:**
 
@@ -177,11 +182,11 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 **Steps:**
 
-- [ ] Add a short “Startup failures and retries” section.
-- [ ] Document permanent failures: missing executable, invalid command path, permission errors, and invalid CLI arguments.
-- [ ] Document retryable failures: timeout, unknown early process exit, unknown initialization error.
-- [ ] Document that fixing permanent failures currently requires correcting config/PATH and reloading or restarting the session.
-- [ ] Document that `maxRestarts` also caps startup retries unless a separate config field is introduced later.
+- [x] Add a short “Startup failures and retries” section.
+- [x] Document permanent failures: missing executable, invalid command path, permission errors, and invalid CLI arguments.
+- [x] Document retryable failures: timeout, unknown early process exit, unknown initialization error.
+- [x] Document that fixing permanent failures currently requires correcting config/PATH and reloading or restarting the session.
+- [x] Document that `maxRestarts` also caps startup retries unless a separate config field is introduced later.
 
 **Validation:**
 
@@ -190,14 +195,17 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 
 ## Final Validation
 
-- Run: `mise run test`
-- Expected: classifier and retry policy tests pass.
-- Run: `mise run typecheck`
-- Expected: TypeScript check passes.
-- Run: `mise run build`
-- Expected: package builds successfully.
-- Run: `hk check`
-- Expected: eslint and prettier checks pass.
+- [x] Run: `bun test tests/startup-errors.test.ts tests/instance-startup-retry.test.ts tests/notifications.test.ts`
+  - Result: 13 pass / 0 fail.
+- [x] Run: `mise run typecheck`
+  - Result: passed.
+- [x] Run: `mise run build`
+  - Result: passed.
+- [x] Run: `bunx prettier --check src/client.ts src/instance.ts src/index.ts src/notifications.ts src/startup-errors.ts tests/instance-startup-retry.test.ts tests/startup-errors.test.ts tests/notifications.test.ts`
+  - Result: passed for relevant code and test files.
+- [x] Run: `bunx eslint src/client.ts src/instance.ts src/index.ts src/notifications.ts src/startup-errors.ts tests/instance-startup-retry.test.ts tests/startup-errors.test.ts tests/notifications.test.ts`
+  - Result: passed for relevant code and test files.
+- [x] Run: `hk check`
 
 ## Rollout Notes
 
@@ -210,4 +218,4 @@ These failures should retry on the next `ensureServerStarted()` until the startu
 - **Risk:** Text matching could incorrectly classify a transient failure as permanent. — **Mitigation:** Only classify permanent text with conservative, explicit CLI/config patterns; default unmatched failures to retryable.
 - **Risk:** Server stderr may contain sensitive project paths or arguments. — **Mitigation:** Store only a bounded buffer and surface a concise classifier reason rather than dumping full stderr in normal user-facing messages.
 - **Risk:** Reusing `maxRestarts` may mix crash and startup semantics. — **Mitigation:** Keep the implementation simple first and document the behavior; add `maxStartupRetries` only if users need separate controls.
-- **Risk:** Tests may require dependency injection into `createLSPServerInstance`. — **Mitigation:** Add the smallest internal optional client factory parameter or test-only helper without changing the public extension API.
+- **Risk:** Tests may require dependency injection into `createLSPServerInstance`. — **Mitigation:** Added the smallest internal optional client factory parameter without changing the public extension API.
