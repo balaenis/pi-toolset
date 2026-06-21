@@ -2,6 +2,7 @@
   "name": "@balaenis/pi-lsp",
   "version": "0.0.1",
   "description": "pi lsp support",
+  "license": "Apache-2.0",
   "author": {
     "name": "balaenis",
     "email": "pzyyll@gmail.com"
