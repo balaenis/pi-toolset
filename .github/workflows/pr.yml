@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  Check:
+  check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,9 +28,19 @@ jobs:
           cache: true
           experimental: true
 
-      - name: Run Checks
+      - name: Setup Project
+        run: mise run setup
+
+      - name: Lint and format check (repo-wide)
+        run: mise run check
+
+      - name: Typecheck, test, and build each package
         run: |
-          mise run setup
-          mise run lint
-          mise run test
-          mise run build
+          for pkg in packages/*; do
+            [ -f "$pkg/package.json" ] || continue
+            echo "::group::$pkg"
+            mise run typecheck --package "$pkg"
+            mise run test --package "$pkg"
+            mise run build --package "$pkg"
+            echo "::endgroup::"
+          done

@@ -1,29 +1,43 @@
 #!/usr/bin/env bash
-#MISE description="Publish to npm registry"
-#MISE depends=["setup", "build"]
+#MISE description="Publish a package to npm registry"
+#MISE depends=["setup"]
+#USAGE flag "-p --package <path>" "Package dir, e.g. packages/pi-lsp" default=""
 #USAGE flag "-t --tag <tag>" "Tag to publish with" default="latest"
 #USAGE flag "-d --dry-run" "Perform a dry run of the publish process"
 #USAGE flag "--otp <otp>" "One-time password for npm two-factor authentication" default=""
 
 set -e
+PKG="${usage_package}"
+TAG="${usage_tag}"
+COMPONENT=$(basename "$PKG")
+[ -d "$PKG" ] || { echo "no such package: ${usage_package:-<missing>}" >&2; exit 1; }
 
-echo "Publishing to npm"
-echo " > with tag: ${usage_tag}..."
+echo "Publishing $PKG to npm"
+echo " > with tag: ${TAG}..."
 echo " > npm version: $(npm --version)"
 
-# For 'next' tag, bump version to a prerelease to avoid conflicts
-if [ "${usage_tag}" = "next" ]; then
-	# Count commits since last tag for a semantic build number
-	LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+# Ensure the package is built before publishing.
+mise run build --package "$PKG"
+
+cd "$PKG"
+
+# For 'next' tag, derive a prerelease version from the last component tag.
+# Component-scoped tags (pi-lsp-v0.0.1) come from include-component-in-tag: true.
+if [ "${TAG}" = "next" ]; then
+	LAST_TAG=$(git describe --tags --abbrev=0 --match "${COMPONENT}-v*" 2>/dev/null || echo "")
 	if [ -n "$LAST_TAG" ]; then
-		BUILD_NUMBER=$(git rev-list "${LAST_TAG}..HEAD" --count)
-		echo " > last tag: ${LAST_TAG}"
-		echo " > commits since last tag: ${BUILD_NUMBER}"
+		BUILD_NUMBER=$(git rev-list "${LAST_TAG}..HEAD" --count -- .)
+		echo " > last component tag: ${LAST_TAG}"
+		echo " > commits since: ${BUILD_NUMBER}"
 	else
-		BUILD_NUMBER=$(git rev-list HEAD --count)
-		echo " > no previous tag found"
-		echo " > total commits: ${BUILD_NUMBER}"
+		BUILD_NUMBER=$(git rev-list HEAD --count -- .)
+		echo " > no component tag found; total commits to ${PKG}: ${BUILD_NUMBER}"
 	fi
+	if [ "$BUILD_NUMBER" -eq 0 ]; then
+		echo " > no commits to ${PKG} since ${LAST_TAG}; skipping next"
+		exit 0
+	fi
+
 	CURRENT_VERSION=$(jq -r '.version' package.json)
 	PRERELEASE_VERSION="$(semver get release "$CURRENT_VERSION")-next.${BUILD_NUMBER}"
 	echo " > bumping version: ${CURRENT_VERSION} -> ${PRERELEASE_VERSION}"
@@ -40,22 +54,20 @@ if [ -n "${usage_otp}" ]; then
 	echo " > using provided OTP for 2FA"
 fi
 
-# if not usage_dry_run and is in github action, add provenance flag to args.
+# Add provenance in CI (trusted publishing via OIDC).
 if [ -n "${GITHUB_ACTIONS}" ]; then
 	args+=("--provenance")
 	echo " > adding provenance flag for CI publish"
 fi
 
-# Publish directly from source (allows provenance generation in CI)
 if [ "${usage_dry_run}" != "true" ]; then
 	npm publish \
 		--access public \
-		--tag "${usage_tag}" \
+		--tag "${TAG}" \
 		"${args[@]}"
 
 	echo "Publish process completed."
 else
 	echo "Dry run mode - skipping actual publish"
-	echo "Would have run:"
-	echo "npm publish --access public --tag ${usage_tag} ${args[*]}"
+	echo "Would have run: npm publish --access public --tag ${TAG} ${args[*]}"
 fi

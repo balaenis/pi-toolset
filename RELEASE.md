@@ -1,217 +1,148 @@
 # Release Process
 
-This project uses Release Please and Npm Trusted Publishing for automated releases.
+This is a monorepo (`pi-toolset`) of independently versioned Pi extension packages. Each package under `packages/` is released on its own version, changelog, git tag, and npm publish cadence using [release-please](https://github.com/googleapis/release-please) **manifest mode** + [Npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC).
 
-It follows two release channels:
+There are two release channels per package:
 
-- **Pre-release**: Normal PRs merged to main create `x.x.x-next.J` versions published to the `next` npm dist-tag for testing and feedback.
-- **Stable Releases**: Release PRs merged to main create computed version and publish to the `latest` npm dist-tag.
+- **Stable (`latest`):** merging a release-please release PR publishes a stable version to the `latest` npm dist-tag.
+- **Pre-release (`next`):** opening/updating a release-please release PR publishes a `x.x.x-next.N` snapshot to the `next` npm dist-tag for testing.
 
-You can also trigger manual releases in the follow ways:
+You can also trigger a manual release from the GitHub Actions tab (see [Manual Releases](#manual-releases)).
 
-- Push a tag in the format `v{semver}` (e.g. `v1.2.3`)
-- Run the `publish.yml` workflow manually from the GitHub Actions tab and supply a channel 'latest' or 'next'.
+## Repository Layout
 
-## First Release
+```
+release-please-config.json        # manifest-mode config: one entry per package
+.release-please-manifest.json     # per-package current version tracker
+packages/<name>/package.json      # each package owns its version
+```
 
-Before automated releases will work, you need to perform the first release manually.
+Only list packages that exist in `release-please-config.json` (release-please errors on a configured path with no `package.json`).
 
-Why:
+## Conventional Commits
 
-- This uses [Npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers).
-- The first release creates the npm package on npmjs.com.
-- This then allows you to setup trusted publishing with GitHub Actions for future releases.
-
-### Steps
-
-1. make sure the `package.json` is correct:
-
-- is the version `0.0.1` ?
-- is the pkg name correct? Did you forget to set the scope if needed?
-- do you have the right keywords?
-- do you have the right repository field?
-- do you have the right author field?
-
-2. run `npm login` to authenticate with npm.
-
-3. run `mise build` to build the module.
-
-4. run `mise publish --otp {your-2fa-code}` to publish the first version.
-
-5. Go to your npm package settings on npmjs.com and add a trusted publisher for GitHub Actions with:
-   - **Organization or user**: Your GitHub username/org
-   - **Repository**: Your repository name
-   - **Workflow filename**: `publish.yml` (the release workflow filename)
-
-6. [Restrict token access](https://docs.npmjs.com/trusted-publishers#recommended-restrict-token-access-when-using-trusted-publishers) for maximum security.
-
-## Release Workflow
-
-### Conventional Commits
-
-We follow [Conventional Commits](https://www.conventionalcommits.org/) specification:
+We follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 - `fix:` patches
 - `feat:` minor features
 - `feat!:` or `fix!:` breaking changes
 
+release-please attributes a commit to a package by the path it touches. A commit touching `packages/pi-lsp/**` bumps only `pi-lsp`. Commits touching multiple packages bump all of them in one consolidated release PR. Root-only commits (e.g. `chore:` on `mise.toml`) bump nothing unless a package path is also touched.
+
 ### Pre-1.0 Versioning
 
-While version is `0.x.x`, breaking changes bump **minor** version.
+While a package version is `0.x.x`, breaking changes bump **minor** (`bump-minor-pre-major: true`).
 
-### Release Process
+## Tags
 
-1. Push commits to `main` branch
-2. Release Please will:
-   - Analyze commits
-   - Determine version bump
-   - Update `package.json`
-   - Update `CHANGELOG.md`
-   - Create a release PR
+Tags are component-scoped (`include-component-in-tag: true`): `pi-lsp-v0.1.0`, `other-package-v0.2.0`. This prevents collisions between packages.
 
-3. Review and merge the Release Please PR
+## First Release (per package)
 
-### Commit Message Examples
+Before automated releases work for a package, perform its first release manually. Repeat for each package.
 
-- `fix: resolve task tracking issue`
-- `feat: add global task support`
-- `feat!: change task management API`
-- `docs: improve README`
-- `chore: update dependencies`
+Why:
+
+- This uses [Npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers).
+- The first release creates the npm package on npmjs.com.
+- That then allows trusted publishing with GitHub Actions for future releases.
+
+### Steps
+
+1. Confirm the package's `package.json` is correct:
+   - `version` is `0.0.1`
+   - package name (with scope) is correct
+   - `repository.url` points to `https://github.com/balaenis/pi-toolset.git`
+   - `files`, `exports`, and `pi.extensions` are correct
+
+2. Run `npm login` to authenticate with npm.
+
+3. Build and publish the first version from the repository root:
+
+   ```sh
+   mise run build --package packages/pi-lsp
+   mise run publish --package packages/pi-lsp --otp <your-2fa-code>
+   ```
+
+4. Push a **bootstrap component tag** so the `next` self-skip logic has a baseline (the tag name must match `include-component-in-tag: true`):
+
+   ```sh
+   git tag pi-lsp-v0.0.1
+   git push origin pi-lsp-v0.0.1
+   ```
+
+5. On npmjs.com, add a trusted publisher for the package:
+   - **Organization or user:** `balaenis`
+   - **Repository:** `pi-toolset`
+   - **Workflow filename:** `publish.yml`
+   - **Allowed actions:** select at least `npm publish`
+
+6. [Restrict token access](https://docs.npmjs.com/trusted-publishers#recommended-restrict-token-access-when-using-trusted-publishers) for maximum security.
+
+## Release Workflow
+
+### Automated process
+
+1. Push commits to `main`.
+2. release-please (`release.yml`) analyzes commits per package and opens/updates a single consolidated release PR with version bumps, `CHANGELOG.md` updates, and `package.json`/`src/version.ts` bumps for each changed package.
+   - Opening/updating the release PR dispatches a `next` publish for every workspace package (packages with no new commits since their last component tag self-skip).
+3. Review and merge the release PR.
+   - Merging dispatches a `latest` publish for each path that had a release created (`paths_released`).
+
+### Version sources
+
+| Channel  | Trigger                   | Version                                                         | Example         |
+| -------- | ------------------------- | --------------------------------------------------------------- | --------------- |
+| `latest` | release PR merged         | release-please `default` strategy from conventional commits     | `0.1.0`         |
+| `next`   | release PR opened/updated | `<release-of-last-released>-next.<commits-since-component-tag>` | `0.0.1-next.14` |
+
+The `next` snapshot is a prerelease of the **last-released** version plus the commits since that package's last component tag (a preview of "what is on `main` since the last release"). It is computed by the `publish` task, not release-please.
+
+## Manual Releases
+
+Trigger `publish.yml` from the GitHub Actions tab ("Run workflow"), supplying:
+
+- **path:** the package directory, e.g. `packages/pi-lsp`
+- **tag:** `latest` or `next`
+
+This builds and publishes that one package via OIDC trusted publishing. Use manual releases for hot-fixes outside the normal release cycle.
+
+## Publishing
+
+Releases are published to npm when the release-please PR is merged (`latest`) or when it is opened/updated (`next`).
+
+### NPM Trusted Publishing
+
+No npm tokens are needed — authentication is handled via OIDC. Each publish uses short-lived, cryptographically-signed tokens specific to the workflow, with automatic provenance attestations.
+
+Trusted publishing is configured **per npm package**, all pointing at the shared `publish.yml` workflow in this repo (see [First Release](#first-release-per-package)).
 
 ## Advanced Release Features
 
 ### Force a Specific Version
 
-Use the `Release-As` footer in your commit message to force a specific version, bypassing conventional commit analysis:
+Use the `Release-As` footer in a commit message (touching the package path) to force a specific version:
 
-```bash
-git commit --allow-empty -m "chore: release 2.0.0" -m "Release-As: 2.0.0"
+```sh
+git commit --allow-empty -m "chore: release pi-lsp 2.0.0" -m "Release-As: 2.0.0"
 ```
 
-This creates a commit:
-
-```
-chore: release 2.0.0
-
-Release-As: 2.0.0
-```
-
-Release Please will open a PR for version `2.0.0` regardless of commit message types.
+release-please will open a PR for version `2.0.0` for that package regardless of commit message types.
 
 ### Update Extra Files During Release
 
-If you have version numbers in other files beyond `package.json`, configure them in `release-please-config.json`:
+`src/version.ts` is updated per package via `extra-files` in `release-please-config.json`. The `x-release-please-version` magic comment marks the version constant. To track version in additional files, add them to that package's `extra-files` array.
 
-```json
-{
-  "extra-files": [
-    "src/version.ts",
-    {
-      "type": "generic",
-      "path": "docs/VERSION.md"
-    },
-    {
-      "type": "yaml",
-      "path": ".tool-versions",
-      "jsonpath": "$.node"
-    }
-  ]
-}
-```
-
-**Supported file types:**
-
-- Generic files (any type)
-- JSON files (with JSONPath)
-- YAML files (with JSONPath)
-- XML files (with XPath)
-- TOML files (with JSONPath)
+Supported file types: generic, JSON (JSONPath), YAML (JSONPath), XML (XPath), TOML (JSONPath).
 
 ### Magic Comments for Version Markers
 
-Use inline comments to mark where versions should be updated:
-
-```javascript
-// x-release-please-version
-const VERSION = '1.0.0';
-
-// x-release-please-major
-const MAJOR = '1';
-```
-
-Or use block markers:
-
-```markdown
-<!-- x-release-please-start-version -->
-
-- Current version: 1.0.0
-<!-- x-release-please-end -->
-```
-
-Available markers:
-
-- `x-release-please-version` - Full semver
-- `x-release-please-major` - Major number
-- `x-release-please-minor` - Minor number
-- `x-release-please-patch` - Patch number
+- `// x-release-please-version` — full semver
+- `// x-release-please-major` / `x-release-please-minor` / `x-release-please-patch` — individual numbers
 
 ## Do Not
 
-- Manually edit Release Please PRs
-- Manually create GitHub releases
-- Modify version numbers directly
-
-## Publishing
-
-Releases are automatically published to NPM when the Release Please PR is merged.
-
-### NPM Trusted Publishing
-
-This project uses [NPM Trusted Publishing](https://docs.npmjs.com/trusted-publishers) with GitHub Actions. No npm tokens are needed - authentication is handled automatically via OIDC (OpenID Connect).
-
-**How it works:**
-
-- Each publish uses short-lived, cryptographically-signed tokens specific to your workflow
-- Tokens cannot be extracted or reused
-- No need to manage or rotate long-lived credentials
-- Automatic provenance attestations prove where and how your package was built
-
-**Setup required:**
-
-1. Go to your npm package settings on npmjs.com
-2. Add a trusted publisher for GitHub Actions with:
-   - **Organization or user**: Your GitHub username/org
-   - **Repository**: Your repository name
-   - **Workflow filename**: `publish.yml` (the release workflow filename)
-3. Optionally, [restrict token access](https://docs.npmjs.com/trusted-publishers#recommended-restrict-token-access-when-using-trusted-publishers) for maximum security
-
-When you merge a release PR, the GitHub Actions workflow will automatically:
-
-1. Build the module
-2. Publish to NPM with OIDC authentication
-3. Generate and attach provenance attestations
-4. Create a GitHub release
-
-### Manual Releases
-
-You can also manually trigger a release by pushing a tag in the format `v{semver}`:
-
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-```
-
-This will:
-
-1. Trigger the release workflow
-2. Build and publish to NPM using trusted publishing
-3. Create a GitHub release
-
-Use manual releases for:
-
-- Hot-fixes outside the normal release cycle
-- Bypassing Release Please when needed
-- Direct version control over releases
-
-**Learn more:** See the [NPM Trusted Publishing documentation](https://docs.npmjs.com/trusted-publishers) for complete setup and best practices.
+- Manually edit release-please release PRs
+- Manually create GitHub releases for a package
+- Manually edit a package's `version` (release-please owns `latest`; the `publish` task owns `next`)
+- Delete a package's component tags (the `next` self-skip relies on them)

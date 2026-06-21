@@ -1,56 +1,11 @@
 {
-  "name": "@balaenis/pi-lsp",
-  "version": "0.0.1",
-  "description": "pi lsp support",
-  "author": {
-    "name": "balaenis",
-    "email": "pzyyll@gmail.com"
-  },
+  "name": "pi-toolset",
+  "private": true,
   "type": "module",
-  "keywords": [
-    "pi-package",
-    "pi",
-    "lsp",
-    "language-server"
+  "workspaces": [
+    "packages/*"
   ],
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
-  "pi": {
-    "extensions": [
-      "./dist/index.js"
-    ]
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/balaenis/pi-lsp.git"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "files": [
-    "dist",
-    "src/version.ts"
-  ],
-  "dependencies": {
-    "vscode-jsonrpc": "^9.0.0"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
-  },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.79.8",
-    "@earendil-works/pi-ai": "^0.79.8",
-    "@earendil-works/pi-coding-agent": "^0.79.8",
-    "@earendil-works/pi-tui": "^0.79.8",
-    "typebox": "^1.2.17",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.0.0",
     "@typescript-eslint/eslint-plugin": "8.61.1",
@@ -60,7 +15,7 @@
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-prettier": "^5.5.6",
     "prettier": "^3.8.4",
-    "typescript-eslint": "^8.61.1",
-    "vscode-languageserver-protocol": "^3.18.0"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.61.1"
   }
 }

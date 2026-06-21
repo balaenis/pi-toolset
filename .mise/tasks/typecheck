@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-#MISE description="Type check TypeScript files without emitting"
-#MISE sources=["src/**/*.ts", "tsconfig.json"]
+#MISE description="Type check a package's TypeScript files without emitting"
+#USAGE flag "-p --package <path>" "Package dir, e.g. packages/pi-lsp" default=""
 
+set -e
+PKG="${usage_package}"
+[ -d "$PKG" ] || { echo "no such package: ${usage_package:-<missing>}" >&2; exit 1; }
+cd "$PKG"
 tsc --noEmit

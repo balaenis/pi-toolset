@@ -17,7 +17,7 @@ Thank you for your interest in contributing!
 3. Make your changes
 4. Run tests and linting:
    ```bash
-   mise run test
+   mise run test --package packages/pi-lsp
    mise run lint
    ```
 5. Commit using [Conventional Commits](https://www.conventionalcommits.org/) format:

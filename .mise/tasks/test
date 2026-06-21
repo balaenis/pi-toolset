@@ -1,3 +1,9 @@
 #!/usr/bin/env bash
-#MISE description="Run tests"
+#MISE description="Run a package's tests"
+#USAGE flag "-p --package <path>" "Package dir, e.g. packages/pi-lsp" default=""
+
+set -e
+PKG="${usage_package}"
+[ -d "$PKG" ] || { echo "no such package: ${usage_package:-<missing>}" >&2; exit 1; }
+cd "$PKG"
 bun test

@@ -1,12 +1,14 @@
 {
-  "packages": {
-    ".": {}
-  },
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "include-v-in-tag": true,
-  "include-component-in-tag": false,
-  "versioning": "prerelease",
-  "prerelease": true,
+  "include-component-in-tag": true,
   "bump-minor-pre-major": true,
-  "release-type": "node"
+  "separate-pull-requests": false,
+  "packages": {
+    "packages/pi-lsp": {
+      "component": "pi-lsp",
+      "release-type": "node",
+      "extra-files": ["src/version.ts"]
+    }
+  }
 }

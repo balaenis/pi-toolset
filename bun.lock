@@ -4,14 +4,7 @@
   "workspaces": {
     "": {
       "name": "pi-lsp",
-      "dependencies": {
-        "vscode-jsonrpc": "^9.0.0",
-      },
       "devDependencies": {
-        "@earendil-works/pi-agent-core": "^0.79.8",
-        "@earendil-works/pi-ai": "^0.79.8",
-        "@earendil-works/pi-coding-agent": "^0.79.8",
-        "@earendil-works/pi-tui": "^0.79.8",
         "@eslint/js": "^10.0.1",
         "@types/node": "^26.0.0",
         "@typescript-eslint/eslint-plugin": "8.61.1",
@@ -21,9 +14,24 @@
         "eslint-config-prettier": "10.1.8",
         "eslint-plugin-prettier": "^5.5.6",
         "prettier": "^3.8.4",
-        "typebox": "^1.2.17",
+        "typescript": "^5.9.3",
         "typescript-eslint": "^8.61.1",
+      },
+    },
+    "packages/pi-lsp": {
+      "name": "@balaenis/pi-lsp",
+      "version": "0.0.1",
+      "dependencies": {
+        "vscode-jsonrpc": "^9.0.0",
+      },
+      "devDependencies": {
+        "@earendil-works/pi-agent-core": "^0.79.8",
+        "@earendil-works/pi-ai": "^0.79.8",
+        "@earendil-works/pi-coding-agent": "^0.79.8",
+        "@earendil-works/pi-tui": "^0.79.8",
+        "typebox": "^1.2.17",
         "vscode-languageserver-protocol": "^3.18.0",
+        "vscode-languageserver-types": "^3.18.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-agent-core": "*",
@@ -88,6 +96,8 @@
     "@aws/lambda-invoke-store": ["@aws/lambda-invoke-store@0.2.4", "", {}, "sha512-iY8yvjE0y651BixKNPgmv1WrQc+GZ142sb0z4gYnChDDY2YqI4P/jsSopBWrKfAt7LOJAkOXt7rC/hms+WclQQ=="],
 
     "@babel/runtime": ["@babel/runtime@7.29.7", "", {}, "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="],
+
+    "@balaenis/pi-lsp": ["@balaenis/pi-lsp@workspace:packages/pi-lsp"],
 
     "@earendil-works/pi-agent-core": ["@earendil-works/pi-agent-core@0.79.8", "", { "dependencies": { "@earendil-works/pi-ai": "^0.79.8", "ignore": "7.0.5", "typebox": "1.1.38", "yaml": "2.9.0" } }, "sha512-8m5fcqRpoGpq3QY0I/tFXROSTmPwBb1dAuzYZO3XYgjsdCokkRMAGRjA9P8s/UD6Jy9yy69lyE4H6sz/5A1TmQ=="],
 

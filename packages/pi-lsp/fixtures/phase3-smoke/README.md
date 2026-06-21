@@ -28,8 +28,8 @@ scripts/run-pi-lsp.sh
 From the repository root:
 
 ```sh
-mise run build          # builds ../../dist/index.js
-cd fixtures/phase3-smoke
+mise run build --package packages/pi-lsp          # builds ../../dist/index.js
+cd packages/pi-lsp/fixtures/phase3-smoke
 bun install             # installs local typescript-language-server + pyright
 bun run check           # tsc --noEmit; baseline must be clean
 ```

@@ -9,8 +9,8 @@ diagnostics. It uses a real `typescript-language-server` binary from this fixtur
 From the repository root:
 
 ```sh
-mise run build
-cd fixtures/phase2-diagnostics
+mise run build --package packages/pi-lsp
+cd packages/pi-lsp/fixtures/phase2-diagnostics
 bun install
 bun run check
 ```
@@ -32,7 +32,7 @@ The script:
   `typescript-language-server`;
 - loads the built local extension from `../../dist/index.js` with `-e`.
 
-If `../../dist/index.js` is missing, run `mise run build` from the repository root.
+If `../../dist/index.js` is missing, run `mise run build --package packages/pi-lsp` from the repository root.
 
 > **Always launch with `bun run pi`.** Do not run `pi -e ../../dist/index.js`
 > directly. The script prepends this fixture's `node_modules/.bin` to `PATH` so the

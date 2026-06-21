@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-#MISE description="Validate package.json has no scripts property"
+#MISE description="Validate no package.json has a scripts property"
 
 set -e
 
-if jq -e '.scripts' package.json > /dev/null 2>&1; then
-  echo "❌ Error: 'scripts' property found in package.json"
-  echo "Scripts are not allowed. Use .mise/tasks instead."
-  exit 1
-else
-  echo "✓ package.json validation passed"
-fi
+check() {
+	local f="$1"
+	if jq -e '.scripts' "$f" >/dev/null 2>&1; then
+		echo "❌ Error: 'scripts' property found in $f"
+		echo "Scripts are not allowed. Use .mise/tasks instead."
+		exit 1
+	fi
+}
+
+check package.json
+for f in packages/*/package.json; do
+	[ -f "$f" ] && check "$f"
+done
+
+echo "✓ all package.json files passed (no scripts)"

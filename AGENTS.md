@@ -2,7 +2,7 @@
 
 ## Goal
 
-Implement LSP support for Pi. Before acting, identify the deliverable, constraints, and allowed side effects. Choose the most efficient path that satisfies them.
+Maintain the `pi-toolset` monorepo of Pi extension packages (currently `@balaenis/pi-lsp`). Before acting, identify the deliverable, constraints, and allowed side effects. Choose the most efficient path that satisfies them.
 
 ## Success Criteria
 
@@ -18,11 +18,11 @@ Implement LSP support for Pi. Before acting, identify the deliverable, constrain
 
 Use `mise` to manage the development environment; `bun` as the package manager; `bunx` for one-off tools.
 
-- `mise run typecheck` — TypeScript type check
-- `mise run build` — Build the module
-- `mise run test` — Run tests
-- `hk check` — eslint + prettier
-- `hk fix` — apply eslint + prettier fixes
+- `mise run typecheck --package packages/pi-lsp` — TypeScript type check (per package)
+- `mise run build --package packages/pi-lsp` — Build a package
+- `mise run test --package packages/pi-lsp` — Run a package's tests
+- `hk check` — eslint + prettier (repo-wide)
+- `hk fix` — apply eslint + prettier fixes (repo-wide)
 
 ### Documentation
 

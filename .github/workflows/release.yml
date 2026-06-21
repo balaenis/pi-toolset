@@ -11,38 +11,66 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  actions: write # createWorkflowDispatch for publish.yml
 
 jobs:
   process:
     runs-on: ubuntu-latest
     outputs:
-      releases_created: ${{ steps.release-please.outputs.releases_created }}
-      prs_created: ${{ steps.release-please.outputs.prs_created }}
+      releases_created: ${{ steps.rp.outputs.releases_created }}
+      prs_created: ${{ steps.rp.outputs.prs_created }}
+      paths_released: ${{ steps.rp.outputs.paths_released }}
     steps:
-      - uses: google-github-actions/release-please-action@v4
-        id: release-please
+      - id: rp
+        uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release-type: node
-          skip-github-pull-request: false
+          # Manifest mode: do NOT set release-type here. release-please reads
+          # release-please-config.json + .release-please-manifest.json instead.
 
-  dispatch-publish:
+  dispatch:
     needs: process
     runs-on: ubuntu-latest
     if: needs.process.outputs.releases_created == 'true' || needs.process.outputs.prs_created == 'true'
     steps:
-      - name: Dispatch publish for releases
-        if: needs.process.outputs.releases_created == 'true'
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          event-type: publish-package
-          client-payload: '{"tag": "latest"}'
+      - uses: actions/checkout@v4
 
-      - name: Dispatch publish for prerelease
-        if: needs.process.outputs.prs_created == 'true'
-        uses: peter-evans/repository-dispatch@v2
+      - name: Dispatch latest publishes (per released path)
+        if: needs.process.outputs.releases_created == 'true'
+        uses: actions/github-script@v7
+        env:
+          PATHS_RELEASED: ${{ needs.process.outputs.paths_released }}
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          event-type: publish-package
-          client-payload: '{"tag": "next"}'
+          script: |
+            const paths = JSON.parse(process.env.PATHS_RELEASED || '[]');
+            for (const path of paths) {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'publish.yml',
+                ref: 'main',
+                inputs: { path, tag: 'latest' },
+              });
+              core.info(`dispatched latest: ${path}`);
+            }
+
+      - name: Dispatch next snapshots (all workspace packages)
+        if: needs.process.outputs.prs_created == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const dirs = fs
+              .readdirSync('packages', { withFileTypes: true })
+              .filter((d) => d.isDirectory() && fs.existsSync(`packages/${d.name}/package.json`))
+              .map((d) => `packages/${d.name}`);
+            for (const path of dirs) {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'publish.yml',
+                ref: 'main',
+                inputs: { path, tag: 'next' },
+              });
+              core.info(`dispatched next: ${path}`);
+            }

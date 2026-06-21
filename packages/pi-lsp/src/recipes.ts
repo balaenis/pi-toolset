@@ -22,6 +22,7 @@ export interface LspServerRecipe {
   extensionToLanguage: Record<string, string>;
   /** Human-readable install hint shown when the command is not on PATH. */
   installHint: string;
+  startupTimeout?: number;
 }
 
 /**
@@ -83,6 +84,7 @@ export const BUILTIN_RECIPES: readonly LspServerRecipe[] = [
     extensionToLanguage: {
       '.kt': 'kotlin',
     },
+    startupTimeout: 60000,
     installHint:
       'Install JetBrains `kotlin-lsp` (for example `brew install JetBrains/utils/kotlin-lsp`, or download a release from https://github.com/Kotlin/kotlin-lsp and symlink `kotlin-lsp.sh` as `kotlin-lsp` on PATH) and ensure it is on PATH. Requires Java 17+.',
   },
@@ -260,7 +262,7 @@ export function getDetectedRecipeServers(
       command: recipe.command,
       args: recipe.args ? [...recipe.args] : undefined,
       extensionToLanguage: { ...recipe.extensionToLanguage },
-      startupTimeout: 10000,
+      startupTimeout: recipe.startupTimeout ?? 10000,
       maxRestarts: 3,
       transport: 'stdio',
     };

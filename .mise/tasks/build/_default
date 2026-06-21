@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build a package for development with sourcemaps and vendor splitting"
+#MISE description="Build a package"
 #MISE depends=["setup"]
 #USAGE flag "-p --package <path>" "Package dir, e.g. packages/pi-lsp" default=""
 
@@ -8,17 +8,13 @@ PKG="${usage_package}"
 [ -d "$PKG" ] || { echo "no such package: ${usage_package:-<missing>}" >&2; exit 1; }
 cd "$PKG"
 
+# Externalize peer packages (host provides them at runtime) plus this package's
+# declared extra externals. Bundling peer deps would load a second SDK instance
+# and break type/identity checks against the host's copy.
 EXTERNALS=$(jq -r '(.peerDependencies // {}) | keys[]' package.json)
 EXTRA=$(jq -r '(.pi.external // [])[]' package.json 2>/dev/null || true)
 
 args=()
 for e in $EXTERNALS $EXTRA; do args+=(--external "$e"); done
 
-bun build ./src/index.ts \
-  --outdir dist \
-  --target node \
-  --sourcemap=inline \
-  --splitting \
-  --entry-naming='[dir]/[name].js' \
-  --chunk-naming='[name].js' \
-  "${args[@]}"
+bun build ./src/index.ts --outdir dist --target node "${args[@]}"

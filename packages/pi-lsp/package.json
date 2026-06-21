@@ -1,0 +1,60 @@
+{
+  "name": "@balaenis/pi-lsp",
+  "version": "0.0.1",
+  "description": "pi lsp support",
+  "author": {
+    "name": "balaenis",
+    "email": "pzyyll@gmail.com"
+  },
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "lsp",
+    "language-server"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "external": [
+      "vscode-jsonrpc"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/balaenis/pi-toolset.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "src/version.ts"
+  ],
+  "dependencies": {
+    "vscode-jsonrpc": "^9.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.79.8",
+    "@earendil-works/pi-ai": "^0.79.8",
+    "@earendil-works/pi-coding-agent": "^0.79.8",
+    "@earendil-works/pi-tui": "^0.79.8",
+    "typebox": "^1.2.17",
+    "vscode-languageserver-protocol": "^3.18.0",
+    "vscode-languageserver-types": "^3.18.0"
+  }
+}
