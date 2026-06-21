@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #MISE description="Publish a package to npm registry"
 #MISE depends=["setup"]
+#MISE tools={semver="3.4.0"}
 #USAGE flag "-p --package <path>" "Package dir, e.g. packages/pi-lsp" default=""
 #USAGE flag "-t --tag <tag>" "Tag to publish with" default="latest"
 #USAGE flag "-d --dry-run" "Perform a dry run of the publish process"

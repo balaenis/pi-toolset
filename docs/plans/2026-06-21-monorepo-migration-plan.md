@@ -308,6 +308,7 @@ bun build ./src/index.ts --outdir dist --target node "${args[@]}"
 #!/usr/bin/env bash
 #MISE description="Publish a package to npm"
 #MISE depends=["setup"]
+#MISE tools={semver="3.4.0"}
 #USAGE flag "-p --package <path>" "Package dir, e.g. packages/pi-lsp" default=""
 #USAGE flag "-t --tag <tag>" "npm tag" default="latest"
 #USAGE flag "-d --dry-run" "Dry run" default=false
