@@ -18,7 +18,7 @@ Once the extension is installed, the agent gains access to the `lsp` tool. All n
 | `incomingCalls`        | Find functions that call the target (two-step)       |
 | `outgoingCalls`        | Find functions called by the target (two-step)       |
 
-Results from location-returning operations (`findReferences`, `goToDefinition`, `goToImplementation`, `workspaceSymbol`) are filtered to exclude `.gitignore`d files.
+Results from location-returning operations (`findReferences`, `goToDefinition`, `goToImplementation`, `workspaceSymbol`) are filtered to exclude `.gitignore`d files. All `lsp` tool operations target the file's active primary server. Passive diagnostics, in contrast, are collected from every active server covering the file (primary + companions) so lint/type/etc. issues from different servers can coexist.
 
 When no server is configured for a file type, or the server is still starting, the tool returns a clear text message instead of an error.
 
@@ -39,16 +39,16 @@ The indicator is a live snapshot, not a `ready/total` summary: configured-but-st
 
 Run `/lsp status` to inspect the current LSP runtime snapshot without starting any stopped servers. The command shows the manager state, server counts by lifecycle state, and per-server details including command, workspace, covered extensions, start time, restart count, and last error when present.
 
-Run `/lsp start` to manually start or stop any configured server (including the built-in autodetected ones). It opens an interactive panel listing each server with its live state:
+Run `/lsp start` to manually start or stop any configured server (including the built-in autodetected ones), and to enable manual (opt-in) servers for the current session. It opens an interactive panel listing each server with its live lifecycle state:
 
 ```
 LSP servers — space to start/stop, esc to close
-→ typescript  running
-  python      stopped
-  rust        error
+→ typescript   running
+  eslint       running
+  tailwindcss  stopped
 ```
 
-Move with the arrow keys, press space to toggle the highlighted server (start when stopped/errored, stop when running), and press esc to close. The state column updates live as servers transition through `starting`/`stopping` into `running`, `stopped`, or `error`. Requires TUI mode.
+Move with the arrow keys, press space to toggle the highlighted server (start when stopped/errored, stop when running), and press esc to close. The state column updates live as servers transition through `starting`/`stopping` into `running`, `stopped`, or `error`. Manual (`startupMode: "manual"`) servers are only enrolled into routing for the current session after you start them here — use `/lsp status` to see each server's `startup` mode and `manual active` flag. Requires TUI mode.
 
 ## Configuration
 
@@ -90,21 +90,24 @@ Both files use JSONC syntax (comments are allowed).
 
 ### Fields
 
-| Field                   | Required | Default     | Description                                                                                                            |
-| ----------------------- | -------- | ----------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `command`               | yes      | —           | LSP server binary. Spaces only allowed for absolute paths.                                                             |
-| `args`                  | no       | `[]`        | CLI arguments for the server.                                                                                          |
-| `extensionToLanguage`   | yes¹     | —           | Maps file extensions (leading dot) to LSP `languageId` values.                                                         |
-| `extensions`            | no²      | —           | Sugar: `[".ts", ".tsx"]` → languageId is guessed via a built-in table.                                                 |
-| `env`                   | no       | —           | Environment variables. `$VAR` and `${VAR}` are expanded from `process.env`.                                            |
-| `initializationOptions` | no       | `{}`        | Passed to the server during `initialize`.                                                                              |
-| `settings`              | no       | —           | Accepted for schema compatibility; **not delivered to the server** yet. See [optimization note](#future-optimization). |
-| `workspaceFolder`       | no       | session cwd | Overrides the workspace root sent to the server.                                                                       |
-| `startupTimeout`        | no       | `30000`     | Max ms to wait for server initialization before treating startup as retryable failure.                                 |
-| `shutdownTimeout`       | no       | `10000`     | Max ms to wait for graceful shutdown before killing the process.                                                       |
-| `restartOnCrash`        | no       | `false`     | Auto-restart the server when it crashes unexpectedly. Bounded by `maxRestarts`.                                        |
-| `maxRestarts`           | no       | `3`         | Max manual restart, crash-recovery, and retryable startup attempts.                                                    |
-| `transport`             | no       | `"stdio"`   | Accepted for compatibility; only `"stdio"` is implemented.                                                             |
+| Field                   | Required | Default                                | Description                                                                                                                 |
+| ----------------------- | -------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `command`               | yes      | —                                      | LSP server binary. Spaces only allowed for absolute paths.                                                                  |
+| `args`                  | no       | `[]`                                   | CLI arguments for the server.                                                                                               |
+| `extensionToLanguage`   | yes¹     | —                                      | Maps file extensions (leading dot) to LSP `languageId` values.                                                              |
+| `extensions`            | no²      | —                                      | Sugar: `[".ts", ".tsx"]` → languageId is guessed via a built-in table.                                                      |
+| `env`                   | no       | —                                      | Environment variables. `$VAR` and `${VAR}` are expanded from `process.env`.                                                 |
+| `initializationOptions` | no       | `{}`                                   | Passed to the server during `initialize`.                                                                                   |
+| `settings`              | no       | —                                      | Accepted for schema compatibility; **not delivered to the server** yet. See [optimization note](#future-optimization).      |
+| `workspaceFolder`       | no       | session cwd                            | Overrides the workspace root sent to the server.                                                                            |
+| `startupTimeout`        | no       | `30000`                                | Max ms to wait for server initialization before treating startup as retryable failure.                                      |
+| `shutdownTimeout`       | no       | `10000`                                | Max ms to wait for graceful shutdown before killing the process.                                                            |
+| `restartOnCrash`        | no       | `false`                                | Auto-restart the server when it crashes unexpectedly. Bounded by `maxRestarts`.                                             |
+| `maxRestarts`           | no       | `3`                                    | Max manual restart, crash-recovery, and retryable startup attempts.                                                         |
+| `transport`             | no       | `"stdio"`                              | Accepted for compatibility; only `"stdio"` is implemented.                                                                  |
+| `role`                  | no       | `"primary"`                            | `"primary"` (one per file, drives navigation) or `"companion"` (adds diagnostics alongside the primary).                    |
+| `startupMode`           | no       | `"auto"`                               | `"auto"` (joins routing automatically) or `"manual"` (only after `/lsp start`).                                             |
+| `conflictGroup`         | no       | primary: server name; companion: unset | Display-only grouping label for primary replacement scenarios, surfaced in `/lsp status`. Not yet enforced at routing time. |
 
 ¹ Either `extensionToLanguage` or `extensions` must be present; `extensionToLanguage` takes precedence.
 ² When `extensions` is used without `extensionToLanguage`, the extension guesses `languageId` from a built-in table (covers TS/JS, Python, Rust, Go, Java, C/C++, C#, and ~20 others). Unknown extensions fall back to `"plaintext"`.
@@ -149,14 +152,94 @@ With no `servers` block in `config.json`, the extension scans `PATH` for the fol
 | CSS        | `vscode-css-language-server`  | `--stdio` | `.css`, `.scss`, `.less`                                                              | `npm install -g vscode-langservers-extracted`                                                                                         |
 | Vue        | `vue-language-server`         | `--stdio` | `.vue`                                                                                | `npm install -g @vue/language-server`                                                                                                 |
 
-User entries in `servers` are authoritative: a built-in recipe is skipped when its server name collides with a user entry **or** when any of its extensions are already covered by a user entry. Recipes still supplement uncovered languages. Invalid user entries do not disable autodetection for unrelated languages.
+User entries in `servers` are authoritative: a built-in recipe is skipped when its server name collides with a user entry **or** when its extensions are already covered by a user `primary` + `startupMode: "auto"` entry. Companion (`role: "companion"`) and manual (`startupMode: "manual"`) user entries do **not** suppress an auto-primary recipe, so you can layer e.g. ESLint alongside the built-in TypeScript recipe without losing navigation. Recipes still supplement uncovered languages. Invalid user entries do not disable autodetection for unrelated languages.
 
 When the agent edits a file or invokes the `lsp` tool for an extension covered by a recipe but the matching binary is missing on `PATH`, the extension surfaces a single non-blocking warning (`ctx.ui.notify(…, "warning")`) with an actionable install hint and includes the same hint in the tool's text output. Notifications are deduplicated per session by extension and reason.
+
+## Multi-server routing
+
+Each file may be served by one primary server plus zero or more companion servers.
+
+- **Primary server (`role: "primary"`, the default).** The single server consulted for the `lsp` tool's navigation operations (definitions, references, hover, symbols, call hierarchy). When two primary servers cover the same extension, the first one registered wins; configure `conflictGroup` only when you want to make a replacement explicit.
+- **Companion server (`role: "companion"`).** Receives `textDocument/didOpen`, `didChange`, `didSave`, and `didClose` notifications for files it covers, and publishes diagnostics. Companions do **not** participate in navigation requests, so adding ESLint or Tailwind never overrides TypeScript's go-to-definition.
+- **Startup mode (`startupMode: "auto" | "manual"`, default `"auto"`).** Auto servers join routing on session start. Manual servers stay dormant until you enable them with `/lsp start` for the current session. Manual mode is the recommended default for broad companions such as Tailwind CSS so a global install doesn't activate in unrelated projects.
+
+Passive diagnostics from every active server (primary + active companions) are collected and tagged by source server, so TypeScript, ESLint, and Tailwind diagnostics can coexist for the same file without overwriting each other. Stopping an `auto` server doesn't permanently disable it; it may restart on the next matching file event. Use `startupMode: "manual"` for true opt-in behavior.
+
+### Example: primary replacement (vtsls in place of typescript-language-server)
+
+```jsonc
+{
+  "servers": {
+    "vtsls": {
+      "command": "vtsls",
+      "args": ["--stdio"],
+      "extensionToLanguage": {
+        ".ts": "typescript",
+        ".tsx": "typescriptreact",
+        ".js": "javascript",
+        ".jsx": "javascriptreact",
+      },
+      "role": "primary",
+      "startupMode": "auto",
+      "conflictGroup": "typescript",
+    },
+  },
+}
+```
+
+With this entry, the built-in `typescript` recipe is skipped because the user-configured server is an auto primary covering the same extensions.
+
+### Example: ESLint companion alongside the TypeScript primary
+
+```jsonc
+{
+  "servers": {
+    "eslint": {
+      "command": "vscode-eslint-language-server",
+      "args": ["--stdio"],
+      "extensionToLanguage": {
+        ".js": "javascript",
+        ".jsx": "javascriptreact",
+        ".ts": "typescript",
+        ".tsx": "typescriptreact",
+      },
+      "role": "companion",
+      "startupMode": "auto",
+    },
+  },
+}
+```
+
+ESLint diagnostics surface alongside TypeScript diagnostics; navigation operations still target the built-in TypeScript primary.
+
+### Example: Tailwind CSS manual companion
+
+```jsonc
+{
+  "servers": {
+    "tailwindcss": {
+      "command": "tailwindcss-language-server",
+      "args": ["--stdio"],
+      "extensionToLanguage": {
+        ".js": "javascript",
+        ".jsx": "javascriptreact",
+        ".ts": "typescript",
+        ".tsx": "typescriptreact",
+      },
+      "role": "companion",
+      "startupMode": "manual",
+    },
+  },
+}
+```
+
+The Tailwind server is configured and visible in `/lsp status` but inactive until you enable it for the session via `/lsp start`.
 
 ## Limitations
 
 - **`findReferences` cold start**: The extension opens files lazily. References in files the server has not indexed (e.g. outside `tsconfig.json`'s include set) may be missing on a cold start. Matching Claude Code's default, no eager workspace priming is performed.
-- **Single server per extension**: If multiple servers list the same extension, only the first registered server is used.
+- **Primary server selection on overlap**: If two `primary` servers list the same extension, only the first registered server is used. Use a user-defined `primary` server to replace a built-in recipe, or set `conflictGroup` to make the replacement explicit.
 
 ### Future optimization
 

@@ -109,6 +109,9 @@ describe('getDetectedRecipeServers', () => {
     expect(ts.args).toEqual(['--stdio']);
     expect(ts.extensionToLanguage['.ts']).toBe('typescript');
     expect(ts.transport).toBe('stdio');
+    expect(ts.role).toBe('primary');
+    expect(ts.startupMode).toBe('auto');
+    expect(ts.conflictGroup).toBe('typescript');
   });
 
   it('detects multiple recipes when several binaries exist', () => {

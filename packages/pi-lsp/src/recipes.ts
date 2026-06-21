@@ -265,6 +265,9 @@ export function getDetectedRecipeServers(
       startupTimeout: recipe.startupTimeout ?? 10000,
       maxRestarts: 3,
       transport: 'stdio',
+      role: 'primary',
+      startupMode: 'auto',
+      conflictGroup: recipe.name,
     };
     logForDebugging(`recipes: detected ${recipe.name} (${recipe.command} -> ${resolved})`);
   }

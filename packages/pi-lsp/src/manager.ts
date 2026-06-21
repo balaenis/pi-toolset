@@ -1,5 +1,5 @@
 // ABOUTME: Multi-server routing, file synchronization, and the global manager singleton.
-// ABOUTME: Trimmed merge of Claude Code's LSPServerManager + manager.ts, adapted to Pi lifecycle.
+// ABOUTME: Routes primary navigation to one server while fanning lifecycle out to all active candidates.
 
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -9,7 +9,20 @@ import { getAllLspServers } from './config.ts';
 import * as diagnostics from './diagnostics.ts';
 import { createLSPServerInstance, type LSPServerInstance } from './instance.ts';
 import { errorMessage, logError, logForDebugging } from './log.ts';
-import type { ScopedLspServerConfig } from './types.ts';
+import type { LspServerState, ScopedLspServerConfig } from './types.ts';
+
+/**
+ * Factory for building LSPServerInstance objects. Tests inject a fake factory
+ * so the manager can be exercised without spawning real child processes.
+ */
+export type LSPServerInstanceFactory = (
+  name: string,
+  config: ScopedLspServerConfig,
+  onStateChange: () => void
+) => LSPServerInstance;
+
+const defaultInstanceFactory: LSPServerInstanceFactory = (name, config, onStateChange) =>
+  createLSPServerInstance(name, config, undefined, () => onStateChange());
 
 /**
  * LSP Server Manager interface.
@@ -20,11 +33,17 @@ export type LSPServerManager = {
   initialize(cwd: string): Promise<void>;
   /** Shutdown all running servers and clear state */
   shutdown(): Promise<void>;
-  /** Get the LSP server instance for a given file path */
+  /** Get the active primary LSP server instance for a given file path */
   getServerForFile(filePath: string): LSPServerInstance | undefined;
-  /** Ensure the appropriate LSP server is started for the given file */
+  /** Get every configured server (including inactive manual) covering the file */
+  getConfiguredServersForFile(filePath: string): LSPServerInstance[];
+  /** Get every active server (auto + manually enabled) covering the file */
+  getServersForFile(filePath: string): LSPServerInstance[];
+  /** Get the active primary server covering the file, if any */
+  getPrimaryServerForFile(filePath: string): LSPServerInstance | undefined;
+  /** Ensure the active primary LSP server is started for the given file */
   ensureServerStarted(filePath: string): Promise<LSPServerInstance | undefined>;
-  /** Send a request to the appropriate LSP server for the given file */
+  /** Send a request to the active primary LSP server for the given file */
   sendRequest<T>(filePath: string, method: string, params: unknown): Promise<T | undefined>;
   /** Get all server instances */
   getAllServers(): Map<string, LSPServerInstance>;
@@ -32,6 +51,16 @@ export type LSPServerManager = {
   getStateCounts(): { running: number; starting: number; error: number };
   /** Subscribe to any per-instance state change. Returns an unsubscribe. */
   onServersChanged(listener: () => void): () => void;
+  /** Mark a manual server as enabled for this session. */
+  markManualServerActive(serverName: string): void;
+  /** Clear a manual server's session enablement (e.g. user stopped it). */
+  markManualServerInactive(serverName: string): void;
+  /** Whether the server is automatically active (startupMode !== 'manual'). */
+  isServerAutoActive(server: LSPServerInstance): boolean;
+  /** Whether a manual server has been enabled for this session. */
+  isServerManuallyActive(server: LSPServerInstance): boolean;
+  /** Whether the server currently participates in routing. */
+  isServerActive(server: LSPServerInstance): boolean;
   /** Synchronize file open to LSP server (sends didOpen notification) */
   openFile(filePath: string, content: string): Promise<void>;
   /** Synchronize file change to LSP server (sends didChange notification) */
@@ -42,8 +71,10 @@ export type LSPServerManager = {
   closeFile(filePath: string): Promise<void>;
   /** Re-sync a file after an external edit: reads disk, sends didChange + didSave */
   syncFileChange(filePath: string): Promise<void>;
-  /** Check if a file is already open on a compatible LSP server */
+  /** Check whether the active primary server already has the file open */
   isFileOpen(filePath: string): boolean;
+  /** Check whether a specific server already has the file URI open */
+  isFileOpenInServer(fileUri: string, serverName: string): boolean;
 };
 
 /**
@@ -52,13 +83,22 @@ export type LSPServerManager = {
  * Manages multiple LSP server instances and routes requests based on file extensions.
  * Uses factory function pattern with closures for state encapsulation (avoiding classes).
  */
-export function createLSPServerManager(): LSPServerManager {
+export function createLSPServerManager(
+  options: { instanceFactory?: LSPServerInstanceFactory } = {}
+): LSPServerManager {
+  const instanceFactory = options.instanceFactory ?? defaultInstanceFactory;
+
   // Private state managed via closures
   const servers: Map<string, LSPServerInstance> = new Map();
   const extensionMap: Map<string, string[]> = new Map();
-  // Track which files have been opened on which servers (URI -> server name)
-  const openedFiles: Map<string, string> = new Map();
+  // URI → set of server names that have the file open via didOpen.
+  const openedFiles: Map<string, Set<string>> = new Map();
+  const manualEnabledServers: Set<string> = new Set();
   const stateChangeListeners: Set<() => void> = new Set();
+  // Last observed state per server, used to detect transitions out of
+  // 'running' so we can clear the server's open-file tracking when its child
+  // process goes away (a restarted server has no prior open document state).
+  const lastObservedState: Map<string, LspServerState> = new Map();
 
   function notifyServersChanged(): void {
     for (const listener of stateChangeListeners) {
@@ -67,6 +107,34 @@ export function createLSPServerManager(): LSPServerManager {
       } catch (error) {
         logError(new Error(`LSP statusLine listener threw: ${errorMessage(error)}`));
       }
+    }
+  }
+
+  function isServerAutoActive(server: LSPServerInstance): boolean {
+    return (server.config.startupMode ?? 'auto') !== 'manual';
+  }
+
+  function isServerManuallyActive(server: LSPServerInstance): boolean {
+    return manualEnabledServers.has(server.name);
+  }
+
+  function isServerActive(server: LSPServerInstance): boolean {
+    return isServerAutoActive(server) || isServerManuallyActive(server);
+  }
+
+  function markManualServerActive(serverName: string): void {
+    const server = servers.get(serverName);
+    if (!server) return;
+    if (isServerAutoActive(server)) return;
+    if (!manualEnabledServers.has(serverName)) {
+      manualEnabledServers.add(serverName);
+      notifyServersChanged();
+    }
+  }
+
+  function markManualServerInactive(serverName: string): void {
+    if (manualEnabledServers.delete(serverName)) {
+      notifyServersChanged();
     }
   }
 
@@ -119,11 +187,23 @@ export function createLSPServerManager(): LSPServerManager {
           extensionMap.get(normalized)?.push(serverName);
         }
 
-        // Create server instance
-        const instance = createLSPServerInstance(serverName, config, undefined, () => {
+        // Create server instance. The state-change callback both notifies
+        // external listeners and clears per-server open-file tracking when
+        // the server exits the 'running' state.
+        const instance = instanceFactory(serverName, config, () => {
+          const current = servers.get(serverName)?.state;
+          const previous = lastObservedState.get(serverName);
+          if (current) lastObservedState.set(serverName, current);
+          if (
+            previous === 'running' &&
+            (current === 'stopped' || current === 'error' || current === 'stopping')
+          ) {
+            clearOpenedFilesForServer(serverName);
+          }
           notifyServersChanged();
         });
         servers.set(serverName, instance);
+        lastObservedState.set(serverName, instance.state);
 
         // Register handler for workspace/configuration requests from the server.
         // Some servers (like TypeScript) send these even when we say we don't support them.
@@ -148,7 +228,7 @@ export function createLSPServerManager(): LSPServerManager {
               );
               return;
             }
-            diagnostics.register(p.uri, p.diagnostics ?? []);
+            diagnostics.register(serverName, p.uri, p.diagnostics ?? []);
           } catch (error) {
             // Isolate per-server failures so one bad publish can't break the loop.
             logError(
@@ -182,6 +262,8 @@ export function createLSPServerManager(): LSPServerManager {
     servers.clear();
     extensionMap.clear();
     openedFiles.clear();
+    manualEnabledServers.clear();
+    lastObservedState.clear();
     stateChangeListeners.clear();
 
     const errors = results
@@ -198,31 +280,62 @@ export function createLSPServerManager(): LSPServerManager {
   }
 
   /**
-   * Get the LSP server instance for a given file path.
-   * If multiple servers handle the same extension, returns the first registered server.
+   * Return every configured server whose extensions cover the file, including
+   * inactive manual servers.
    */
-  function getServerForFile(filePath: string): LSPServerInstance | undefined {
+  function getConfiguredServersForFile(filePath: string): LSPServerInstance[] {
     const ext = path.extname(filePath).toLowerCase();
     const serverNames = extensionMap.get(ext);
-
-    if (!serverNames || serverNames.length === 0) {
-      return undefined;
+    if (!serverNames || serverNames.length === 0) return [];
+    const out: LSPServerInstance[] = [];
+    for (const name of serverNames) {
+      const server = servers.get(name);
+      if (server) out.push(server);
     }
+    return out;
+  }
 
-    // Use first server (can add priority later)
-    const serverName = serverNames[0];
-    if (!serverName) {
-      return undefined;
-    }
+  /**
+   * Return active servers (auto servers plus manually enabled servers) that
+   * cover the file. Inactive manual servers are excluded.
+   */
+  function getServersForFile(filePath: string): LSPServerInstance[] {
+    return getConfiguredServersForFile(filePath).filter((s) => isServerActive(s));
+  }
 
-    return servers.get(serverName);
+  /**
+   * Return the active primary server for a file.
+   *
+   * Returns the first active candidate carrying `role: 'primary'`. When all
+   * active candidates explicitly have a role and none is `primary` (e.g. only
+   * companion servers are active), returns `undefined` so navigation does not
+   * accidentally fall through to a companion. The fallback to the first
+   * candidate only applies for legacy candidates that lack a `role` entirely.
+   */
+  function getPrimaryServerForFile(filePath: string): LSPServerInstance | undefined {
+    const candidates = getServersForFile(filePath);
+    if (candidates.length === 0) return undefined;
+    const primary = candidates.find((s) => (s.config.role ?? 'primary') === 'primary');
+    if (primary) return primary;
+    // All candidates have a non-primary role — do not route navigation here.
+    if (candidates.every((s) => s.config.role !== undefined)) return undefined;
+    // Legacy candidates without a role: preserve the historical first-wins behavior.
+    return candidates[0];
+  }
+
+  /**
+   * Backward-compatible alias: returns the active primary server for a file.
+   * Multi-server callers should prefer the more specific getters above.
+   */
+  function getServerForFile(filePath: string): LSPServerInstance | undefined {
+    return getPrimaryServerForFile(filePath);
   }
 
   /**
    * Ensure the appropriate LSP server is started for the given file.
    */
   async function ensureServerStarted(filePath: string): Promise<LSPServerInstance | undefined> {
-    const server = getServerForFile(filePath);
+    const server = getPrimaryServerForFile(filePath);
     if (!server) return undefined;
 
     if (server.state !== 'running') {
@@ -239,7 +352,8 @@ export function createLSPServerManager(): LSPServerManager {
   }
 
   /**
-   * Send a request to the appropriate LSP server for the given file.
+   * Send a request to the active primary LSP server for the file. Used for
+   * navigation operations that should produce one authoritative result.
    */
   async function sendRequest<T>(
     filePath: string,
@@ -293,134 +407,192 @@ export function createLSPServerManager(): LSPServerManager {
     };
   }
 
-  async function openFile(filePath: string, content: string): Promise<void> {
-    const server = await ensureServerStarted(filePath);
-    if (!server) return;
+  function addOpenedFile(fileUri: string, serverName: string): void {
+    let set = openedFiles.get(fileUri);
+    if (!set) {
+      set = new Set();
+      openedFiles.set(fileUri, set);
+    }
+    set.add(serverName);
+  }
+
+  function removeOpenedFile(fileUri: string, serverName: string): void {
+    const set = openedFiles.get(fileUri);
+    if (!set) return;
+    set.delete(serverName);
+    if (set.size === 0) openedFiles.delete(fileUri);
+  }
+
+  function isFileOpenInServer(fileUri: string, serverName: string): boolean {
+    const set = openedFiles.get(fileUri);
+    return set ? set.has(serverName) : false;
+  }
+
+  function clearOpenedFilesForServer(serverName: string): void {
+    const emptied: string[] = [];
+    for (const [uri, set] of openedFiles) {
+      if (set.delete(serverName) && set.size === 0) emptied.push(uri);
+    }
+    for (const uri of emptied) openedFiles.delete(uri);
+    if (emptied.length > 0 || servers.has(serverName)) {
+      logForDebugging(`LSP: cleared open-file tracking for ${serverName}`);
+    }
+  }
+
+  async function openOnServer(
+    server: LSPServerInstance,
+    filePath: string,
+    content: string
+  ): Promise<void> {
+    if (server.state !== 'running') {
+      try {
+        await server.start();
+      } catch (error) {
+        logError(
+          new Error(
+            `Failed to start LSP server '${server.name}' for ${filePath}: ${errorMessage(error)}`
+          )
+        );
+        return;
+      }
+    }
 
     const fileUri = pathToFileURL(path.resolve(filePath)).href;
-
-    // Skip if already opened on this server
-    if (openedFiles.get(fileUri) === server.name) {
-      logForDebugging(`LSP: File already open, skipping didOpen for ${filePath}`);
+    if (isFileOpenInServer(fileUri, server.name)) {
+      logForDebugging(
+        `LSP: ${server.name} already has ${filePath} open; skipping duplicate didOpen`
+      );
       return;
     }
 
-    // Get language ID from server's extensionToLanguage mapping
     const ext = path.extname(filePath).toLowerCase();
     const languageId = server.config.extensionToLanguage[ext] || 'plaintext';
 
     try {
       await server.sendNotification('textDocument/didOpen', {
-        textDocument: {
-          uri: fileUri,
-          languageId,
-          version: 1,
-          text: content,
-        },
+        textDocument: { uri: fileUri, languageId, version: 1, text: content },
       });
-      // Track that this file is now open on this server
-      openedFiles.set(fileUri, server.name);
-      logForDebugging(`LSP: Sent didOpen for ${filePath} (languageId: ${languageId})`);
+      addOpenedFile(fileUri, server.name);
+      logForDebugging(
+        `LSP: Sent didOpen for ${filePath} on ${server.name} (languageId: ${languageId})`
+      );
     } catch (error) {
-      const err = new Error(`Failed to sync file open ${filePath}: ${errorMessage(error)}`);
-      logError(err);
-      throw err;
+      logError(
+        new Error(`Failed to sync file open ${filePath} on ${server.name}: ${errorMessage(error)}`)
+      );
     }
+  }
+
+  async function openFile(filePath: string, content: string): Promise<void> {
+    const candidates = getServersForFile(filePath);
+    if (candidates.length === 0) return;
+    await Promise.all(candidates.map((server) => openOnServer(server, filePath, content)));
   }
 
   async function changeFile(filePath: string, content: string): Promise<void> {
-    const server = getServerForFile(filePath);
-    if (!server || server.state !== 'running') {
-      return openFile(filePath, content);
-    }
+    const candidates = getServersForFile(filePath);
+    if (candidates.length === 0) return;
 
     const fileUri = pathToFileURL(path.resolve(filePath)).href;
 
-    // If file hasn't been opened on this server yet, open it first.
-    // LSP servers require didOpen before didChange.
-    if (openedFiles.get(fileUri) !== server.name) {
-      return openFile(filePath, content);
-    }
-
-    try {
-      await server.sendNotification('textDocument/didChange', {
-        textDocument: {
-          uri: fileUri,
-          version: 1,
-        },
-        contentChanges: [{ text: content }],
-      });
-      logForDebugging(`LSP: Sent didChange for ${filePath}`);
-    } catch (error) {
-      const err = new Error(`Failed to sync file change ${filePath}: ${errorMessage(error)}`);
-      logError(err);
-      throw err;
-    }
+    await Promise.all(
+      candidates.map(async (server) => {
+        if (server.state !== 'running' || !isFileOpenInServer(fileUri, server.name)) {
+          await openOnServer(server, filePath, content);
+          return;
+        }
+        try {
+          await server.sendNotification('textDocument/didChange', {
+            textDocument: { uri: fileUri, version: 1 },
+            contentChanges: [{ text: content }],
+          });
+          logForDebugging(`LSP: Sent didChange for ${filePath} on ${server.name}`);
+        } catch (error) {
+          logError(
+            new Error(
+              `Failed to sync file change ${filePath} on ${server.name}: ${errorMessage(error)}`
+            )
+          );
+        }
+      })
+    );
   }
 
   /**
-   * Save a file in LSP servers (sends didSave notification).
+   * Save a file across active candidate servers (sends didSave notification).
    * Called after a file is written to disk to trigger diagnostics.
    */
   async function saveFile(filePath: string): Promise<void> {
-    const server = getServerForFile(filePath);
-    if (!server || server.state !== 'running') return;
-
-    try {
-      await server.sendNotification('textDocument/didSave', {
-        textDocument: {
-          uri: pathToFileURL(path.resolve(filePath)).href,
-        },
-      });
-      logForDebugging(`LSP: Sent didSave for ${filePath}`);
-    } catch (error) {
-      const err = new Error(`Failed to sync file save ${filePath}: ${errorMessage(error)}`);
-      logError(err);
-      throw err;
-    }
-  }
-
-  /**
-   * Close a file in LSP servers (sends didClose notification).
-   */
-  async function closeFile(filePath: string): Promise<void> {
-    const server = getServerForFile(filePath);
-    if (!server || server.state !== 'running') return;
+    const candidates = getServersForFile(filePath);
+    if (candidates.length === 0) return;
 
     const fileUri = pathToFileURL(path.resolve(filePath)).href;
 
-    try {
-      await server.sendNotification('textDocument/didClose', {
-        textDocument: {
-          uri: fileUri,
-        },
-      });
-      // Remove from tracking so file can be reopened later
-      openedFiles.delete(fileUri);
-      logForDebugging(`LSP: Sent didClose for ${filePath}`);
-    } catch (error) {
-      const err = new Error(`Failed to sync file close ${filePath}: ${errorMessage(error)}`);
-      logError(err);
-      throw err;
-    }
+    await Promise.all(
+      candidates.map(async (server) => {
+        if (server.state !== 'running') return;
+        if (!isFileOpenInServer(fileUri, server.name)) return;
+        try {
+          await server.sendNotification('textDocument/didSave', {
+            textDocument: { uri: fileUri },
+          });
+          logForDebugging(`LSP: Sent didSave for ${filePath} on ${server.name}`);
+        } catch (error) {
+          logError(
+            new Error(
+              `Failed to sync file save ${filePath} on ${server.name}: ${errorMessage(error)}`
+            )
+          );
+        }
+      })
+    );
+  }
+
+  /**
+   * Close a file across active candidate servers (sends didClose notification).
+   */
+  async function closeFile(filePath: string): Promise<void> {
+    const candidates = getServersForFile(filePath);
+    if (candidates.length === 0) return;
+
+    const fileUri = pathToFileURL(path.resolve(filePath)).href;
+
+    await Promise.all(
+      candidates.map(async (server) => {
+        if (server.state !== 'running') return;
+        if (!isFileOpenInServer(fileUri, server.name)) return;
+        try {
+          await server.sendNotification('textDocument/didClose', {
+            textDocument: { uri: fileUri },
+          });
+          removeOpenedFile(fileUri, server.name);
+          logForDebugging(`LSP: Sent didClose for ${filePath} on ${server.name}`);
+        } catch (error) {
+          logError(
+            new Error(
+              `Failed to sync file close ${filePath} on ${server.name}: ${errorMessage(error)}`
+            )
+          );
+        }
+      })
+    );
   }
 
   /**
    * Re-sync a file after an external edit (e.g. the agent's edit/write tool).
    *
-   * Reads the current disk content and sends didChange + didSave so the LSP
-   * server re-publishes diagnostics for the updated file. Falls back to didOpen
-   * via changeFile when the file has not been opened on the server yet.
+   * Reads the current disk content and fans didChange + didSave out to every
+   * active candidate so each one re-publishes diagnostics for the updated file.
+   * Active candidates that have not seen the file yet are opened first.
    */
   async function syncFileChange(filePath: string): Promise<void> {
-    const server = getServerForFile(filePath);
-    if (!server) return;
+    const candidates = getServersForFile(filePath);
+    if (candidates.length === 0) return;
 
     let content: string;
     try {
       content = await readFile(filePath, { encoding: 'utf-8' });
     } catch (error) {
-      // File may have been deleted or is unreadable; nothing to sync.
       logForDebugging(`LSP: syncFileChange skipped ${filePath}: ${errorMessage(error)}`);
       return;
     }
@@ -431,24 +603,35 @@ export function createLSPServerManager(): LSPServerManager {
 
   function isFileOpen(filePath: string): boolean {
     const fileUri = pathToFileURL(path.resolve(filePath)).href;
-    return openedFiles.has(fileUri);
+    const server = getPrimaryServerForFile(filePath);
+    if (!server) return false;
+    return isFileOpenInServer(fileUri, server.name);
   }
 
   return {
     initialize,
     shutdown,
     getServerForFile,
+    getConfiguredServersForFile,
+    getServersForFile,
+    getPrimaryServerForFile,
     ensureServerStarted,
     sendRequest,
     getAllServers,
     getStateCounts,
     onServersChanged,
+    markManualServerActive,
+    markManualServerInactive,
+    isServerAutoActive,
+    isServerManuallyActive,
+    isServerActive,
     openFile,
     changeFile,
     saveFile,
     closeFile,
     syncFileChange,
     isFileOpen,
+    isFileOpenInServer,
   };
 }
 
@@ -476,7 +659,13 @@ export function getManager(): LSPServerManager | undefined {
 }
 
 /**
- * Whether at least one language server is connected (non-error). Gates the tool.
+ * Whether at least one language server is connected (non-error).
+ *
+ * Reports overall manager liveness across all configured servers. The `lsp`
+ * tool no longer uses this as a gate — it does per-file routing decisions
+ * instead — but the helper is kept for external consumers (e.g. status
+ * indicators or third-party callers) that want a coarse-grained "any server
+ * up?" answer.
  */
 export function isLspConnected(): boolean {
   if (initializationState === 'failed') return false;
