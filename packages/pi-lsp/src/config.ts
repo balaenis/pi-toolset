@@ -234,9 +234,7 @@ async function readConfigFile(filePath: string): Promise<Record<string, unknown>
   } catch (error) {
     // Missing file is the common, silent case; only log unexpected errors.
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-      logForDebugging(`config: failed to read ${filePath}: ${(error as Error).message}`, {
-        level: 'warn',
-      });
+      logForDebugging(`config: failed to read ${filePath}: ${(error as Error).message}`);
     }
     return undefined;
   }

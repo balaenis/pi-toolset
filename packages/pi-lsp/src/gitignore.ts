@@ -72,9 +72,7 @@ export async function filterGitIgnoredLocations<T extends Location>(
       // Exit code 1 (nothing ignored) and 128 (not a git repo) both land here;
       // either way the batch is treated as "no paths ignored". Genuine errors
       // (timeout, git missing) also fall through so results stay intact.
-      logForDebugging(`gitignore: git check-ignore batch skipped: ${(error as Error).message}`, {
-        level: 'warn',
-      });
+      logForDebugging(`gitignore: git check-ignore batch skipped: ${(error as Error).message}`);
     }
   }
 

@@ -46,10 +46,9 @@ function writeLine(line: string): void {
   s.write(`${new Date().toISOString()} ${line}\n`);
 }
 
-export function logForDebugging(message: string, options?: { level?: string }): void {
+export function logForDebugging(message: string): void {
   if (LEVEL_ORDER[CURRENT_LEVEL] > LEVEL_ORDER.debug) return;
-  const level = options?.level ? `[${options.level}]` : '';
-  writeLine(`[pi-lsp]${level} ${message}`);
+  writeLine(`[pi-lsp][debug] ${message}`);
 }
 
 export function logError(error: unknown): void {

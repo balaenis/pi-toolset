@@ -25,8 +25,7 @@ export function formatUri(uri: string | undefined, cwd?: string): string {
   // Handle undefined/null URIs - this indicates malformed LSP data
   if (!uri) {
     logForDebugging(
-      'formatUri called with undefined URI - indicates malformed LSP server response',
-      { level: 'warn' }
+      'formatUri called with undefined URI - indicates malformed LSP server response'
     );
     return '<unknown location>';
   }
@@ -44,8 +43,7 @@ export function formatUri(uri: string | undefined, cwd?: string): string {
     filePath = decodeURIComponent(filePath);
   } catch (error) {
     logForDebugging(
-      `Failed to decode LSP URI '${uri}': ${errorMessage(error)}. Using un-decoded path: ${filePath}`,
-      { level: 'warn' }
+      `Failed to decode LSP URI '${uri}': ${errorMessage(error)}. Using un-decoded path: ${filePath}`
     );
     // filePath already contains the un-decoded path, which is still usable
   }
@@ -134,8 +132,7 @@ export function formatGoToDefinitionResult(
     const invalidLocations = locations.filter((loc) => !loc || !loc.uri);
     if (invalidLocations.length > 0) {
       logForDebugging(
-        `formatGoToDefinitionResult: Filtering out ${invalidLocations.length} invalid location(s) - this should have been caught earlier`,
-        { level: 'warn' }
+        `formatGoToDefinitionResult: Filtering out ${invalidLocations.length} invalid location(s) - this should have been caught earlier`
       );
     }
 
@@ -167,8 +164,7 @@ export function formatFindReferencesResult(result: Location[] | null, cwd?: stri
   const invalidLocations = result.filter((loc) => !loc || !loc.uri);
   if (invalidLocations.length > 0) {
     logForDebugging(
-      `formatFindReferencesResult: Filtering out ${invalidLocations.length} invalid location(s) - this should have been caught earlier`,
-      { level: 'warn' }
+      `formatFindReferencesResult: Filtering out ${invalidLocations.length} invalid location(s) - this should have been caught earlier`
     );
   }
 
@@ -386,9 +382,7 @@ export function formatWorkspaceSymbolResult(
  */
 function formatCallHierarchyItem(item: CallHierarchyItem, cwd?: string): string {
   if (!item.uri) {
-    logForDebugging('formatCallHierarchyItem: CallHierarchyItem has undefined URI', {
-      level: 'warn',
-    });
+    logForDebugging('formatCallHierarchyItem: CallHierarchyItem has undefined URI');
     return `${item.name} (${symbolKindToString(item.kind)}) - <unknown location>`;
   }
   const filePath = formatUri(item.uri, cwd);

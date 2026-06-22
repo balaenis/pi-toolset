@@ -207,15 +207,11 @@ function toStoredDiagnostic(diag: LspDiagnostic): StoredDiagnostic {
  */
 export function register(serverName: string, uri: string, diagnostics: LspDiagnostic[]): void {
   if (!serverName) {
-    logForDebugging('diagnostics.register called with empty serverName — ignoring', {
-      level: 'warn',
-    });
+    logForDebugging('diagnostics.register called with empty serverName — ignoring');
     return;
   }
   if (!uri) {
-    logForDebugging('diagnostics.register called with empty URI — ignoring', {
-      level: 'warn',
-    });
+    logForDebugging('diagnostics.register called with empty URI — ignoring');
     return;
   }
 

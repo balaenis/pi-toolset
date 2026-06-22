@@ -71,7 +71,7 @@ export default function (pi: ExtensionAPI): void {
     const messages = stripDiagnosticBlocks(event.messages);
     const block = diagnostics.drain(ctx.cwd);
     if (block) {
-      logForDebugging(`diagnostics: injecting block for ${ctx.cwd}`, { level: 'debug' });
+      logForDebugging(`diagnostics: injecting block for ${ctx.cwd}`);
       messages.push({
         role: 'custom',
         customType: DIAGNOSTIC_CUSTOM_TYPE,
