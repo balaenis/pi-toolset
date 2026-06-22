@@ -16,7 +16,7 @@ function parseLogLevel(): LogLevel {
 }
 
 const CURRENT_LEVEL = parseLogLevel();
-const DEFAULT_LOG_FILE = path.join(homedir(), '.pi', 'pi-x-ide', 'debug.log');
+const DEFAULT_LOG_FILE = path.join(homedir(), '.pi', '@balaenis', 'pi-lsp', 'default.log');
 const LOG_FILE = process.env.PI_LSP_LOG_FILE?.trim() || DEFAULT_LOG_FILE;
 
 let stream: WriteStream | null = null;
