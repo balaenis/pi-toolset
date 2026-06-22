@@ -367,7 +367,7 @@ function formatBlock(
   cwd?: string
 ): string {
   const lines: string[] = [
-    `New LSP diagnostics detected (${total} issue${total === 1 ? '' : 's'} across ${files.length} file${files.length === 1 ? '' : 's'}):`,
+    `The following new diagnostic were detected (${total} issue${total === 1 ? '' : 's'} across ${files.length} file${files.length === 1 ? '' : 's'}):`,
   ];
 
   for (const file of files) {
@@ -396,7 +396,7 @@ function formatBlock(
     lines.push(`(${truncated} additional diagnostic(s) truncated by volume caps)`);
   }
 
-  return lines.join('\n');
+  return `<system-reminder><new-diagnostics>${lines.join('\n')}</new-diagnostics></system-reminder>`;
 }
 
 /**
