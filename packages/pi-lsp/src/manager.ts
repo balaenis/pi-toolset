@@ -459,7 +459,7 @@ export function createLSPServerManager(
         await server.start();
       } catch (error) {
         const err = error as Error;
-        logError(new Error(`Failed to start LSP server for file ${filePath}: ${err.message}`));
+        logError(new Error(`LSP startup failed for ${filePath}: ${err.message}`));
         throw error;
       }
     }
@@ -564,11 +564,7 @@ export function createLSPServerManager(
       try {
         await server.start();
       } catch (error) {
-        logError(
-          new Error(
-            `Failed to start LSP server '${server.name}' for ${filePath}: ${errorMessage(error)}`
-          )
-        );
+        logError(new Error(`LSP startup failed for ${filePath}: ${errorMessage(error)}`));
         return;
       }
     }

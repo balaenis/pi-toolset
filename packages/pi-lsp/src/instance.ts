@@ -6,7 +6,11 @@ import { pathToFileURL } from 'node:url';
 import type { InitializeParams, ServerCapabilities } from 'vscode-languageserver-protocol';
 import { createLSPClient, type LSPClient } from './client.ts';
 import { errorMessage, logError, logForDebugging, sleep } from './log.ts';
-import { classifyStartupFailure, type StartupFailureClassification } from './startup-errors.ts';
+import {
+  classifyStartupFailure,
+  formatStartupError,
+  type StartupFailureClassification,
+} from './startup-errors.ts';
 import type { LspServerState, ScopedLspServerConfig } from './types.ts';
 
 /**
@@ -307,9 +311,7 @@ export function createLSPServerInstance(
       const classification = classifyStartupFailure(error);
       startupFailureClassification = classification;
       startupRetryExhausted = classification.retryable && startupAttemptCount >= maxRestarts;
-      lastError = new Error(
-        `LSP server '${name}' failed to start: ${errorMessage(error)} (${classification.reason})`
-      );
+      lastError = new Error(`${formatStartupError(error)} (${classification.reason})`);
       logError(lastError);
 
       try {

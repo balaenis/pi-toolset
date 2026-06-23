@@ -5,6 +5,7 @@
 **Inputs:** Conversation requirements from 2026-06-22; existing `packages/pi-lsp/src/{config,manager,client,instance,tools,diagnostics,recipes,types}.ts`; tests in `packages/pi-lsp/tests/`; package instructions in `AGENTS.md`.
 
 **Assumptions:**
+
 - Primary language servers provide navigation and language understanding; companion servers provide additive diagnostics or contextual help such as lint and Tailwind CSS.
 - This plan does not add new LLM tool operations like completion, formatting, or codeAction; it only makes current operations and diagnostics route correctly when multiple servers cover the same file.
 - Existing user-configured primary replacements such as `vtsls` covering `.ts` should continue to suppress the built-in `typescript` recipe unless the user explicitly opts into another behavior.
@@ -40,11 +41,13 @@
 **Outcome:** Every server config has an explicit normalized role and startup mode, and existing configs continue to work as primary auto-starting servers by default.
 
 **Files:**
+
 - Modify: `packages/pi-lsp/src/types.ts`
 - Modify: `packages/pi-lsp/src/config.ts`
 - Test: `packages/pi-lsp/tests/config.test.ts`
 
 **Steps:**
+
 - [ ] Add `export type LspServerRole = 'primary' | 'companion';` to `types.ts`.
 - [ ] Add `export type LspStartupMode = 'auto' | 'manual';` to `types.ts`.
 - [ ] Add optional `role?: LspServerRole`, `startupMode?: LspStartupMode`, and `conflictGroup?: string` to `ScopedLspServerConfig`.
@@ -58,6 +61,7 @@
 - [ ] Add a config test that an invalid role or startup mode logs/filters the invalid server and allows valid recipes to continue.
 
 **Validation:**
+
 - Run: `mise run test --package packages/pi-lsp`
 - Expected: all existing tests pass, and new config tests pass.
 
@@ -66,12 +70,14 @@
 **Outcome:** User-configured companion servers no longer suppress primary built-in recipes, and manual-starting servers do not accidentally disable auto-starting defaults.
 
 **Files:**
+
 - Modify: `packages/pi-lsp/src/config.ts`
 - Modify: `packages/pi-lsp/src/recipes.ts`
 - Test: `packages/pi-lsp/tests/config.test.ts`
 - Test: `packages/pi-lsp/tests/recipes.test.ts`
 
 **Steps:**
+
 - [ ] Add `role: 'primary'` and `startupMode: 'auto'` to each existing built-in primary recipe-derived server config emitted by `getDetectedRecipeServers()`.
 - [ ] Keep current name-collision behavior: any user server with the same name as a recipe suppresses that recipe because it is an explicit override.
 - [ ] Change extension-overlap suppression to consider only user servers with `role: 'primary'` and `startupMode: 'auto'` when deciding whether to skip an auto primary recipe.
@@ -83,6 +89,7 @@
 - [ ] Add a recipes test that detected existing primary recipe servers have `role: 'primary'` and `startupMode: 'auto'`.
 
 **Validation:**
+
 - Run: `mise run test --package packages/pi-lsp`
 - Expected: TypeScript recipe remains when only a companion or manual primary overlaps; TypeScript recipe is still skipped when an auto primary user server overlaps.
 
@@ -91,6 +98,7 @@
 **Outcome:** Manual servers are available in status/start UI but do not participate in file routing until the user explicitly starts them for the current session.
 
 **Files:**
+
 - Modify: `packages/pi-lsp/src/manager.ts`
 - Modify: `packages/pi-lsp/src/command.ts`
 - Modify: `packages/pi-lsp/src/types.ts`
@@ -98,6 +106,7 @@
 - Test: `packages/pi-lsp/tests/command.test.ts`
 
 **Steps:**
+
 - [ ] Add a manager-level `manualEnabledServers: Set<string>` that is empty at session start and cleared on shutdown.
 - [ ] Add `isServerAutoActive(server)` returning true when `server.config.startupMode !== 'manual'`.
 - [ ] Add `isServerManuallyActive(server)` returning true when `manualEnabledServers` contains the server name.
@@ -110,6 +119,7 @@
 - [ ] Add a command formatting test that manual servers show their startup mode and active/inactive session status.
 
 **Validation:**
+
 - Run: `mise run test --package packages/pi-lsp`
 - Expected: manual servers remain visible but inactive until started, then participate in active routing for the current session.
 
@@ -118,11 +128,13 @@
 **Outcome:** The manager can distinguish configured servers from active servers, return the active primary server for a file, and track that one URI is open in multiple server instances.
 
 **Files:**
+
 - Modify: `packages/pi-lsp/src/manager.ts`
 - Modify: `packages/pi-lsp/src/types.ts`
 - Test: `packages/pi-lsp/tests/manager.test.ts`
 
 **Steps:**
+
 - [ ] Add `getConfiguredServersForFile(filePath): LSPServerInstance[]` to return every configured server whose `extensionToLanguage` covers the file extension, including inactive manual servers.
 - [ ] Add `getServersForFile(filePath): LSPServerInstance[]` to return only active servers: auto servers plus manual servers enabled by `/lsp start`.
 - [ ] Keep `getServerForFile(filePath)` as a backward-compatible alias for `getPrimaryServerForFile(filePath)`.
@@ -133,6 +145,7 @@
 - [ ] Add a unit test that `getServerForFile()` returns the active primary server even when active companions are registered before or after it.
 
 **Validation:**
+
 - Run: `mise run test --package packages/pi-lsp`
 - Expected: manager routing tests pass, inactive manual servers are excluded from automatic routing, and existing tool behavior still targets one active primary server for requests.
 
@@ -141,11 +154,13 @@
 **Outcome:** Any active server that covers a file receives document open/change/save/close notifications, allowing active companion servers to publish diagnostics for the same file.
 
 **Files:**
+
 - Modify: `packages/pi-lsp/src/manager.ts`
 - Modify: `packages/pi-lsp/src/index.ts`
 - Test: `packages/pi-lsp/tests/manager.test.ts`
 
 **Steps:**
+
 - [ ] Change `openFile(filePath, content)` to start all active candidate servers for the file and send `textDocument/didOpen` to each active candidate not already opened for that URI.
 - [ ] Use each server's own `extensionToLanguage[ext]` mapping when sending `languageId`.
 - [ ] Change `changeFile(filePath, content)` to send `textDocument/didChange` to every running active candidate that has the file open; if an active candidate is not open, call the shared open helper for that candidate.
@@ -157,6 +172,7 @@
 - [ ] Add a regression test that inactive manual companions receive no lifecycle notifications until `/lsp start` enables them.
 
 **Validation:**
+
 - Run: `mise run test --package packages/pi-lsp`
 - Expected: lifecycle fan-out tests pass; inactive manual servers are not started by file events; no test observes duplicate `didOpen` for a server that already has the URI open.
 
@@ -165,11 +181,13 @@
 **Outcome:** Existing `lsp` tool operations continue to produce one clear result from the primary language server, avoiding merged navigation ambiguity.
 
 **Files:**
+
 - Modify: `packages/pi-lsp/src/manager.ts`
 - Modify: `packages/pi-lsp/src/tools.ts`
 - Test: `packages/pi-lsp/tests/manager.test.ts`
 
 **Steps:**
+
 - [ ] Change `sendRequest(filePath, method, params)` to use `getPrimaryServerForFile(filePath)` rather than the first extension candidate.
 - [ ] Keep these existing operations primary-only: `goToDefinition`, `findReferences`, `hover`, `documentSymbol`, `workspaceSymbol`, `goToImplementation`, `prepareCallHierarchy`, `incomingCalls`, and `outgoingCalls`.
 - [ ] Update missing-server error text in `tools.ts` to distinguish no configured server, only inactive manual servers, no active primary server, and active primary server failed to start.
@@ -177,6 +195,7 @@
 - [ ] Add a regression test that lifecycle fan-out still opens the file in active companions before the primary-only request is made.
 
 **Validation:**
+
 - Run: `mise run test --package packages/pi-lsp`
 - Expected: current tool operations remain single-result operations, do not call companion servers for navigation requests, and do not auto-start inactive manual servers.
 
@@ -185,11 +204,13 @@
 **Outcome:** Diagnostics from multiple servers for the same file are preserved and delivered to the LLM without overwriting each other.
 
 **Files:**
+
 - Modify: `packages/pi-lsp/src/diagnostics.ts`
 - Modify: `packages/pi-lsp/src/manager.ts`
 - Test: `packages/pi-lsp/tests/diagnostics.test.ts`
 
 **Steps:**
+
 - [ ] Change `diagnostics.register(uri, diagnostics)` to `diagnostics.register(serverName, uri, diagnostics)`.
 - [ ] Key pending diagnostics by `${serverName}\0${uri}` internally while preserving file-grouped output in `drain()`.
 - [ ] Include `serverName` in the stored diagnostic key so identical messages from TypeScript and ESLint are not deduplicated as one issue.
@@ -200,6 +221,7 @@
 - [ ] Add a test where an empty publish from `eslint` clears only ESLint diagnostics and does not clear pending TypeScript diagnostics for the same URI.
 
 **Validation:**
+
 - Run: `mise run test --package packages/pi-lsp`
 - Expected: same-file diagnostics from multiple servers are delivered and per-server clearing works.
 
@@ -208,11 +230,13 @@
 **Outcome:** Users can understand why overlapping servers coexist, which servers are automatic or manual, and how to enable manual companion servers only when needed.
 
 **Files:**
+
 - Modify: `packages/pi-lsp/src/command.ts`
 - Modify: `packages/pi-lsp/README.md`
 - Test: `packages/pi-lsp/tests/command.test.ts`
 
 **Steps:**
+
 - [ ] Update `/lsp status` server details to include `role: primary` or `role: companion`.
 - [ ] Update `/lsp status` server details to include `startup: auto` or `startup: manual`.
 - [ ] Include `manual active: yes/no` for manual servers.
@@ -224,6 +248,7 @@
 - [ ] Document that current LLM tool navigation operations target the active primary server and passive diagnostics are collected from all active candidate servers.
 
 **Validation:**
+
 - Run: `mise run test --package packages/pi-lsp`
 - Expected: command formatting tests pass and README examples match the normalized `role`, `startupMode`, and `extensionToLanguage` fields.
 

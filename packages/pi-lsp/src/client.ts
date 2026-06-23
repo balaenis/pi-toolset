@@ -181,8 +181,9 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
             const wasInitialized = isInitialized;
             isInitialized = false;
             startFailed = !wasInitialized;
+            const stderrSuffix = startupStderr ? `\nServer stderr:\n${startupStderr}` : '';
             const crashError = markStartupError(
-              new Error(`LSP server ${serverName} crashed with exit code ${code}`),
+              new Error(`LSP server ${serverName} crashed with exit code ${code}${stderrSuffix}`),
               'exit'
             );
             startError = crashError;
@@ -233,8 +234,11 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
             isInitialized = false;
             if (!wasInitialized && !startFailed) {
               startFailed = true;
+              const stderrSuffix = startupStderr ? `\nServer stderr:\n${startupStderr}` : '';
               startError = markStartupError(
-                new Error(`LSP server ${serverName} connection closed during startup`),
+                new Error(
+                  `LSP server ${serverName} connection closed during startup${stderrSuffix}`
+                ),
                 'connection'
               );
             }

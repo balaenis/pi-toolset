@@ -1,6 +1,7 @@
 # `pi-lsp` 模块功能对比分析
 
 > 对比对象:
+>
 > - 当前实现: `/home/julian/workspace/my/pi-lsp`
 > - 当前使用: `/home/julian/.pi/agent/npm/node_modules/@spences10/pi-lsp`
 
@@ -8,17 +9,17 @@
 
 ## 1. 总览
 
-| 维度 | 本仓库 `pi-lsp` | `@spences10/pi-lsp` |
-| --- | --- | --- |
-| 版本状态 | v0.0.1，独立仓库，含 specs / analysis / fixtures / tests | v0.0.35，已发布 npm，作为 `my-pi` 内置包使用 |
-| 核心来源 | 移植 Claude Code 的 LSP 模块 | Pi 原生实现 |
-| 工具形态 | 单个 `lsp` 工具，通过 `operation` 参数选择 9 种操作 | 7 个独立工具，每个 LSP 操作一个工具 |
-| 诊断模式 | 被动注入：`publishDiagnostics` 自动进入模型上下文 | 主动拉取：模型调用 `lsp_diagnostics` / `lsp_diagnostics_many` |
-| 生命周期策略 | 自动崩溃恢复、启动/关闭超时、瞬态错误重试 | idle timeout 自动停闲置 server，失败后等待手动 restart |
-| 安全策略 | 有 UNC 路径防护，但缺少项目二进制信任和子进程环境清理 | 项目本地二进制信任 + 受限 child env |
-| 多 workspace | 以 session `cwd` 作为 workspace，偏单 root | 按 `(language, workspace_root)` 池化 client，支持多 root |
-| UX | 无 slash command，偏工具和日志 | `/lsp status/list/restart`、TUI modal、tab completion |
-| 扩展点 | 内部闭包工厂，未暴露正式 client 注入接口 | `create_lsp_extension({ create_client })`、`LspClientLike`、prompt gating |
+| 维度         | 本仓库 `pi-lsp`                                          | `@spences10/pi-lsp`                                                       |
+| ------------ | -------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 版本状态     | v0.0.1，独立仓库，含 specs / analysis / fixtures / tests | v0.0.35，已发布 npm，作为 `my-pi` 内置包使用                              |
+| 核心来源     | 移植 Claude Code 的 LSP 模块                             | Pi 原生实现                                                               |
+| 工具形态     | 单个 `lsp` 工具，通过 `operation` 参数选择 9 种操作      | 7 个独立工具，每个 LSP 操作一个工具                                       |
+| 诊断模式     | 被动注入：`publishDiagnostics` 自动进入模型上下文        | 主动拉取：模型调用 `lsp_diagnostics` / `lsp_diagnostics_many`             |
+| 生命周期策略 | 自动崩溃恢复、启动/关闭超时、瞬态错误重试                | idle timeout 自动停闲置 server，失败后等待手动 restart                    |
+| 安全策略     | 有 UNC 路径防护，但缺少项目二进制信任和子进程环境清理    | 项目本地二进制信任 + 受限 child env                                       |
+| 多 workspace | 以 session `cwd` 作为 workspace，偏单 root               | 按 `(language, workspace_root)` 池化 client，支持多 root                  |
+| UX           | 无 slash command，偏工具和日志                           | `/lsp status/list/restart`、TUI modal、tab completion                     |
+| 扩展点       | 内部闭包工厂，未暴露正式 client 注入接口                 | `create_lsp_extension({ create_client })`、`LspClientLike`、prompt gating |
 
 ## 2. 工具面差异
 
@@ -204,4 +205,3 @@ Spence 导出:
 1. 子进程环境清理 + 项目本地二进制信任
 2. `create_client` 依赖注入 seam + `LspClientLike` 接口
 3. `(language, workspace_root)` 多 workspace client 池
-

@@ -62,6 +62,16 @@ export function attachStartupErrorMetadata<T extends Error>(
   return error;
 }
 
+export function formatStartupError(error: unknown): string {
+  const metadata = getStartupErrorMetadata(error);
+  const message = messageOf(error);
+  if (!metadata.startupStderr) return message;
+  // Avoid printing the same stderr twice if an earlier layer already embedded it
+  // in the error message (e.g. a crash exit message includes the stderr inline).
+  if (message.includes(metadata.startupStderr)) return message;
+  return `${message}\nServer stderr (last output):\n${metadata.startupStderr}`;
+}
+
 export function classifyStartupFailure(error: unknown): StartupFailureClassification {
   const metadata = getStartupErrorMetadata(error);
   const code = metadata.spawnCode;

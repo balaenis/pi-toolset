@@ -3,43 +3,15 @@
 
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { getAgentDir } from '@earendil-works/pi-coding-agent';
+import { Value } from 'typebox/value';
+import { getAgentDir, CONFIG_DIR_NAME } from '@earendil-works/pi-coding-agent';
 import { logError, logForDebugging } from './log.ts';
 import { getDetectedRecipeServers } from './recipes.ts';
-import type {
-  LspServerRole,
-  LspStartupMode,
-  LspTransport,
-  ScopedLspServerConfig,
-} from './types.ts';
+import type { InputScopedLspServerConfig, ScopedLspServerConfig } from './types.ts';
+import { InputScopedLspServerConfigSchema } from './types.ts';
 
-/**
- * Raw server entry as it appears in config.json `servers.<name>`.
- * `extensions` is accepted as sugar and mapped to `extensionToLanguage` via
- * {@link guessLanguageId} when `extensionToLanguage` is absent.
- */
-interface RawServerConfig {
-  command?: string;
-  args?: string[];
-  extensionToLanguage?: Record<string, string>;
-  /** Sugar: [".ts", ".tsx"] → mapped via guessLanguageId. */
-  extensions?: string[];
-  env?: Record<string, string>;
-  initializationOptions?: unknown;
-  settings?: unknown;
-  workspaceFolder?: string;
-  startupTimeout?: number;
-  shutdownTimeout?: number;
-  restartOnCrash?: boolean;
-  maxRestarts?: number;
-  transport?: LspTransport;
-  role?: string;
-  startupMode?: string;
-  conflictGroup?: string;
-}
-
-interface RawLspConfig {
-  servers?: Record<string, RawServerConfig>;
+interface InputLspConfig {
+  servers?: Record<string, InputScopedLspServerConfig>;
 }
 
 /**
@@ -118,7 +90,20 @@ function substituteEnv(value: string): string {
  * Validate a single raw server entry and convert it to a ScopedLspServerConfig.
  * Returns undefined when the entry is invalid; the caller logs and skips it.
  */
-function normalizeServer(name: string, raw: RawServerConfig): ScopedLspServerConfig | undefined {
+function normalizeServer(
+  name: string,
+  raw: InputScopedLspServerConfig
+): ScopedLspServerConfig | undefined {
+  if (!Value.Check(InputScopedLspServerConfigSchema, raw)) {
+    const errors = Value.Errors(InputScopedLspServerConfigSchema, raw);
+    logError(
+      new Error(
+        `LSP server '${name}' config invalid: ${errors.map((error) => error.message).join('; ')}`
+      )
+    );
+    return undefined;
+  }
+
   if (!raw.command || typeof raw.command !== 'string' || raw.command.trim() === '') {
     logError(new Error(`LSP server '${name}' missing required 'command' field`));
     return undefined;
@@ -173,29 +158,8 @@ function normalizeServer(name: string, raw: RawServerConfig): ScopedLspServerCon
     ? Object.fromEntries(Object.entries(raw.env).map(([k, v]) => [k, substituteEnv(v)]))
     : undefined;
 
-  let role: LspServerRole = 'primary';
-  if (raw.role !== undefined) {
-    if (raw.role !== 'primary' && raw.role !== 'companion') {
-      logError(
-        new Error(`LSP server '${name}': role must be 'primary' or 'companion' (got '${raw.role}')`)
-      );
-      return undefined;
-    }
-    role = raw.role;
-  }
-
-  let startupMode: LspStartupMode = 'auto';
-  if (raw.startupMode !== undefined) {
-    if (raw.startupMode !== 'auto' && raw.startupMode !== 'manual') {
-      logError(
-        new Error(
-          `LSP server '${name}': startupMode must be 'auto' or 'manual' (got '${raw.startupMode}')`
-        )
-      );
-      return undefined;
-    }
-    startupMode = raw.startupMode;
-  }
+  const role = raw.role ?? 'primary';
+  const startupMode = raw.startupMode ?? 'auto';
 
   const conflictGroup =
     typeof raw.conflictGroup === 'string' && raw.conflictGroup.length > 0
@@ -291,14 +255,7 @@ function stripJsonc(text: string): string {
   return out;
 }
 
-/**
- * Per-extension config subdirectory under the agent dir / project config dir.
- * Keeping config in a dedicated dir avoids key collisions in Pi's shared
- * settings.json and survives package updates (the installed package dir is
- * overwritten by `pi update`).
- */
-const CONFIG_SUBDIR = path.join('@balaenis', 'pi-lsp');
-const CONFIG_FILENAME = 'config.json';
+const CONFIG_FILENAME = path.join('@balaenis', 'pi-lsp', 'config.json');
 
 /**
  * Get all configured LSP servers.
@@ -315,8 +272,8 @@ const CONFIG_FILENAME = 'config.json';
 export async function getAllLspServers(cwd: string): Promise<{
   servers: Record<string, ScopedLspServerConfig>;
 }> {
-  const globalPath = path.join(getAgentDir(), CONFIG_SUBDIR, CONFIG_FILENAME);
-  const projectPath = path.join(cwd, '.pi', CONFIG_SUBDIR, CONFIG_FILENAME);
+  const globalPath = path.join(getAgentDir(), CONFIG_FILENAME);
+  const projectPath = path.join(cwd, CONFIG_DIR_NAME, CONFIG_FILENAME);
 
   const [globalSettings, projectSettings] = await Promise.all([
     readConfigFile(globalPath),
@@ -327,7 +284,7 @@ export async function getAllLspServers(cwd: string): Promise<{
   const projectServers = extractServers(projectSettings);
 
   // Project overrides global on key collision.
-  const merged: Record<string, RawServerConfig> = {
+  const merged: Record<string, InputScopedLspServerConfig> = {
     ...globalServers,
     ...projectServers,
   };
@@ -388,9 +345,9 @@ export async function getAllLspServers(cwd: string): Promise<{
 /** Extract the `servers` record from a parsed config object. */
 function extractServers(
   settings: Record<string, unknown> | undefined
-): Record<string, RawServerConfig> {
+): Record<string, InputScopedLspServerConfig> {
   if (!settings) return {};
-  const config = settings as RawLspConfig;
+  const config = settings as InputLspConfig;
   if (!config.servers) return {};
-  return config.servers as Record<string, RawServerConfig>;
+  return config.servers as Record<string, InputScopedLspServerConfig>;
 }

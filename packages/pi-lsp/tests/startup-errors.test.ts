@@ -5,6 +5,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   attachStartupErrorMetadata,
   classifyStartupFailure,
+  formatStartupError,
   type StartupFailureKind,
 } from '../src/startup-errors.ts';
 
@@ -61,5 +62,29 @@ describe('classifyStartupFailure', () => {
       'retryable-unknown',
       true
     );
+  });
+
+  it('formats startup errors without stderr as the original message', () => {
+    expect(formatStartupError(new Error('connection closed'))).toBe('connection closed');
+  });
+
+  it('appends captured stderr to the formatted startup error', () => {
+    const error = attachStartupErrorMetadata(new Error('server crashed'), {
+      startupStderr: 'panicked at main.rs:42',
+    });
+    const formatted = formatStartupError(error);
+    expect(formatted).toContain('server crashed');
+    expect(formatted).toContain('panicked at main.rs:42');
+  });
+
+  it('does not duplicate stderr when the message already contains it', () => {
+    const stderr = 'panicked at main.rs:42';
+    const error = attachStartupErrorMetadata(
+      new Error(`server crashed\nServer stderr:\n${stderr}`),
+      { startupStderr: stderr }
+    );
+    const formatted = formatStartupError(error);
+    expect(formatted).toContain(stderr);
+    expect(formatted.match(/Server stderr/g)?.length).toBe(1);
   });
 });

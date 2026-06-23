@@ -12,4 +12,5 @@ coverage/
 .memory/
 .pi/pi-subagents
 .pi/APPEND_SYSTEM.md
+.pi/@balaenis
 .worktrees

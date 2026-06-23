@@ -94,19 +94,19 @@ export function createLspChildEnv(options?: ChildEnvOptions): Record<string, str
   "security": {
     "childEnv": {
       "mode": "restricted",
-      "allow": ["NODE_OPTIONS"]
-    }
+      "allow": ["NODE_OPTIONS"],
+    },
   },
-  "servers": {}
+  "servers": {},
 }
 ```
 
 字段:
 
-| 字段 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `security.childEnv.mode` | `'restricted' \| 'inherit'` | `'restricted'` | `restricted` 使用 allowlist；`inherit` 继承完整 `process.env`，仅用于兼容问题排查 |
-| `security.childEnv.allow` | `string[]` | `[]` | 额外允许从 `process.env` 继承的变量名 |
+| 字段                      | 类型                        | 默认值         | 说明                                                                              |
+| ------------------------- | --------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `security.childEnv.mode`  | `'restricted' \| 'inherit'` | `'restricted'` | `restricted` 使用 allowlist；`inherit` 继承完整 `process.env`，仅用于兼容问题排查 |
+| `security.childEnv.allow` | `string[]`                  | `[]`           | 额外允许从 `process.env` 继承的变量名                                             |
 
 环境变量覆盖:
 
@@ -155,7 +155,12 @@ export interface ProjectBinarySubject {
 
 export interface TrustDecision {
   allowed: boolean;
-  reason: 'trusted' | 'allowed-by-policy' | 'denied-by-policy' | 'user-denied' | 'prompt-unavailable';
+  reason:
+    | 'trusted'
+    | 'allowed-by-policy'
+    | 'denied-by-policy'
+    | 'user-denied'
+    | 'prompt-unavailable';
 }
 
 export async function resolveProjectBinaryTrust(
@@ -211,9 +216,9 @@ export async function resolveProjectBinaryTrust(
 {
   "security": {
     "projectBinaries": {
-      "policy": "prompt"
-    }
-  }
+      "policy": "prompt",
+    },
+  },
 }
 ```
 
@@ -223,12 +228,12 @@ export async function resolveProjectBinaryTrust(
 
 策略语义:
 
-| Policy | 语义 |
-| --- | --- |
+| Policy   | 语义                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------ |
 | `prompt` | 默认策略。若已有 trust store 命中则允许；否则尝试询问用户。若当前 UI 无法 prompt，则拒绝并给出配置提示 |
-| `deny` | 所有项目本地 binary 都拒绝启动 |
-| `allow` | 本次允许执行，但不写入 trust store |
-| `trust` | 允许执行，并将当前 subject 写入 trust store |
+| `deny`   | 所有项目本地 binary 都拒绝启动                                                                         |
+| `allow`  | 本次允许执行，但不写入 trust store                                                                     |
+| `trust`  | 允许执行，并将当前 subject 写入 trust store                                                            |
 
 ### 4.6 Prompt 行为
 
@@ -346,15 +351,15 @@ export async function resolveWorkspaceRoot(
 
 第一版 marker:
 
-| 生态 | Marker |
-| --- | --- |
+| 生态             | Marker                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------- |
 | JS / TS / Svelte | `tsconfig.json`、`jsconfig.json`、`package.json`、`svelte.config.js`、`svelte.config.ts` |
-| Python | `pyproject.toml`、`setup.py`、`requirements.txt` |
-| Rust | `Cargo.toml` |
-| Go | `go.mod` |
-| Java | `pom.xml`、`build.gradle`、`build.gradle.kts` |
-| Ruby | `Gemfile` |
-| Repo fallback | `.git`、`pnpm-lock.yaml`、`bun.lock`、`package-lock.json`、`yarn.lock` |
+| Python           | `pyproject.toml`、`setup.py`、`requirements.txt`                                         |
+| Rust             | `Cargo.toml`                                                                             |
+| Go               | `go.mod`                                                                                 |
+| Java             | `pom.xml`、`build.gradle`、`build.gradle.kts`                                            |
+| Ruby             | `Gemfile`                                                                                |
+| Repo fallback    | `.git`、`pnpm-lock.yaml`、`bun.lock`、`package-lock.json`、`yarn.lock`                   |
 
 ### 6.4 Request 路由
 
@@ -474,4 +479,3 @@ hk check
 - 解释项目本地 binary 首次被拒绝时如何授权
 - 解释 multi-workspace root marker 规则
 - 说明 custom harness 如何使用 `createLspExtension({ createClient })`
-
