@@ -37,6 +37,7 @@
   },
   "files": [
     "dist",
+    "schemas",
     "src/version.ts"
   ],
   "dependencies": {
@@ -49,7 +50,11 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
+  "scripts": {
+    "gen:schema": "bun run scripts/gen-schema.ts"
+  },
   "devDependencies": {
+    "prettier": "^3.8.4",
     "@earendil-works/pi-agent-core": "^0.79.8",
     "@earendil-works/pi-ai": "^0.79.8",
     "@earendil-works/pi-coding-agent": "^0.79.8",

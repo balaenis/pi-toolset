@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balaenis.dev/pi-lsp/input-scoped-lsp-server-config.json",
+  "type": "object",
+  "required": ["command"],
+  "properties": {
+    "command": { "type": "string" },
+    "args": { "type": "array", "items": { "type": "string" } },
+    "extensionToLanguage": {
+      "type": "object",
+      "patternProperties": { "^.*$": { "type": "string" } }
+    },
+    "env": {
+      "type": "object",
+      "patternProperties": { "^.*$": { "type": "string" } }
+    },
+    "initializationOptions": {},
+    "settings": {},
+    "workspaceFolder": { "type": "string" },
+    "startupTimeout": { "type": "number" },
+    "shutdownTimeout": { "type": "number" },
+    "restartOnCrash": { "type": "boolean" },
+    "maxRestarts": { "type": "number" },
+    "transport": {
+      "anyOf": [
+        { "type": "string", "const": "stdio" },
+        { "type": "string", "const": "socket" }
+      ]
+    },
+    "role": {
+      "anyOf": [
+        { "type": "string", "const": "primary" },
+        { "type": "string", "const": "companion" }
+      ]
+    },
+    "startupMode": {
+      "anyOf": [
+        { "type": "string", "const": "auto" },
+        { "type": "string", "const": "manual" }
+      ]
+    },
+    "conflictGroup": { "type": "string" },
+    "extensions": { "type": "array", "items": { "type": "string" } }
+  }
+}
