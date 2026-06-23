@@ -42,6 +42,8 @@ The indicator is a live snapshot, not a `ready/total` summary: configured-but-st
 
 Run `/lsp status` to inspect the current LSP runtime snapshot without starting any stopped servers. The command shows the manager state, server counts by lifecycle state, and per-server details including command, workspace, covered extensions, start time, restart count, and last error when present.
 
+Run `/lsp diagnostics` to inspect every diagnostic currently tracked by the extension. The command shows pending diagnostics (waiting to be delivered to the LLM) and delivered diagnostics (already injected and tracked for cross-turn deduplication), grouped by file and tagged with severity, line/column, message, code, source, and originating server (the server name is shown when the diagnostic's `source` does not already identify it).
+
 Run `/lsp start` to manually start or stop any configured server (including the built-in autodetected ones), and to enable manual (opt-in) servers for the current session. It opens an interactive panel listing each server with its live lifecycle state:
 
 ```

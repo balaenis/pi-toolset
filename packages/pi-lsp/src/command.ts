@@ -1,10 +1,11 @@
-// ABOUTME: Registers the /lsp slash command (status, start/stop) and its subcommand handlers.
-// ABOUTME: /lsp status formats live state; /lsp start shows a picker to toggle each configured server.
+// ABOUTME: Registers the /lsp slash command (status, start/stop, diagnostics) and its subcommand handlers.
+// ABOUTME: /lsp status formats live state; /lsp start shows a picker to toggle each configured server; /lsp diagnostics lists tracked diagnostics.
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { getSettingsListTheme } from '@earendil-works/pi-coding-agent';
 import type { AutocompleteItem } from '@earendil-works/pi-tui';
 import { Container, type SettingItem, SettingsList, Text } from '@earendil-works/pi-tui';
+import { formatDiagnosticsState } from './diagnostics.ts';
 import type { LSPServerInstance } from './instance.ts';
 import { errorMessage } from './log.ts';
 import {
@@ -17,11 +18,13 @@ import type { LspServerState } from './types.ts';
 
 const STATUS_SUBCOMMAND = 'status';
 const START_SUBCOMMAND = 'start';
-const SUBCOMMANDS = [STATUS_SUBCOMMAND, START_SUBCOMMAND];
+const DIAGNOSTICS_SUBCOMMAND = 'diagnostics';
+const SUBCOMMANDS = [STATUS_SUBCOMMAND, START_SUBCOMMAND, DIAGNOSTICS_SUBCOMMAND];
 
 export function registerLspCommand(pi: ExtensionAPI): void {
   pi.registerCommand('lsp', {
-    description: 'Inspect LSP server status or start/stop configured servers',
+    description:
+      'Inspect LSP server status, start/stop configured servers, or list tracked diagnostics',
     getArgumentCompletions(prefix: string): AutocompleteItem[] | null {
       const trimmed = prefix.trim();
       const matches = SUBCOMMANDS.filter((name) => name.startsWith(trimmed));
@@ -40,9 +43,14 @@ export function registerLspCommand(pi: ExtensionAPI): void {
         return;
       }
 
+      if (subcommand === DIAGNOSTICS_SUBCOMMAND) {
+        ctx.ui.notify(formatDiagnosticsState(ctx.cwd), 'info');
+        return;
+      }
+
       // Empty input defaults to status.
       if (subcommand !== '' && subcommand !== STATUS_SUBCOMMAND) {
-        ctx.ui.notify('Usage: /lsp status | /lsp start', 'info');
+        ctx.ui.notify('Usage: /lsp status | /lsp start | /lsp diagnostics', 'info');
         return;
       }
 

@@ -42,6 +42,16 @@ interface DiagnosticFile {
   diagnostics: DeliverableDiagnostic[];
 }
 
+/** Shape of a diagnostic dedup key after JSON parsing. */
+interface ParsedDiagnosticKey {
+  message: string;
+  severity: Severity;
+  range: StoredDiagnostic['range'];
+  source: string | null;
+  code: string | null;
+  server: string;
+}
+
 /** Internal entry: per-server publish for a file URI. */
 interface DiagnosticEntry {
   serverName: string;
@@ -102,6 +112,10 @@ class LruMap<K, V> {
 
   get size(): number {
     return this.map.size;
+  }
+
+  entries(): IterableIterator<[K, V]> {
+    return this.map.entries();
   }
 }
 
@@ -260,11 +274,12 @@ export function register(serverName: string, uri: string, diagnostics: LspDiagno
 
   const stored: StoredDiagnostic[] = diagnostics.map(toStoredDiagnostic);
   pendingDiagnostics.set(key, { serverName, uri, diagnostics: stored });
+  notifyIfChanged(before);
+  notifyOnDiagnosticRegistered();
+
   logForDebugging(
     `diagnostics: registered ${stored.length} diagnostic(s) for ${uri} from ${serverName}`
   );
-  notifyIfChanged(before);
-  notifyOnDiagnosticRegistered();
 }
 
 /**
@@ -372,6 +387,31 @@ export function drain(cwd?: string): string | null {
   return formatBlock(deliveredFiles, totalDelivered, truncated, cwd);
 }
 
+function formatDiagnosticLine(diag: DeliverableDiagnostic): string {
+  const line = diag.range.start.line + 1;
+  const character = diag.range.start.character + 1;
+  const symbol = severitySymbol(diag.severity);
+  // Include the origin server name when no `source` is provided or it
+  // doesn't already encode the server identity.
+  const showServer =
+    !diag.source || !diag.source.toLowerCase().includes(diag.serverName.toLowerCase());
+  const sourceParts: string[] = [];
+  if (diag.source) sourceParts.push(diag.source);
+  if (showServer) sourceParts.push(`server: ${diag.serverName}`);
+  const source = sourceParts.length > 0 ? ` (${sourceParts.join(', ')})` : '';
+  const code = diag.code ? ` [${diag.code}]` : '';
+  return `  ${symbol} [${line}:${character}] ${diag.message}${code}${source}`;
+}
+
+function formatFileDiagnostics(file: DiagnosticFile, cwd?: string): string[] {
+  const filePath = formatUri(file.uri, cwd);
+  const lines: string[] = ['', `${filePath}:`];
+  for (const diag of file.diagnostics) {
+    lines.push(formatDiagnosticLine(diag));
+  }
+  return lines;
+}
+
 function formatBlock(
   files: DiagnosticFile[],
   total: number,
@@ -383,24 +423,7 @@ function formatBlock(
   ];
 
   for (const file of files) {
-    const filePath = formatUri(file.uri, cwd);
-    lines.push('');
-    lines.push(`${filePath}:`);
-    for (const diag of file.diagnostics) {
-      const line = diag.range.start.line + 1;
-      const character = diag.range.start.character + 1;
-      const symbol = severitySymbol(diag.severity);
-      // Include the origin server name when no `source` is provided or it
-      // doesn't already encode the server identity.
-      const showServer =
-        !diag.source || !diag.source.toLowerCase().includes(diag.serverName.toLowerCase());
-      const sourceParts: string[] = [];
-      if (diag.source) sourceParts.push(diag.source);
-      if (showServer) sourceParts.push(`server: ${diag.serverName}`);
-      const source = sourceParts.length > 0 ? ` (${sourceParts.join(', ')})` : '';
-      const code = diag.code ? ` [${diag.code}]` : '';
-      lines.push(`  ${symbol} [${line}:${character}] ${diag.message}${code}${source}`);
-    }
+    lines.push(...formatFileDiagnostics(file, cwd));
   }
 
   if (truncated > 0) {
@@ -409,6 +432,109 @@ function formatBlock(
   }
 
   return `<system-reminder><new-diagnostics>${lines.join('\n')}</new-diagnostics></system-reminder>`;
+}
+
+function parseDeliveredKey(key: string): DeliverableDiagnostic | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(key);
+  } catch {
+    return undefined;
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    !('message' in parsed) ||
+    !('severity' in parsed) ||
+    !('range' in parsed) ||
+    !('server' in parsed)
+  ) {
+    return undefined;
+  }
+  const k = parsed as ParsedDiagnosticKey;
+  return {
+    message: k.message,
+    severity: k.severity,
+    range: k.range,
+    source: k.source ?? undefined,
+    code: k.code ?? undefined,
+    serverName: k.server,
+    dedupKey: key,
+  };
+}
+
+function collectPendingFiles(): DiagnosticFile[] {
+  const grouped = new Map<string, DiagnosticFile>();
+  for (const entry of pendingDiagnostics.values()) {
+    const file = grouped.get(entry.uri) ?? ({ uri: entry.uri, diagnostics: [] } as DiagnosticFile);
+    for (const diag of entry.diagnostics) {
+      file.diagnostics.push({ ...diag, serverName: entry.serverName });
+    }
+    grouped.set(entry.uri, file);
+  }
+  const files = Array.from(grouped.values());
+  for (const file of files) {
+    file.diagnostics.sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+  }
+  return files;
+}
+
+function collectDeliveredFiles(): DiagnosticFile[] {
+  const files: DiagnosticFile[] = [];
+  for (const [uri, keys] of deliveredDiagnostics.entries()) {
+    const diagnostics: DeliverableDiagnostic[] = [];
+    for (const key of keys) {
+      const diag = parseDeliveredKey(key);
+      if (diag) diagnostics.push(diag);
+    }
+    if (diagnostics.length > 0) {
+      diagnostics.sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+      files.push({ uri, diagnostics });
+    }
+  }
+  return files;
+}
+
+/**
+ * Format current pending and delivered diagnostics for human inspection.
+ *
+ * Pending diagnostics are awaiting drain; delivered diagnostics have already
+ * been injected and are tracked for cross-turn deduplication.
+ */
+export function formatDiagnosticsState(cwd?: string): string {
+  const pendingFiles = collectPendingFiles();
+  const deliveredFiles = collectDeliveredFiles();
+
+  const lines = ['LSP diagnostics', ''];
+
+  if (pendingFiles.length === 0 && deliveredFiles.length === 0) {
+    lines.push('No pending or delivered diagnostics.');
+    return lines.join('\n');
+  }
+
+  if (pendingFiles.length > 0) {
+    const total = pendingFiles.reduce((sum, f) => sum + f.diagnostics.length, 0);
+    lines.push(
+      `Pending (${total} issue${total === 1 ? '' : 's'} across ${pendingFiles.length} file${pendingFiles.length === 1 ? '' : 's'}):`
+    );
+    for (const file of pendingFiles) {
+      lines.push(...formatFileDiagnostics(file, cwd));
+    }
+    lines.push('');
+  }
+
+  if (deliveredFiles.length > 0) {
+    const total = deliveredFiles.reduce((sum, f) => sum + f.diagnostics.length, 0);
+    lines.push(
+      `Delivered (${total} issue${total === 1 ? '' : 's'} across ${deliveredFiles.length} file${deliveredFiles.length === 1 ? '' : 's'}):`
+    );
+    for (const file of deliveredFiles) {
+      lines.push(...formatFileDiagnostics(file, cwd));
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n').trimEnd();
 }
 
 /**

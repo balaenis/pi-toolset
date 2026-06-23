@@ -6,6 +6,7 @@ import type { Diagnostic as LspDiagnostic } from 'vscode-languageserver-types';
 import {
   clearForFile,
   drain,
+  formatDiagnosticsState,
   hasDiagnostics,
   onChanged,
   register,
@@ -133,5 +134,92 @@ describe('diagnostic presence indicator', () => {
     expect(hasDiagnostics()).toBe(true);
 
     off();
+  });
+});
+
+describe('formatDiagnosticsState', () => {
+  it('reports no diagnostics when empty', () => {
+    expect(formatDiagnosticsState()).toBe(
+      'LSP diagnostics\n\nNo pending or delivered diagnostics.'
+    );
+  });
+
+  it('shows pending diagnostics', () => {
+    register('ts', 'file:///x.ts', [diag('pending error', 'ts', 2)]);
+    const output = formatDiagnosticsState();
+    expect(output).toContain('Pending (1 issue across 1 file):');
+    expect(output).toContain('x.ts:');
+    expect(output).toContain('pending error');
+    expect(output).toContain('[3:1]');
+    expect(output).not.toContain('Delivered');
+  });
+
+  it('shows delivered diagnostics after drain', () => {
+    register('ts', 'file:///x.ts', [diag('delivered error', 'ts', 4)]);
+    drain();
+    const output = formatDiagnosticsState();
+    expect(output).toContain('Delivered (1 issue across 1 file):');
+    expect(output).toContain('delivered error');
+    expect(output).toContain('[5:1]');
+    expect(output).not.toContain('Pending');
+  });
+
+  it('groups multiple servers for the same file', () => {
+    register('ts', 'file:///x.ts', [diag('ts error', 'ts', 0)]);
+    register('eslint', 'file:///x.ts', [diag('lint error', 'eslint', 1)]);
+    const output = formatDiagnosticsState();
+    expect(output).toContain('Pending (2 issues across 1 file):');
+    const uriOccurrences = output.split('\n').filter((l) => l.includes('x.ts:'));
+    expect(uriOccurrences.length).toBe(1);
+  });
+
+  it('clears delivered diagnostics for a file on clearForFile', () => {
+    const uri = 'file:///x.ts';
+    register('ts', uri, [diag('e')]);
+    drain();
+    clearForFile(uri);
+    expect(formatDiagnosticsState()).toContain('No pending or delivered diagnostics.');
+  });
+
+  it('shows the originating server for delivered diagnostics without a source', () => {
+    // No `source` on the diagnostic — formatter must still tag the line with
+    // the originating server after the delivered key round-trip.
+    register('eslint', 'file:///x.ts', [diag('no-source error', undefined, 3)]);
+    drain();
+    const output = formatDiagnosticsState();
+    expect(output).toContain('Delivered (1 issue across 1 file):');
+    expect(output).toContain('no-source error');
+    expect(output).toContain('server: eslint');
+  });
+
+  it('preserves the diagnostic code through delivered-key parsing', () => {
+    const withCode: LspDiagnostic = {
+      range: {
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: 5 },
+      },
+      message: 'coded error',
+      severity: 1,
+      source: 'ts',
+      code: 2322,
+    };
+    register('ts', 'file:///x.ts', [withCode]);
+    drain();
+    const output = formatDiagnosticsState();
+    expect(output).toContain('coded error');
+    expect(output).toContain('[2322]');
+  });
+
+  it('shows pending and delivered sections for the same file', () => {
+    const uri = 'file:///x.ts';
+    register('ts', uri, [diag('first', 'ts', 0)]);
+    drain();
+    register('ts', uri, [diag('second', 'ts', 1)]);
+    const output = formatDiagnosticsState();
+    expect(output).toContain('Pending (1 issue across 1 file):');
+    expect(output).toContain('Delivered (1 issue across 1 file):');
+    expect(output).toContain('first');
+    expect(output).toContain('second');
+    expect(output.indexOf('Pending')).toBeLessThan(output.indexOf('Delivered'));
   });
 });
