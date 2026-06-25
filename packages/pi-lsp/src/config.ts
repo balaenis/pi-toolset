@@ -6,7 +6,8 @@ import * as path from 'node:path';
 import { Value } from 'typebox/value';
 import { getAgentDir, CONFIG_DIR_NAME } from '@earendil-works/pi-coding-agent';
 import { logError, logForDebugging } from './log.ts';
-import { getDetectedRecipeServers } from './recipes.ts';
+import { BUILTIN_RECIPES, getDetectedRecipeServers } from './recipes.ts';
+import type { LspServerRecipe } from './recipes.ts';
 import type { InputScopedLspServerConfig, ScopedLspServerConfig } from './types.ts';
 import { InputScopedLspServerConfigSchema } from './types.ts';
 
@@ -92,10 +93,32 @@ function substituteEnv(value: string): string {
  */
 function normalizeServer(
   name: string,
-  raw: InputScopedLspServerConfig
+  raw: InputScopedLspServerConfig,
+  base?: InputScopedLspServerConfig
 ): ScopedLspServerConfig | undefined {
-  if (!Value.Check(InputScopedLspServerConfigSchema, raw)) {
-    const errors = Value.Errors(InputScopedLspServerConfigSchema, raw);
+  // Layer inputs over the optional recipe base so users can override single
+  // fields (e.g. command) without re-declaring extensionToLanguage.
+  // Only inherit from the base when the user did not supply the field at all;
+  // an explicit JSON `null` should fail schema validation rather than inherit.
+  const merged: InputScopedLspServerConfig = base
+    ? {
+        ...base,
+        ...raw,
+        env: 'env' in raw ? raw.env : base.env,
+        // Allow `extensions` sugar to override a recipe's extensionToLanguage
+        // when the user did not explicitly provide extensionToLanguage.
+        extensionToLanguage:
+          'extensionToLanguage' in raw || 'extensions' in raw
+            ? raw.extensionToLanguage
+            : base.extensionToLanguage,
+        initializationOptions:
+          'initializationOptions' in raw ? raw.initializationOptions : base.initializationOptions,
+        settings: 'settings' in raw ? raw.settings : base.settings,
+      }
+    : raw;
+
+  if (!Value.Check(InputScopedLspServerConfigSchema, merged)) {
+    const errors = Value.Errors(InputScopedLspServerConfigSchema, merged);
     logError(
       new Error(
         `LSP server '${name}' config invalid: ${errors.map((error) => error.message).join('; ')}`
@@ -104,14 +127,14 @@ function normalizeServer(
     return undefined;
   }
 
-  if (!raw.command || typeof raw.command !== 'string' || raw.command.trim() === '') {
+  if (!merged.command || typeof merged.command !== 'string' || merged.command.trim() === '') {
     logError(new Error(`LSP server '${name}' missing required 'command' field`));
     return undefined;
   }
 
   // Commands with spaces must be absolute paths (e.g. "/usr/local/bin/my server").
   // Otherwise the user should split args into the args array.
-  if (raw.command.includes(' ') && !path.isAbsolute(raw.command)) {
+  if (merged.command.includes(' ') && !path.isAbsolute(merged.command)) {
     logError(
       new Error(
         `LSP server '${name}': command should not contain spaces. Use the args array for arguments.`
@@ -121,16 +144,16 @@ function normalizeServer(
   }
 
   // Resolve extensionToLanguage, accepting `extensions` as sugar.
-  let extensionToLanguage = raw.extensionToLanguage;
+  let extensionToLanguage = merged.extensionToLanguage;
   if (!extensionToLanguage) {
-    if (!raw.extensions || raw.extensions.length === 0) {
+    if (!merged.extensions || merged.extensions.length === 0) {
       logError(
         new Error(`LSP server '${name}': missing 'extensionToLanguage' (or 'extensions') mapping`)
       );
       return undefined;
     }
     extensionToLanguage = {};
-    for (const ext of raw.extensions) {
+    for (const ext of merged.extensions) {
       const normalized = ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
       extensionToLanguage[normalized] = guessLanguageId(normalized);
     }
@@ -152,18 +175,18 @@ function normalizeServer(
     }
   }
 
-  const command = substituteEnv(raw.command);
-  const args = raw.args?.map((a) => substituteEnv(a));
-  const env = raw.env
-    ? Object.fromEntries(Object.entries(raw.env).map(([k, v]) => [k, substituteEnv(v)]))
+  const command = substituteEnv(merged.command);
+  const args = merged.args?.map((a) => substituteEnv(a));
+  const env = merged.env
+    ? Object.fromEntries(Object.entries(merged.env).map(([k, v]) => [k, substituteEnv(v)]))
     : undefined;
 
-  const role = raw.role ?? 'primary';
-  const startupMode = raw.startupMode ?? 'auto';
+  const role = merged.role ?? 'primary';
+  const startupMode = merged.startupMode ?? 'auto';
 
   const conflictGroup =
-    typeof raw.conflictGroup === 'string' && raw.conflictGroup.length > 0
-      ? raw.conflictGroup
+    typeof merged.conflictGroup === 'string' && merged.conflictGroup.length > 0
+      ? merged.conflictGroup
       : role === 'primary'
         ? name
         : undefined;
@@ -173,14 +196,14 @@ function normalizeServer(
     args,
     extensionToLanguage,
     env,
-    initializationOptions: raw.initializationOptions,
-    settings: raw.settings,
-    workspaceFolder: raw.workspaceFolder,
-    startupTimeout: raw.startupTimeout,
-    shutdownTimeout: raw.shutdownTimeout,
-    restartOnCrash: raw.restartOnCrash,
-    maxRestarts: raw.maxRestarts,
-    transport: raw.transport ?? 'stdio',
+    initializationOptions: merged.initializationOptions,
+    settings: merged.settings,
+    workspaceFolder: merged.workspaceFolder,
+    startupTimeout: merged.startupTimeout,
+    shutdownTimeout: merged.shutdownTimeout,
+    restartOnCrash: merged.restartOnCrash,
+    maxRestarts: merged.maxRestarts,
+    transport: merged.transport ?? 'stdio',
     role,
     startupMode,
     conflictGroup,
@@ -283,22 +306,54 @@ export async function getAllLspServers(cwd: string): Promise<{
   const globalServers = extractServers(globalSettings);
   const projectServers = extractServers(projectSettings);
 
-  // Project overrides global on key collision.
-  const merged: Record<string, InputScopedLspServerConfig> = {
-    ...globalServers,
-    ...projectServers,
-  };
+  const detectedRecipes = getDetectedRecipeServers();
+
+  // All built-in recipes act as the merge base for same-name user entries,
+  // regardless of whether the recipe's default binary is on PATH. This lets
+  // users supply a custom command while inheriting extensionToLanguage and
+  // other defaults.
+  const allRecipes: Record<string, InputScopedLspServerConfig> = {};
+  for (const recipe of BUILTIN_RECIPES) {
+    allRecipes[recipe.name] = recipeToInput(recipe);
+  }
+
+  function recipeToInput(recipe: LspServerRecipe): InputScopedLspServerConfig {
+    const input: InputScopedLspServerConfig = {
+      command: recipe.command,
+      args: recipe.args ? [...recipe.args] : undefined,
+      extensionToLanguage: { ...recipe.extensionToLanguage },
+      role: recipe.role,
+      startupTimeout: recipe.startupTimeout,
+    };
+    if (recipe.settings !== undefined) {
+      input.settings = recipe.settings;
+    }
+    return input;
+  }
+
+  // Resolve user-configured servers with recipe defaults as the base.
+  // Precedence: recipe defaults < global config < project config.
+  // A user entry can override a single field (e.g. command) and inherit the
+  // rest from the matching recipe.
+  const userServerNames = new Set([...Object.keys(globalServers), ...Object.keys(projectServers)]);
 
   const userServers: Record<string, ScopedLspServerConfig> = {};
-  for (const [name, raw] of Object.entries(merged)) {
-    const normalized = normalizeServer(name, raw);
+  for (const name of userServerNames) {
+    const base = allRecipes[name];
+    // Merge global → project first; normalizeServer will layer this over the
+    // recipe base. Do not include the base here so that 'in' checks inside
+    // normalizeServer can tell which fields the user actually supplied.
+    const raw: InputScopedLspServerConfig = {
+      ...globalServers[name],
+      ...projectServers[name],
+    };
+    const normalized = normalizeServer(name, raw, base);
     if (normalized) {
       userServers[name] = normalized;
     }
     logForDebugging(`User server '${name}': ${normalized?.command}`);
   }
 
-  const recipes = getDetectedRecipeServers();
   // Only auto primary user servers participate in extension-overlap suppression;
   // companions overlap by design, and manual primary servers can be configured
   // alongside an auto primary recipe until the user explicitly switches.
@@ -310,14 +365,12 @@ export async function getAllLspServers(cwd: string): Promise<{
     }
   }
 
-  // Start with the user-validated entries, then layer recipes that do not
-  // collide on server name or any covered extension.
+  // Add recipes that were not merged with user config, skipping any whose
+  // extensions overlap an auto-primary user-covered extension.
   const servers: Record<string, ScopedLspServerConfig> = { ...userServers };
-  for (const [name, cfg] of Object.entries(recipes)) {
+  for (const [name, cfg] of Object.entries(detectedRecipes)) {
     if (servers[name]) {
-      logForDebugging(
-        `config: skipping detected recipe '${name}' — already covered by user config`
-      );
+      logForDebugging(`config: recipe '${name}' merged with user config`);
       continue;
     }
     const recipeExts = Object.keys(cfg.extensionToLanguage).map((e) => e.toLowerCase());

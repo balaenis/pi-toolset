@@ -321,3 +321,149 @@ describe('recipe merge rules for role and startup mode', () => {
     expect(Object.keys(servers).sort()).toEqual(['opt-in-ts', 'typescript']);
   });
 });
+
+describe('recipe field-level overrides', () => {
+  it('inherits recipe defaults when only command is overridden', async () => {
+    makeExecutable(pathDir, 'typescript-language-server');
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: '/custom/typescript-language-server',
+          },
+        },
+      })
+    );
+    const { servers } = await getAllLspServers(cwdDir);
+    expect(Object.keys(servers)).toEqual(['typescript']);
+    expect(servers.typescript!.command).toBe('/custom/typescript-language-server');
+    // Recipe defaults preserved.
+    expect(servers.typescript!.extensionToLanguage['.ts']).toBe('typescript');
+    expect(servers.typescript!.extensionToLanguage['.tsx']).toBe('typescriptreact');
+    expect(servers.typescript!.role).toBe('primary');
+    expect(servers.typescript!.startupMode).toBe('auto');
+    expect(servers.typescript!.transport).toBe('stdio');
+  });
+
+  it('project overrides global for the same recipe-backed server', async () => {
+    makeExecutable(pathDir, 'typescript-language-server');
+    writeAgentSettings(
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: '/global/typescript-language-server',
+            args: ['--global'],
+          },
+        },
+      })
+    );
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: '/project/typescript-language-server',
+            args: ['--project'],
+          },
+        },
+      })
+    );
+    const { servers } = await getAllLspServers(cwdDir);
+    expect(servers.typescript!.command).toBe('/project/typescript-language-server');
+    expect(servers.typescript!.args).toEqual(['--project']);
+    // Inherited from recipe.
+    expect(servers.typescript!.extensionToLanguage['.ts']).toBe('typescript');
+  });
+
+  it('inherits recipe settings when not overridden', async () => {
+    makeExecutable(pathDir, 'vscode-eslint-language-server');
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          eslint: {
+            command: '/custom/vscode-eslint-language-server',
+          },
+        },
+      })
+    );
+    const { servers } = await getAllLspServers(cwdDir);
+    expect(servers.eslint!.command).toBe('/custom/vscode-eslint-language-server');
+    // Built-in ESLint recipe ships default settings required for pull diagnostics.
+    expect(servers.eslint!.settings).toEqual(
+      expect.objectContaining({
+        validate: 'on',
+        useFlatConfig: true,
+      })
+    );
+  });
+
+  it('inherits recipe defaults even when the default binary is not on PATH', async () => {
+    // Do not put typescript-language-server on PATH.
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: '/custom/typescript-language-server',
+          },
+        },
+      })
+    );
+    const { servers } = await getAllLspServers(cwdDir);
+    expect(Object.keys(servers)).toEqual(['typescript']);
+    expect(servers.typescript!.command).toBe('/custom/typescript-language-server');
+    expect(servers.typescript!.extensionToLanguage['.ts']).toBe('typescript');
+    expect(servers.typescript!.extensionToLanguage['.tsx']).toBe('typescriptreact');
+  });
+
+  it('allows extensions sugar to override a recipe extensionToLanguage', async () => {
+    makeExecutable(pathDir, 'typescript-language-server');
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: '/custom/typescript-language-server',
+            extensions: ['.ts'],
+          },
+        },
+      })
+    );
+    const { servers } = await getAllLspServers(cwdDir);
+    expect(Object.keys(servers.typescript!.extensionToLanguage)).toEqual(['.ts']);
+    expect(servers.typescript!.extensionToLanguage['.ts']).toBe('typescript');
+  });
+
+  it('still rejects a partial server that has no matching recipe', async () => {
+    makeExecutable(pathDir, 'typescript-language-server');
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          'my-custom': {
+            command: '/custom/srv',
+            // Missing extensionToLanguage and no recipe named 'my-custom'.
+          },
+        },
+      })
+    );
+    const { servers } = await getAllLspServers(cwdDir);
+    expect(servers['my-custom']).toBeUndefined();
+    // Recipe still available because the invalid entry did not cover any extension.
+    expect(servers.typescript).toBeDefined();
+  });
+
+  it('overriding a recipe command still suppresses other overlapping recipes', async () => {
+    makeExecutable(pathDir, 'typescript-language-server');
+    makeExecutable(pathDir, 'vscode-eslint-language-server');
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: '/custom/typescript-language-server',
+          },
+        },
+      })
+    );
+    const { servers } = await getAllLspServers(cwdDir);
+    // The merged typescript primary covers .ts, so the overlapping eslint
+    // recipe is suppressed just as it would be with a fully manual primary.
+    expect(Object.keys(servers)).toEqual(['typescript']);
+  });
+});

@@ -160,7 +160,9 @@ With no `servers` block in `config.json`, the extension scans `PATH` for the fol
 | CSS        | `vscode-css-language-server`    | `--stdio` | `.css`, `.scss`, `.less`                                                              | `npm install -g vscode-langservers-extracted`                                                                                         |
 | Vue        | `vue-language-server`           | `--stdio` | `.vue`                                                                                | `npm install -g @vue/language-server`                                                                                                 |
 
-User entries in `servers` are authoritative: a built-in recipe is skipped when its server name collides with a user entry **or** when its extensions are already covered by a user `primary` + `startupMode: "auto"` entry. Companion (`role: "companion"`) and manual (`startupMode: "manual"`) user entries do **not** suppress an auto-primary recipe, so you can layer e.g. ESLint alongside the built-in TypeScript recipe without losing navigation. Recipes still supplement uncovered languages. Invalid user entries do not disable autodetection for unrelated languages.
+User entries in `servers` are authoritative. A built-in recipe is skipped when its extensions are already covered by a user `primary` + `startupMode: "auto"` entry. Companion (`role: "companion"`) and manual (`startupMode: "manual"`) user entries do **not** suppress an auto-primary recipe, so you can layer e.g. ESLint alongside the built-in TypeScript recipe without losing navigation. Recipes still supplement uncovered languages. Invalid user entries do not disable autodetection for unrelated languages.
+
+When a user entry uses the **same name** as a built-in recipe, it is merged on top of the recipe at the field level. This means you can override just `command` (or `args`, `env`, `settings`, etc.) while keeping the recipe's `extensionToLanguage`, `role`, `startupMode`, and other defaults. The merge precedence is **project config > global config > recipe defaults**.
 
 When the agent edits a file or invokes the `lsp` tool for an extension covered by a recipe but the matching binary is missing on `PATH`, the extension surfaces a single non-blocking warning (`ctx.ui.notify(…, "warning")`) with an actionable install hint and includes the same hint in the tool's text output. Notifications are deduplicated per session by extension and reason.
 
@@ -174,7 +176,21 @@ Each file may be served by one primary server plus zero or more companion server
 
 Passive diagnostics from every active server (primary + active companions) are collected and tagged by source server, so TypeScript, ESLint, and Tailwind diagnostics can coexist for the same file without overwriting each other. Stopping an `auto` server doesn't permanently disable it; it may restart on the next matching file event. Use `startupMode: "manual"` for true opt-in behavior.
 
-### Example: primary replacement (vtsls in place of typescript-language-server)
+### Example: override only the TypeScript command
+
+```jsonc
+{
+  "servers": {
+    "typescript": {
+      "command": "/home/user/.local/bin/typescript-language-server",
+    },
+  },
+}
+```
+
+Because this entry shares the recipe name `typescript`, it inherits the recipe's `extensionToLanguage`, `args`, `role`, `startupMode`, and other defaults. Only `command` is replaced.
+
+### Example: primary replacement with a different server name (vtsls)
 
 ```jsonc
 {
@@ -196,7 +212,7 @@ Passive diagnostics from every active server (primary + active companions) are c
 }
 ```
 
-With this entry, the built-in `typescript` recipe is skipped because the user-configured server is an auto primary covering the same extensions.
+With this entry, the built-in `typescript` recipe is skipped because the user-configured server is an auto primary covering the same extensions. A different server name does **not** inherit recipe defaults, so all required fields must be supplied.
 
 ### Example: ESLint companion alongside the TypeScript primary
 
@@ -214,10 +230,10 @@ With this entry, the built-in `typescript` recipe is skipped because the user-co
       },
       "role": "companion",
       "startupMode": "auto",
-      // Required: vscode-eslint-language-server returns an empty pull
-      // diagnostic report unless validate is on and a working directory mode
-      // is configured. The built-in ESLint recipe ships these defaults, but a
-      // user-configured `eslint` entry must supply its own settings.
+      // Optional when using the recipe name `eslint`: the built-in ESLint
+      // recipe already ships defaults (validate: 'on', useFlatConfig: true,
+      // workingDirectory: { mode: 'location' }) required for pull diagnostics.
+      // Include a settings block only if you want to override those defaults.
       "settings": {
         "validate": "on",
         "useFlatConfig": true,
@@ -228,7 +244,7 @@ With this entry, the built-in `typescript` recipe is skipped because the user-co
 }
 ```
 
-ESLint diagnostics surface alongside TypeScript diagnostics; navigation operations still target the built-in TypeScript primary. The built-in ESLint recipe also ships default `vscode-eslint-language-server` settings (e.g. `validate: 'on'`, `useFlatConfig: true`, `workingDirectory: { mode: 'location' }`) so pull diagnostics work out of the box. User-configured `eslint` entries do **not** inherit the recipe defaults — supply your own `settings` block as shown above.
+ESLint diagnostics surface alongside TypeScript diagnostics; navigation operations still target the built-in TypeScript primary. The built-in ESLint recipe also ships default `vscode-eslint-language-server` settings (e.g. `validate: 'on'`, `useFlatConfig: true`, `workingDirectory: { mode: 'location' }`) so pull diagnostics work out of the box. Because this example uses the recipe name `eslint`, the user entry would inherit those recipe defaults; if you choose a different server name, supply your own `settings` block as shown above.
 
 ### Example: Tailwind CSS manual companion
 
