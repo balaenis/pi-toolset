@@ -57,7 +57,7 @@ Move with the arrow keys, press space to toggle the highlighted server (start wh
 
 ## Configuration
 
-LSP servers are configured through a dedicated config file (separate from Pi's shared `settings.json`, to avoid key collisions with other extensions). A JSON Schema for the per-server shape is generated at `schemas/input-scoped-lsp-server-config.json`; regenerate it with `bun run --cwd packages/pi-lsp gen:schema` after changing `src/types.ts`.
+LSP servers are configured through a dedicated config file (separate from Pi's shared `settings.json`, to avoid key collisions with other extensions). A JSON Schema for the whole config file is generated at `schemas/pi-lsp-config.json`; regenerate it with `bun run --cwd packages/pi-lsp gen:schema` after changing `src/types.ts`.
 
 The extension reads two files (project overrides global):
 

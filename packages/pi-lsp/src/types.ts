@@ -138,6 +138,17 @@ export const InputScopedLspServerConfigSchema = Type.Object({
 
 export type InputScopedLspServerConfig = Type.Static<typeof InputScopedLspServerConfigSchema>;
 
+export const InputLspConfigSchema = Type.Object({
+  servers: Type.Optional(
+    Type.Record(Type.String(), InputScopedLspServerConfigSchema, {
+      description:
+        'Map from server name to its input config. Names match built-in recipes to override or extend their defaults.',
+    })
+  ),
+});
+
+export type InputLspConfig = Type.Static<typeof InputLspConfigSchema>;
+
 export interface LspToolDetails {
   operation: string;
   filePath: string;

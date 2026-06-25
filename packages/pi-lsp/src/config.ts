@@ -11,12 +11,9 @@ import type {
   InputScopedLspServerConfig,
   ScopedLspServerConfig,
   LspServerRecipe,
+  InputLspConfig,
 } from './types.ts';
 import { InputScopedLspServerConfigSchema } from './types.ts';
-
-interface InputLspConfig {
-  servers?: Record<string, InputScopedLspServerConfig>;
-}
 
 /**
  * Best-effort languageId guess for the `extensions` sugar. Covers the common
