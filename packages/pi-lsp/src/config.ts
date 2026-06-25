@@ -7,8 +7,11 @@ import { Value } from 'typebox/value';
 import { getAgentDir, CONFIG_DIR_NAME } from '@earendil-works/pi-coding-agent';
 import { logError, logForDebugging } from './log.ts';
 import { BUILTIN_RECIPES, getDetectedRecipeServers } from './recipes.ts';
-import type { LspServerRecipe } from './recipes.ts';
-import type { InputScopedLspServerConfig, ScopedLspServerConfig } from './types.ts';
+import type {
+  InputScopedLspServerConfig,
+  ScopedLspServerConfig,
+  LspServerRecipe,
+} from './types.ts';
 import { InputScopedLspServerConfigSchema } from './types.ts';
 
 interface InputLspConfig {
@@ -326,6 +329,8 @@ export async function getAllLspServers(cwd: string): Promise<{
       extensionToLanguage: { ...recipe.extensionToLanguage },
       role: recipe.role,
       startupTimeout: recipe.startupTimeout,
+      startupMode: recipe.startupMode,
+      enabled: recipe.enabled,
     };
     if (recipe.settings !== undefined) {
       input.settings = recipe.settings;

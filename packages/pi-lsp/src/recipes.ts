@@ -4,30 +4,7 @@
 import { accessSync, constants, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { logForDebugging } from './log.ts';
-import type { ScopedLspServerConfig } from './types.ts';
-
-/**
- * A built-in LSP server recipe. Recipes are advisory: a recipe is only
- * activated when its `command` is found on `PATH`, and user-configured
- * servers always win on server name and covered extensions.
- */
-export interface LspServerRecipe {
-  /** Server name used in the manager's server map. */
-  name: string;
-  /** Executable looked up on PATH. */
-  command: string;
-  /** Optional command arguments. */
-  args?: string[];
-  /** Extension → LSP languageId mapping for routing and didOpen. */
-  extensionToLanguage: Record<string, string>;
-  /** Human-readable install hint shown when the command is not on PATH. */
-  installHint: string;
-  /** Server role in multi-server routing; defaults to primary. */
-  role?: ScopedLspServerConfig['role'];
-  startupTimeout?: number;
-  /** Optional default settings returned to the server via workspace/configuration. */
-  settings?: unknown;
-}
+import type { ScopedLspServerConfig, LspServerRecipe } from './types.ts';
 
 /**
  * Default `vscode-eslint-language-server` settings required for the server to
@@ -308,6 +285,7 @@ export function getDetectedRecipeServers(
 ): Record<string, ScopedLspServerConfig> {
   const out: Record<string, ScopedLspServerConfig> = {};
   for (const recipe of BUILTIN_RECIPES) {
+    if (recipe.enabled === false) continue;
     const resolved = findExecutable(recipe.command, pathValue);
     if (!resolved) continue;
     out[recipe.name] = {
@@ -318,8 +296,7 @@ export function getDetectedRecipeServers(
       maxRestarts: 3,
       transport: 'stdio',
       role: recipe.role ?? 'primary',
-      startupMode: 'auto',
-      enabled: true,
+      startupMode: recipe.startupMode ?? 'auto',
       conflictGroup: recipe.role === 'companion' ? undefined : recipe.name,
       ...(recipe.settings !== undefined ? { settings: recipe.settings } : {}),
     };

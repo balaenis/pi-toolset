@@ -26,7 +26,7 @@ export const LspStartupModeSchema = Type.Union([Type.Literal('auto'), Type.Liter
 });
 export type LspStartupMode = Type.Static<typeof LspStartupModeSchema>;
 
-export const ScopedLspServerConfigSchema = Type.Object({
+export const LspServerBaseSchema = Type.Object({
   command: Type.String({
     description: 'Executable used to launch the LSP server process.',
   }),
@@ -39,6 +39,39 @@ export const ScopedLspServerConfigSchema = Type.Object({
     description:
       'Map from file extension (e.g. ".ts") to an LSP languageId (e.g. "typescript"). Single source of truth for both extension routing and the `languageId` sent in `textDocument/didOpen`.',
   }),
+  role: Type.Optional(LspServerRoleSchema),
+  startupTimeout: Type.Optional(
+    Type.Number({
+      description: 'Maximum time in milliseconds to wait for the server to finish initializing.',
+    })
+  ),
+  settings: Type.Optional(
+    Type.Unknown({
+      description: 'Server settings returned in response to `workspace/configuration` requests.',
+    })
+  ),
+  enabled: Type.Optional(
+    Type.Boolean({
+      description:
+        'When false, the server is disabled and excluded from routing entirely. Defaults to true.',
+    })
+  ),
+  startupMode: Type.Optional(LspStartupModeSchema),
+});
+
+export const LspServerRecipeSchema = Type.Object({
+  ...LspServerBaseSchema.properties,
+  name: Type.String({
+    description: 'Name of the server.',
+  }),
+  installHint: Type.String({
+    description: 'Human-readable install hint shown when the command is not on PATH.',
+  }),
+});
+export type LspServerRecipe = Type.Static<typeof LspServerRecipeSchema>;
+
+export const ScopedLspServerConfigSchema = Type.Object({
+  ...LspServerBaseSchema.properties,
   env: Type.Optional(
     Type.Record(Type.String(), Type.String(), {
       description: 'Environment variables added to the spawned server process.',
@@ -49,20 +82,10 @@ export const ScopedLspServerConfigSchema = Type.Object({
       description: 'Value forwarded as `initializationOptions` in the LSP `initialize` request.',
     })
   ),
-  settings: Type.Optional(
-    Type.Unknown({
-      description: 'Server settings returned in response to `workspace/configuration` requests.',
-    })
-  ),
   workspaceFolder: Type.Optional(
     Type.String({
       description:
         'Override the workspace root reported to the server. Defaults to the current working directory.',
-    })
-  ),
-  startupTimeout: Type.Optional(
-    Type.Number({
-      description: 'Maximum time in milliseconds to wait for the server to finish initializing.',
     })
   ),
   shutdownTimeout: Type.Optional(
@@ -81,14 +104,6 @@ export const ScopedLspServerConfigSchema = Type.Object({
     })
   ),
   transport: Type.Optional(LspTransportSchema),
-  role: Type.Optional(LspServerRoleSchema),
-  startupMode: Type.Optional(LspStartupModeSchema),
-  enabled: Type.Optional(
-    Type.Boolean({
-      description:
-        'When false, the server is disabled and excluded from routing entirely. Defaults to true.',
-    })
-  ),
   conflictGroup: Type.Optional(
     Type.String({
       description:

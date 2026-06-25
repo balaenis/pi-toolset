@@ -17,6 +17,31 @@
       "patternProperties": { "^.*$": { "type": "string" } },
       "description": "Map from file extension (e.g. \".ts\") to an LSP languageId (e.g. \"typescript\"). Optional on input; merged with a built-in recipe when extending one."
     },
+    "role": {
+      "anyOf": [
+        { "type": "string", "const": "primary" },
+        { "type": "string", "const": "companion" }
+      ],
+      "description": "Role of the server in multi-server routing. \"primary\" servers provide language understanding (navigation, hover, symbols) and at most one is consulted per file for tool requests. \"companion\" servers augment the primary with extra diagnostics or contextual help (e.g. lint, Tailwind CSS) and do not participate in primary-only operations."
+    },
+    "startupTimeout": {
+      "type": "number",
+      "description": "Maximum time in milliseconds to wait for the server to finish initializing."
+    },
+    "settings": {
+      "description": "Server settings returned in response to `workspace/configuration` requests."
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "When false, the server is disabled and excluded from routing entirely. Defaults to true."
+    },
+    "startupMode": {
+      "anyOf": [
+        { "type": "string", "const": "auto" },
+        { "type": "string", "const": "manual" }
+      ],
+      "description": "Whether the server participates in routing automatically (\"auto\") or must be enabled per session via `/lsp start` (\"manual\")."
+    },
     "env": {
       "type": "object",
       "patternProperties": { "^.*$": { "type": "string" } },
@@ -25,16 +50,9 @@
     "initializationOptions": {
       "description": "Value forwarded as `initializationOptions` in the LSP `initialize` request."
     },
-    "settings": {
-      "description": "Server settings returned in response to `workspace/configuration` requests."
-    },
     "workspaceFolder": {
       "type": "string",
       "description": "Override the workspace root reported to the server. Defaults to the current working directory."
-    },
-    "startupTimeout": {
-      "type": "number",
-      "description": "Maximum time in milliseconds to wait for the server to finish initializing."
     },
     "shutdownTimeout": {
       "type": "number",
@@ -54,24 +72,6 @@
         { "type": "string", "const": "socket" }
       ],
       "description": "Transport used to talk to the LSP server. Only \"stdio\" is implemented; \"socket\" is accepted for config compatibility and ignored at runtime."
-    },
-    "role": {
-      "anyOf": [
-        { "type": "string", "const": "primary" },
-        { "type": "string", "const": "companion" }
-      ],
-      "description": "Role of the server in multi-server routing. \"primary\" servers provide language understanding (navigation, hover, symbols) and at most one is consulted per file for tool requests. \"companion\" servers augment the primary with extra diagnostics or contextual help (e.g. lint, Tailwind CSS) and do not participate in primary-only operations."
-    },
-    "startupMode": {
-      "anyOf": [
-        { "type": "string", "const": "auto" },
-        { "type": "string", "const": "manual" }
-      ],
-      "description": "Whether the server participates in routing automatically (\"auto\") or must be enabled per session via `/lsp start` (\"manual\")."
-    },
-    "enabled": {
-      "type": "boolean",
-      "description": "When false, the server is disabled and excluded from routing entirely. Defaults to true."
     },
     "conflictGroup": {
       "type": "string",
