@@ -103,6 +103,7 @@ export async function runSingleAgent(
       turns: 0,
     },
     model: agent.model,
+    thinking: agent.thinking,
     step,
   };
 

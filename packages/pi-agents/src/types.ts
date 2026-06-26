@@ -27,6 +27,7 @@ export interface SingleResult {
   stderr: string;
   usage: UsageStats;
   model?: string;
+  thinking?: string;
   stopReason?: string;
   errorMessage?: string;
   step?: number;

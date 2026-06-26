@@ -222,7 +222,7 @@ export function renderResult(
           container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
         }
       }
-      const usageStr = formatUsageStats(r.usage, r.model);
+      const usageStr = formatUsageStats(r.usage, r.model, r.thinking);
       if (usageStr) {
         container.addChild(new Spacer(1));
         container.addChild(new Text(theme.fg('dim', usageStr), 0, 0));
@@ -239,7 +239,7 @@ export function renderResult(
       if (displayItems.length > COLLAPSED_ITEM_COUNT)
         text += `\n${theme.fg('muted', '(Ctrl+O to expand)')}`;
     }
-    const usageStr = formatUsageStats(r.usage, r.model);
+    const usageStr = formatUsageStats(r.usage, r.model, r.thinking);
     if (usageStr) text += `\n${theme.fg('dim', usageStr)}`;
     return new Text(text, 0, 0);
   }
@@ -294,7 +294,7 @@ export function renderResult(
           container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
         }
 
-        const stepUsage = formatUsageStats(r.usage, r.model);
+        const stepUsage = formatUsageStats(r.usage, r.model, r.thinking);
         if (stepUsage) container.addChild(new Text(theme.fg('dim', stepUsage), 0, 0));
       }
 
@@ -378,7 +378,7 @@ export function renderResult(
           container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
         }
 
-        const taskUsage = formatUsageStats(r.usage, r.model);
+        const taskUsage = formatUsageStats(r.usage, r.model, r.thinking);
         if (taskUsage) container.addChild(new Text(theme.fg('dim', taskUsage), 0, 0));
       }
 

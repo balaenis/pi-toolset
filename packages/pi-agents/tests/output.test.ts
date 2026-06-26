@@ -4,7 +4,12 @@
 import { describe, expect, it } from 'bun:test';
 import type { Message } from '@earendil-works/pi-ai';
 import { PER_TASK_OUTPUT_CAP } from '../src/constants.ts';
-import { formatTokens, getFinalOutput, truncateParallelOutput } from '../src/output.ts';
+import {
+  formatTokens,
+  formatUsageStats,
+  getFinalOutput,
+  truncateParallelOutput,
+} from '../src/output.ts';
 
 describe('formatTokens', () => {
   it('returns plain digits below 1k', () => {
@@ -52,6 +57,30 @@ describe('getFinalOutput', () => {
     ];
     expect(getFinalOutput(messages)).toBe('');
     expect(getFinalOutput([])).toBe('');
+  });
+});
+
+describe('formatUsageStats', () => {
+  const usage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    contextTokens: 0,
+    turns: 0,
+  };
+
+  it('appends model when provided', () => {
+    expect(formatUsageStats(usage, 'glm-5.2')).toBe('glm-5.2');
+  });
+
+  it('appends thinking level next to model when provided', () => {
+    expect(formatUsageStats(usage, 'glm-5.2', 'xhigh')).toBe('glm-5.2 • xhigh');
+  });
+
+  it('omits thinking when model is missing', () => {
+    expect(formatUsageStats(usage, undefined, 'xhigh')).toBe('');
   });
 });
 

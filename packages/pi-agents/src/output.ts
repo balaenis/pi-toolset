@@ -22,7 +22,8 @@ export function formatUsageStats(
     contextTokens?: number;
     turns?: number;
   },
-  model?: string
+  model?: string,
+  thinking?: string
 ): string {
   const parts: string[] = [];
   if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? 's' : ''}`);
@@ -34,7 +35,7 @@ export function formatUsageStats(
   if (usage.contextTokens && usage.contextTokens > 0) {
     parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
   }
-  if (model) parts.push(model);
+  if (model) parts.push(thinking ? `${model} • ${thinking}` : model);
   return parts.join(' ');
 }
 
