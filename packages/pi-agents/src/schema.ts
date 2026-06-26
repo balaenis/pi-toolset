@@ -3,16 +3,23 @@
 
 import { StringEnum, Type } from '@earendil-works/pi-ai';
 
+export const IsolationSchema = StringEnum(['none', 'worktree'] as const, {
+  description:
+    'Per-task isolation. "worktree" runs the child in a fresh git worktree under .worktrees/.',
+});
+
 export const TaskItem = Type.Object({
   agent: Type.String({ description: 'Name of the agent to invoke' }),
   task: Type.String({ description: 'Task to delegate to the agent' }),
   cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
+  isolation: Type.Optional(IsolationSchema),
 });
 
 export const ChainItem = Type.Object({
   agent: Type.String({ description: 'Name of the agent to invoke' }),
   task: Type.String({ description: 'Task with optional {previous} placeholder for prior output' }),
   cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
+  isolation: Type.Optional(IsolationSchema),
 });
 
 export const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {
@@ -42,4 +49,5 @@ export const SubagentParams = Type.Object({
   cwd: Type.Optional(
     Type.String({ description: 'Working directory for the agent process (single mode)' })
   ),
+  isolation: Type.Optional(IsolationSchema),
 });

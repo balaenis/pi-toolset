@@ -313,18 +313,18 @@
 
 **Steps:**
 
-- [ ] Extend `TaskItem`, `ChainItem`, and single-mode params with optional `isolation: 'none' | 'worktree'` where task-level isolation overrides agent frontmatter isolation.
-- [ ] Add `resolveIsolation(agent, params)` that returns task-level isolation when provided, otherwise `agent.isolation`, otherwise `none`.
-- [ ] Add `getGitRoot(cwd)` in `worktree.ts`; run `git -C <cwd> rev-parse --show-toplevel` and return the trimmed path.
-- [ ] If worktree isolation is requested and `getGitRoot()` fails, return an agent error result with `stderr: 'Worktree isolation requires a git repository.'`.
-- [ ] Add `createAgentWorktree(repoRoot, agentName, index)` that creates `.worktrees/pi-agent-<safe-agent-name>-<timestamp>-<index>` under the repo root using `git -C <repoRoot> worktree add --detach <path> HEAD`.
-- [ ] Run the child process with `cwd` set to the worktree path when worktree isolation is active.
-- [ ] Add `getWorktreeDirtyStatus(worktreePath)` that runs `git -C <worktreePath> status --porcelain`.
-- [ ] After the child exits, if dirty status is empty, remove the worktree with `git -C <repoRoot> worktree remove <worktreePath> --force` and delete the directory if it remains.
-- [ ] After the child exits, if dirty status is non-empty, keep the worktree and add `worktreePath` plus `worktreeDirty: true` to `SingleResult`.
-- [ ] Add a worktree test using a temporary git repository where an unchanged worktree is removed after cleanup.
-- [ ] Add a worktree test using a temporary git repository where a modified file causes the worktree to be kept and reported.
-- [ ] Document `isolation: worktree`, task-level override, cleanup behavior, and retained-worktree path reporting in README.
+- [x] Extend `TaskItem`, `ChainItem`, and single-mode params with optional `isolation: 'none' | 'worktree'` where task-level isolation overrides agent frontmatter isolation.
+- [x] Add `resolveIsolation(agent, params)` that returns task-level isolation when provided, otherwise `agent.isolation`, otherwise `none`.
+- [x] Add `getGitRoot(cwd)` in `worktree.ts`; run `git -C <cwd> rev-parse --show-toplevel` and return the trimmed path.
+- [x] If worktree isolation is requested and `getGitRoot()` fails, return an agent error result with `stderr: 'Worktree isolation requires a git repository.'`.
+- [x] Add `createAgentWorktree(repoRoot, agentName, index)` that creates `.worktrees/pi-agent-<safe-agent-name>-<timestamp>-<index>` under the repo root using `git -C <repoRoot> worktree add --detach <path> HEAD`.
+- [x] Run the child process with `cwd` set to the worktree path when worktree isolation is active.
+- [x] Add `getWorktreeDirtyStatus(worktreePath)` that runs `git -C <worktreePath> status --porcelain`.
+- [x] After the child exits, if dirty status is empty, remove the worktree with `git -C <repoRoot> worktree remove <worktreePath> --force` and delete the directory if it remains.
+- [x] After the child exits, if dirty status is non-empty, keep the worktree and add `worktreePath` plus `worktreeDirty: true` to `SingleResult`.
+- [x] Add a worktree test using a temporary git repository where an unchanged worktree is removed after cleanup.
+- [x] Add a worktree test using a temporary git repository where a modified file causes the worktree to be kept and reported.
+- [x] Document `isolation: worktree`, task-level override, cleanup behavior, and retained-worktree path reporting in README.
 
 **Validation:**
 
@@ -348,16 +348,16 @@
 
 **Steps:**
 
-- [ ] Add `agentCanMutate(agent)` in `completion-guard.ts`; return true when `agent.tools` is undefined, or when `agent.tools` includes `edit`, `write`, or `bash` and those tools are not excluded by `excludeTools`.
-- [ ] Add `isCompletionGuardEnabled(agent)`; return `agent.completionGuard` when explicitly set, otherwise return `agentCanMutate(agent)`.
-- [ ] Add `validateCompletionOutput(agent, output)`; when guard is disabled return success.
-- [ ] When guard is enabled, require final output to contain headings matching `## Completed`, `## Files Changed`, and `## Validation`.
-- [ ] If required headings are missing, mark the result failed by setting `stopReason = 'completion_guard'`, `errorMessage = 'Completion guard failed: missing <headings>'`, and `exitCode = 1`.
-- [ ] Update `worker.md` output format to include `## Validation` with either commands run and pass/fail results or `Not run: <specific reason>`.
-- [ ] Add a completion-guard test where a mutating worker output missing `## Validation` fails with `completion_guard`.
-- [ ] Add a completion-guard test where a reviewer with `excludeTools: edit, write, agent` and explicit `completionGuard: false` is not checked.
-- [ ] Add a completion-guard test where valid worker output passes.
-- [ ] Document completion guard defaults, required headings, and opt-out behavior in README.
+- [x] Add `agentCanMutate(agent)` in `completion-guard.ts`; return true when `agent.tools` is undefined, or when `agent.tools` includes `edit`, `write`, or `bash` and those tools are not excluded by `excludeTools`.
+- [x] Add `isCompletionGuardEnabled(agent)`; return `agent.completionGuard` when explicitly set, otherwise return `agentCanMutate(agent)`.
+- [x] Add `validateCompletionOutput(agent, output)`; when guard is disabled return success.
+- [x] When guard is enabled, require final output to contain headings matching `## Completed`, `## Files Changed`, and `## Validation`.
+- [x] If required headings are missing, mark the result failed by setting `stopReason = 'completion_guard'`, `errorMessage = 'Completion guard failed: missing <headings>'`, and `exitCode = 1`.
+- [x] Update `worker.md` output format to include `## Validation` with either commands run and pass/fail results or `Not run: <specific reason>`.
+- [x] Add a completion-guard test where a mutating worker output missing `## Validation` fails with `completion_guard`.
+- [x] Add a completion-guard test where a reviewer with `excludeTools: edit, write, agent` and explicit `completionGuard: false` is not checked.
+- [x] Add a completion-guard test where valid worker output passes.
+- [x] Document completion guard defaults, required headings, and opt-out behavior in README.
 
 **Validation:**
 
