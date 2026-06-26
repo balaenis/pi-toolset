@@ -22,6 +22,7 @@ export type SpawnFn = (command: string, args: string[], options: object) => Spaw
 
 export interface RunSingleAgentOptions {
   spawnFn?: SpawnFn;
+  sessionFile?: string;
 }
 
 export async function mapWithConcurrencyLimit<TIn, TOut>(
@@ -121,7 +122,10 @@ export async function runSingleAgent(
       tmpPromptPath = tmp.filePath;
     }
 
-    const args = buildPiArgs(agent, task, { tmpPromptPath: tmpPromptPath ?? undefined });
+    const args = buildPiArgs(agent, task, {
+      tmpPromptPath: tmpPromptPath ?? undefined,
+      sessionFile: options.sessionFile,
+    });
     let wasAborted = false;
     let maxTurnsExceeded = false;
 

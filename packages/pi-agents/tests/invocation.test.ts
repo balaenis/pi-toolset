@@ -88,6 +88,20 @@ describe('buildPiArgs', () => {
     expect(args).toContain('--no-skills');
   });
 
+  it('uses --no-session in fresh context', () => {
+    const args = buildPiArgs(makeAgent(), 'go');
+    expect(args).toContain('--no-session');
+    expect(args).not.toContain('--session');
+  });
+
+  it('uses --session <file> when a fork session file is provided', () => {
+    const args = buildPiArgs(makeAgent(), 'go', { sessionFile: '/tmp/fork.jsonl' });
+    expect(args).toContain('--session');
+    const idx = args.indexOf('--session');
+    expect(args[idx + 1]).toBe('/tmp/fork.jsonl');
+    expect(args).not.toContain('--no-session');
+  });
+
   it('omits --tools when agent has no tools', () => {
     const args = buildPiArgs(makeAgent({ tools: [] }), 'go');
     expect(args).not.toContain('--tools');

@@ -277,17 +277,18 @@
 
 **Steps:**
 
-- [ ] Add `prepareAgentContext(agent, ctx)` in `context.ts`.
-- [ ] For `agent.defaultContext === 'fresh'`, return `{ mode: 'fresh', sessionFile: undefined, cleanup: async () => {} }`.
-- [ ] For `agent.defaultContext === 'fork'`, read `const leafId = ctx.sessionManager.getLeafId()`.
-- [ ] If `leafId` is missing for `fork`, throw `Cannot fork parent context: current session has no leaf entry`.
-- [ ] Call `ctx.sessionManager.createBranchedSession(leafId)` for `fork`.
-- [ ] If `createBranchedSession()` returns undefined, throw `Cannot fork parent context: parent session is not persisted`.
-- [ ] In `buildPiArgs()`, use `--session <sessionFile>` when a fork session file is provided; otherwise use `--no-session`.
-- [ ] Ensure fork child sessions do not overwrite the parent session file by always using the branched file returned by `createBranchedSession()`.
-- [ ] Add an invocation test where fresh context includes `--no-session`.
-- [ ] Add an invocation test where fork context includes `--session /tmp/fork.jsonl` and omits `--no-session`.
-- [ ] Document `defaultContext: fresh | fork`, the persisted-session requirement, and the failure messages in README.
+- [x] Add `prepareAgentContext(agent, ctx)` in `context.ts`.
+- [x] For `agent.defaultContext === 'fresh'`, return `{ mode: 'fresh', sessionFile: undefined, cleanup: async () => {} }`.
+- [x] For `agent.defaultContext === 'fork'`, read `const leafId = ctx.sessionManager.getLeafId()`.
+- [x] If `leafId` is missing for `fork`, throw `Cannot fork parent context: current session has no leaf entry`.
+- [x] Open the parent session file with `SessionManager.open(parentSessionFile, getSessionDir?.())` and call `createBranchedSession(leafId)` on the opened manager (the readonly `ctx.sessionManager` does not expose this method; pattern borrowed from `pi-subagents/src/shared/fork-context.ts`).
+- [x] If `createBranchedSession()` returns undefined, throw `Cannot fork parent context: parent session is not persisted`.
+- [x] In `buildPiArgs()`, use `--session <sessionFile>` when a fork session file is provided; otherwise use `--no-session`.
+- [x] Ensure fork child sessions do not overwrite the parent session file by always using the branched file returned by `createBranchedSession()`.
+- [x] Add an invocation test where fresh context includes `--no-session`.
+- [x] Add an invocation test where fork context includes `--session /tmp/fork.jsonl` and omits `--no-session`.
+- [x] Add a context test that successfully forks a real `SessionManager` and returns a populated `sessionFile`.
+- [x] Document `defaultContext: fresh | fork`, the persisted-session requirement, the explicit error messages, and the `stopReason: context_error` classification in README.
 
 **Validation:**
 
