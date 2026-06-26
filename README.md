@@ -8,6 +8,7 @@ A monorepo of [Pi](https://github.com/earendil-works/pi) extension packages. Eac
 | ---------------------------------- | --------------------- | ------------------------------------------------------------------------------ |
 | [`pi-lsp`](packages/pi-lsp/)       | `@balaenis/pi-lsp`    | LSP support for Pi (language-server lifecycle, diagnostics, tools, statusline) |
 | [`pi-format`](packages/pi-format/) | `@balaenis/pi-format` | Format files via tool, `/format` command, and automatic post-write/edit hook   |
+| [`pi-agents`](packages/pi-agents/) | `@balaenis/pi-agents` | Delegate tasks to specialized subagents with isolated context windows          |
 
 See each package's `README.md` for usage and configuration.
 

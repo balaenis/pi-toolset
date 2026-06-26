@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Build packages/pi-agents"
+
+mise run build --package packages/pi-agents

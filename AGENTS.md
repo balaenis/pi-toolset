@@ -2,7 +2,7 @@
 
 ## Goal
 
-Maintain the `pi-toolset` monorepo of Pi extension packages (currently `@balaenis/pi-lsp`). Before acting, identify the deliverable, constraints, and allowed side effects. Choose the most efficient path that satisfies them.
+Maintain the `pi-toolset` monorepo of Pi extension packages (currently `@balaenis/pi-lsp`, `@balaenis/pi-format`, `@balaenis/pi-agents`). Before acting, identify the deliverable, constraints, and allowed side effects. Choose the most efficient path that satisfies them.
 
 ## Success Criteria
 

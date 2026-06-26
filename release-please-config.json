@@ -14,6 +14,11 @@
       "component": "pi-format",
       "release-type": "node",
       "extra-files": ["src/version.ts"]
+    },
+    "packages/pi-agents": {
+      "component": "pi-agents",
+      "release-type": "node",
+      "extra-files": ["src/version.ts"]
     }
   }
 }
