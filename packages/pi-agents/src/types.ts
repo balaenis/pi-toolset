@@ -33,6 +33,9 @@ export interface SingleResult {
   step?: number;
   worktreePath?: string;
   worktreeDirty?: boolean;
+  finalOutput?: string;
+  structuredOutput?: unknown;
+  structuredOutputError?: string;
 }
 
 export interface SubagentDetails {
