@@ -492,7 +492,7 @@ async function runStepWithContext(
     if (worktree) {
       finalizeWorktree(worktree, result);
     }
-    enforceCompletionGuard(agent, result);
+    enforceCompletionCheck(agent, result);
     return result;
   } catch (err) {
     if (worktree) {
@@ -534,14 +534,14 @@ function finalizeWorktree(worktree: AgentWorktree, result: SingleResult): void {
   }
 }
 
-function enforceCompletionGuard(agent: AgentConfig, result: SingleResult): void {
+function enforceCompletionCheck(agent: AgentConfig, result: SingleResult): void {
   if (isFailedResult(result)) return;
   const finalOutput = getFinalOutput(result.messages);
   const validation = validateCompletionOutput(agent, finalOutput);
   if (validation.ok) return;
   const missing = validation.missing.join(', ');
   result.stopReason = 'completion_guard';
-  result.errorMessage = `Completion guard failed: missing ${missing}`;
+  result.errorMessage = `Completion check failed: missing ${missing}`;
   if (result.exitCode === 0) {
     result.exitCode = 1;
   }

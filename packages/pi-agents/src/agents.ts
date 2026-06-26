@@ -26,7 +26,7 @@ export interface AgentConfig {
   noSkills?: boolean;
   defaultContext?: DefaultContext;
   isolation?: IsolationMode;
-  completionGuard?: boolean;
+  completionCheck?: string[];
 }
 
 function parseCsvList(value: unknown): string[] | undefined {
@@ -125,7 +125,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
       noSkills: parseBoolean(frontmatter.noSkills),
       defaultContext: parseEnum(frontmatter.defaultContext, ['fresh', 'fork'] as const) ?? 'fresh',
       isolation: parseEnum(frontmatter.isolation, ['none', 'worktree'] as const) ?? 'none',
-      completionGuard: parseBoolean(frontmatter.completionGuard),
+      completionCheck: parseCsvList(frontmatter.completionCheck),
     });
   }
 

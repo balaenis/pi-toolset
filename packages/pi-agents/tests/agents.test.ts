@@ -44,7 +44,7 @@ noContextFiles: true
 noSkills: true
 defaultContext: fork
 isolation: worktree
-completionGuard: false
+completionCheck: "## Completed, ## Files Changed, ## Validation"
 ---
 System prompt body.`
       );
@@ -60,7 +60,7 @@ System prompt body.`
     expect(a!.noSkills).toBe(true);
     expect(a!.defaultContext).toBe('fork');
     expect(a!.isolation).toBe('worktree');
-    expect(a!.completionGuard).toBe(false);
+    expect(a!.completionCheck).toEqual(['## Completed', '## Files Changed', '## Validation']);
   });
 
   it('leaves omitted optional fields undefined and applies enum defaults', () => {
@@ -84,7 +84,7 @@ Body.`
     expect(a.noSkills).toBeUndefined();
     expect(a.defaultContext).toBe('fresh');
     expect(a.isolation).toBe('none');
-    expect(a.completionGuard).toBeUndefined();
+    expect(a.completionCheck).toBeUndefined();
   });
 
   it('ignores invalid enum and integer values, falling back to defaults', () => {
@@ -100,7 +100,7 @@ defaultContext: shared
 isolation: docker
 noContextFiles: maybe
 noSkills: yep
-completionGuard: nope
+completionCheck: ""
 ---
 Body.`
       );
@@ -113,7 +113,7 @@ Body.`
     expect(a.isolation).toBe('none');
     expect(a.noContextFiles).toBeUndefined();
     expect(a.noSkills).toBeUndefined();
-    expect(a.completionGuard).toBeUndefined();
+    expect(a.completionCheck).toBeUndefined();
   });
 
   it('parses comma lists with trimming and drops empty items', () => {

@@ -11,6 +11,6 @@ Use the subagent tool with the chain parameter to execute this workflow:
    - Otherwise, resolve every item under `## Critical (must fix)` and explicitly report each fix.
    - Report any remaining `## Warnings (should fix)` items separately (fix or justify deferral).
    - If any Critical item cannot be fixed safely, stop and report the blocker instead of pretending completion.
-   - End with `## Completed`, `## Files Changed`, and `## Validation`. The completion guard will fail the step otherwise.
+   - End with `## Completed`, `## Files Changed`, and `## Validation`. The worker's `completionCheck` will fail the step otherwise.
 
 Execute as a chain. Name each step so later steps can reference earlier outputs via `{outputs.<name>}`.

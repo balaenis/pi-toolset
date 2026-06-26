@@ -141,7 +141,7 @@ noContextFiles: false
 noSkills: false
 defaultContext: fresh
 isolation: none
-completionGuard: false
+completionCheck: '## Completed, ## Files Changed, ## Validation'
 ---
 
 System prompt for the agent goes here.
@@ -149,36 +149,37 @@ System prompt for the agent goes here.
 
 ### Frontmatter Fields
 
-| Field              | Type                  | Default               | Description                                                                                                                                                                                                                                                                                          |
-| ------------------ | --------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`             | string                | (required)            | Agent identifier used by the `agent` tool.                                                                                                                                                                                                                                                           |
-| `description`      | string                | (required)            | Shown to the parent model in the agent catalogue.                                                                                                                                                                                                                                                    |
-| `tools`            | comma list            | inherit all           | Allowlist passed to `pi --tools`.                                                                                                                                                                                                                                                                    |
-| `excludeTools`     | comma list            | none                  | Denylist passed to `pi --exclude-tools` (applied after the allowlist).                                                                                                                                                                                                                               |
-| `model`            | string                | host default          | Forwarded as `pi --model`.                                                                                                                                                                                                                                                                           |
-| `thinking`         | string                | host default          | Forwarded as `pi --thinking`.                                                                                                                                                                                                                                                                        |
-| `systemPromptMode` | `append` \| `replace` | `append`              | `replace` swaps the host system prompt with the agent body via `--system-prompt`; `append` uses `--append-system-prompt`.                                                                                                                                                                            |
-| `maxTurns`         | positive integer      | unbounded             | Maximum assistant turns; the child is `SIGTERM`'d when exceeded and the result is marked with `stopReason: max_turns`.                                                                                                                                                                               |
-| `noContextFiles`   | boolean               | `false`               | When `true`, runs the child with `--no-context-files`.                                                                                                                                                                                                                                               |
-| `noSkills`         | boolean               | `false`               | When `true`, runs the child with `--no-skills`.                                                                                                                                                                                                                                                      |
-| `defaultContext`   | `fresh` \| `fork`     | `fresh`               | `fork` branches the parent session via `SessionManager.createBranchedSession(getLeafId())` and runs the child with `--session <branched-file>`; `fresh` runs with `--no-session`. Requires a persisted parent session for `fork`.                                                                    |
-| `isolation`        | `none` \| `worktree`  | `none`                | When `worktree`, the child runs in `<repo>/.worktrees/pi-agent-<safe-name>-<timestamp>-<index>/` created by `git worktree add --detach HEAD`. Clean worktrees are removed after the child exits; dirty worktrees are kept and reported on `SingleResult.worktreePath`.                               |
-| `completionGuard`  | boolean               | inferred from `tools` | When enabled, the final assistant message must include `## Completed`, `## Files Changed`, and `## Validation`; otherwise the result is marked `stopReason: completion_guard` with exit code `1`. Default: enabled when the agent's tools include `edit`, `write`, or `bash` (after `excludeTools`). |
+| Field              | Type                  | Default      | Description                                                                                                                                                                                                                                                            |
+| ------------------ | --------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`             | string                | (required)   | Agent identifier used by the `agent` tool.                                                                                                                                                                                                                             |
+| `description`      | string                | (required)   | Shown to the parent model in the agent catalogue.                                                                                                                                                                                                                      |
+| `tools`            | comma list            | inherit all  | Allowlist passed to `pi --tools`.                                                                                                                                                                                                                                      |
+| `excludeTools`     | comma list            | none         | Denylist passed to `pi --exclude-tools` (applied after the allowlist).                                                                                                                                                                                                 |
+| `model`            | string                | host default | Forwarded as `pi --model`.                                                                                                                                                                                                                                             |
+| `thinking`         | string                | host default | Forwarded as `pi --thinking`.                                                                                                                                                                                                                                          |
+| `systemPromptMode` | `append` \| `replace` | `append`     | `replace` swaps the host system prompt with the agent body via `--system-prompt`; `append` uses `--append-system-prompt`.                                                                                                                                              |
+| `maxTurns`         | positive integer      | unbounded    | Maximum assistant turns; the child is `SIGTERM`'d when exceeded and the result is marked with `stopReason: max_turns`.                                                                                                                                                 |
+| `noContextFiles`   | boolean               | `false`      | When `true`, runs the child with `--no-context-files`.                                                                                                                                                                                                                 |
+| `noSkills`         | boolean               | `false`      | When `true`, runs the child with `--no-skills`.                                                                                                                                                                                                                        |
+| `defaultContext`   | `fresh` \| `fork`     | `fresh`      | `fork` branches the parent session via `SessionManager.createBranchedSession(getLeafId())` and runs the child with `--session <branched-file>`; `fresh` runs with `--no-session`. Requires a persisted parent session for `fork`.                                      |
+| `isolation`        | `none` \| `worktree`  | `none`       | When `worktree`, the child runs in `<repo>/.worktrees/pi-agent-<safe-name>-<timestamp>-<index>/` created by `git worktree add --detach HEAD`. Clean worktrees are removed after the child exits; dirty worktrees are kept and reported on `SingleResult.worktreePath`. |
+| `completionCheck`  | comma list            | none         | Required final-message headings. When set, each configured heading must appear as an exact line; otherwise the result is marked `stopReason: completion_guard` with exit code `1`.                                                                                     |
 
-Invalid values (unknown enums, non-positive integers, non-boolean strings) are ignored and fall back to the default (`append`, `fresh`, `none`) for enum fields and to `undefined` for boolean / numeric fields.
+Invalid values (unknown enums, non-positive integers, non-boolean strings) are ignored and fall back to the default (`append`, `fresh`, `none`) for enum fields and to `undefined` for boolean / numeric fields. Empty comma lists are ignored.
 
-> Runtime behavior currently wired up: `tools`, `excludeTools`, `model`, `thinking`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `defaultContext`, `isolation`, `completionGuard`. Every frontmatter field is now active.
+> Runtime behavior currently wired up: `tools`, `excludeTools`, `model`, `thinking`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `defaultContext`, `isolation`, `completionCheck`. Every frontmatter field is now active.
 
-### Completion Guard
+### Completion Check
 
-Agents that can mutate the workspace must produce a structured handoff so the parent model and downstream chain steps can validate the change. The guard:
+Agents can declare their own final-output contract in frontmatter. The check:
 
-- Considers an agent mutating when `tools` is undefined (inherit all) or when `tools` includes `edit`, `write`, or `bash` after applying `excludeTools`.
-- Defaults `completionGuard` to that inferred value; set `completionGuard: false` to opt out (used by the bundled `reviewer` agent), or `completionGuard: true` to enforce on read-only agents.
-- Inspects the final assistant message for top-level headings `## Completed`, `## Files Changed`, and `## Validation` (case-insensitive, line-anchored).
+- Runs only when `completionCheck` is set.
+- Treats `completionCheck` as a comma-separated list of required headings, for example `completionCheck: "## Completed, ## Files Changed, ## Validation"`.
+- Inspects the final assistant message for each configured heading as an exact line (case-insensitive, line-anchored).
+- Does not infer behavior from `tools`, `excludeTools`, `edit`, `write`, or `bash`; agents opt in by configuration.
 - On failure, sets `stopReason: 'completion_guard'`, fills `errorMessage` with the missing headings, and forces exit code `1`. Failures propagate the same way other agent failures do (single-mode returns `isError`, chain-mode stops at the failing step).
 
-The bundled `worker.md` template already follows the required shape; the `## Validation` section asks for the commands actually run plus their pass/fail status (or an explicit `Not run: <reason>`).
+The bundled `worker.md` template declares `completionCheck: "## Completed, ## Files Changed, ## Validation"`; the `## Validation` section asks for the commands actually run plus their pass/fail status (or an explicit `Not run: <reason>`).
 
 ### Isolation: Git Worktree
 
@@ -242,7 +243,7 @@ Project agents override user agents with the same name when `agentScope: "both"`
 - **stopReason "max_turns"**: an agent exceeded its `maxTurns` budget; the child is `SIGTERM`'d
 - **stopReason "context_error"**: fork-context preparation failed before the child started (see _Fork Context_)
 - **stopReason "isolation_error"**: worktree isolation failed before the child started (see _Isolation: Git Worktree_)
-- **stopReason "completion_guard"**: a mutating agent's final message is missing one of `## Completed`, `## Files Changed`, or `## Validation` (see _Completion Guard_)
+- **stopReason "completion_guard"**: an agent's final message is missing one of its configured `completionCheck` headings (see _Completion Check_)
 - **stopReason "template_error"**: a chain step's task referenced `{outputs.<name>}` for a step that did not run or was not named
 - **Chain mode**: stops at the first failing step and reports which step failed
 

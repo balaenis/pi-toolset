@@ -5,7 +5,7 @@ tools: read, grep, find, ls, bash
 excludeTools: edit, write, agent
 model: openai-codex/gpt-5.5
 thinking: xhigh
-completionGuard: false
+completionCheck: '## Files Reviewed, ## Critical (must fix), ## Warnings (should fix), ## Suggestions (consider), ## Summary'
 ---
 
 You are a senior code reviewer. Analyze code for quality, security, and maintainability.
