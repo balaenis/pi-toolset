@@ -102,6 +102,13 @@ describe('buildPiArgs', () => {
     expect(args).not.toContain('--no-session');
   });
 
+  it('forwards disableAgentTool to buildToolCliArgs', () => {
+    const args = buildPiArgs(makeAgent({ tools: ['read'] }), 'go', { disableAgentTool: true });
+    expect(args).toContain('--exclude-tools');
+    const idx = args.indexOf('--exclude-tools');
+    expect(args[idx + 1]).toBe('agent');
+  });
+
   it('omits --tools when agent has no tools', () => {
     const args = buildPiArgs(makeAgent({ tools: [] }), 'go');
     expect(args).not.toContain('--tools');

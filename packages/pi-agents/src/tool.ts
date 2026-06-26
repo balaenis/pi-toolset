@@ -24,7 +24,7 @@ import {
   truncateParallelOutput,
 } from './output.ts';
 import type { SubagentParams } from './schema.ts';
-import { assertDepthAllowed } from './security.ts';
+import { assertAgentDelegationAllowed } from './security.ts';
 import { renderTaskTemplate } from './template.ts';
 import type { IsolationMode, SingleResult, SubagentDetails } from './types.ts';
 import {
@@ -49,7 +49,7 @@ export async function executeAgentTool(
   const agentScope: AgentScope = params.agentScope ?? 'user';
 
   try {
-    assertDepthAllowed(process.env);
+    assertAgentDelegationAllowed(process.env);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {

@@ -3,6 +3,7 @@
 
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { discoverAgents } from './agents.ts';
+import { renderAgentCatalogue, shouldInjectAgentCatalogue } from './catalogue.ts';
 import { renderCall, renderResult } from './render.ts';
 import { SubagentParams } from './schema.ts';
 import { executeAgentTool } from './tool.ts';
@@ -10,10 +11,8 @@ import { executeAgentTool } from './tool.ts';
 export default function (pi: ExtensionAPI) {
   pi.on('before_agent_start', async (event, ctx) => {
     const discovery = discoverAgents(ctx.cwd, 'both');
-    const agents = discovery.agents;
-    if (agents.length === 0) return;
-    const lines = agents.map((a) => `- ${a.name}: ${a.description}`).join('\n');
-    const block = `Available agent types for the \`agent\` tool:\n${lines}`;
+    if (!shouldInjectAgentCatalogue(process.env, discovery.agents)) return;
+    const block = renderAgentCatalogue(discovery.agents);
     return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
   });
 

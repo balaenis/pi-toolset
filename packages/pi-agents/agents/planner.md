@@ -5,6 +5,7 @@ tools: read, grep, find, ls
 model: openai-codex/gpt-5.5
 thinking: xhigh
 noSkills: true
+maxSubagentDepth: 0
 completionCheck: '## Goal, ## Plan, ## Files to Modify, ## Risks'
 ---
 

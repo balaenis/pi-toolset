@@ -27,6 +27,7 @@ export interface AgentConfig {
   defaultContext?: DefaultContext;
   isolation?: IsolationMode;
   completionCheck?: string[];
+  maxSubagentDepth?: number;
 }
 
 function parseCsvList(value: unknown): string[] | undefined {
@@ -60,6 +61,18 @@ function parsePositiveInt(value: unknown): number | undefined {
   else if (typeof value === 'string') n = Number(value.trim());
   else return undefined;
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return undefined;
+  return n;
+}
+
+function parseNonNegativeInt(value: unknown): number | undefined {
+  let n: number;
+  if (typeof value === 'number') n = value;
+  else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') return undefined;
+    n = Number(trimmed);
+  } else return undefined;
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return undefined;
   return n;
 }
 
@@ -126,6 +139,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
       defaultContext: parseEnum(frontmatter.defaultContext, ['fresh', 'fork'] as const) ?? 'fresh',
       isolation: parseEnum(frontmatter.isolation, ['none', 'worktree'] as const) ?? 'none',
       completionCheck: parseCsvList(frontmatter.completionCheck),
+      maxSubagentDepth: parseNonNegativeInt(frontmatter.maxSubagentDepth),
     });
   }
 

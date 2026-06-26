@@ -10,7 +10,7 @@ import type { Message } from '@earendil-works/pi-ai';
 import type { AgentConfig } from './agents.ts';
 import { buildPiArgs, getPiInvocation, writePromptToTempFile } from './invocation.ts';
 import { getFinalOutput } from './output.ts';
-import { buildChildAgentEnv } from './security.ts';
+import { buildChildAgentEnv, isAgentDelegationAllowed } from './security.ts';
 import type { SingleResult, SubagentDetails } from './types.ts';
 
 export interface SpawnedChild extends ChildProcess {
@@ -122,9 +122,12 @@ export async function runSingleAgent(
       tmpPromptPath = tmp.filePath;
     }
 
+    const childEnv = buildChildAgentEnv(process.env, { agent });
+    const disableAgentTool = !isAgentDelegationAllowed(childEnv);
     const args = buildPiArgs(agent, task, {
       tmpPromptPath: tmpPromptPath ?? undefined,
       sessionFile: options.sessionFile,
+      disableAgentTool,
     });
     let wasAborted = false;
     let maxTurnsExceeded = false;
@@ -134,7 +137,7 @@ export async function runSingleAgent(
       const spawnFn = options.spawnFn ?? (spawn as unknown as SpawnFn);
       const proc = spawnFn(invocation.command, invocation.args, {
         cwd: cwd ?? defaultCwd,
-        env: buildChildAgentEnv(process.env),
+        env: childEnv,
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
       });

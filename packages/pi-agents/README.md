@@ -49,9 +49,20 @@ The child `pi` process receives the merged flags exactly as the parent would. To
 
 ### Nested Agents and Depth Guard
 
-Each spawned child carries `PI_AGENT_CHILD=1` and `PI_AGENT_DEPTH=<n>` in its environment. The tool refuses to start a new child when `PI_AGENT_DEPTH >= PI_AGENT_MAX_DEPTH` (default `2`).
+The tool ships two layers of nesting control:
 
-The max depth can be raised by exporting `PI_AGENT_MAX_DEPTH` before launching `pi`. Anything past depth `2` will lift the chance of runaway fan-out, so raise it carefully.
+- **Global depth limit** — every spawned child carries `PI_AGENT_CHILD=1`, `PI_AGENT_DEPTH=<n>`, and `PI_AGENT_MAX_DEPTH=<n>` in its environment. The tool refuses to start a new child when `PI_AGENT_DEPTH >= PI_AGENT_MAX_DEPTH` (default `2`). Raise it by exporting `PI_AGENT_MAX_DEPTH` before launching `pi`.
+- **Per-agent `maxSubagentDepth`** — an agent can declare how many additional nested `agent` delegations it is allowed to make. `maxSubagentDepth: 0` means the agent can be invoked but cannot itself call `agent`. The effective child max is `min(PI_AGENT_MAX_DEPTH, currentChildDepth + maxSubagentDepth)`; it can only narrow the global limit, never widen it.
+
+When a child cannot delegate (because of depth, `tools`, `excludeTools`, or `maxSubagentDepth`), the parent:
+
+1. Spawns the child with `--exclude-tools agent` (in addition to the agent's own `excludeTools`) so the model-visible toolset omits `agent`.
+2. Sets `PI_AGENT_TOOL_AVAILABLE=0` in the child env as the runtime backstop.
+3. Skips the `before_agent_start` "Available agent types" catalogue injection in the child, so the model is not told about agents it cannot reach.
+
+Anything past depth `2` will lift the chance of runaway fan-out, so raise it carefully.
+
+> **Threat model note:** `maxSubagentDepth` and `PI_AGENT_TOOL_AVAILABLE` are LLM-side guardrails for the `agent` tool. They prevent the model from invoking `agent` again, but they do not sandbox other tools. An agent that still has `bash` (or any other tool capable of starting `pi`) could spawn a new top-level `pi` process. Treat this field as a delegation-policy switch, not as a security boundary; for hostile prompts, also restrict `tools` accordingly.
 
 ## Usage
 
@@ -142,6 +153,7 @@ noSkills: false
 defaultContext: fresh
 isolation: none
 completionCheck: '## Completed, ## Files Changed, ## Validation'
+maxSubagentDepth: 0
 ---
 
 System prompt for the agent goes here.
@@ -164,10 +176,11 @@ System prompt for the agent goes here.
 | `defaultContext`   | `fresh` \| `fork`     | `fresh`      | `fork` branches the parent session via `SessionManager.createBranchedSession(getLeafId())` and runs the child with `--session <branched-file>`; `fresh` runs with `--no-session`. Requires a persisted parent session for `fork`.                                      |
 | `isolation`        | `none` \| `worktree`  | `none`       | When `worktree`, the child runs in `<repo>/.worktrees/pi-agent-<safe-name>-<timestamp>-<index>/` created by `git worktree add --detach HEAD`. Clean worktrees are removed after the child exits; dirty worktrees are kept and reported on `SingleResult.worktreePath`. |
 | `completionCheck`  | comma list            | none         | Required final-message headings. When set, each configured heading must appear as an exact line; otherwise the result is marked `stopReason: completion_check` with exit code `1`.                                                                                     |
+| `maxSubagentDepth` | non-negative integer  | unset        | Caps how many further `agent` delegations may happen from inside the spawned agent. `0` removes the `agent` tool and the catalogue prompt for that child. When unset, the global `PI_AGENT_MAX_DEPTH` limit applies as before.                                         |
 
-Invalid values (unknown enums, non-positive integers, non-boolean strings) are ignored and fall back to the default (`append`, `fresh`, `none`) for enum fields and to `undefined` for boolean / numeric fields. Empty comma lists are ignored.
+Invalid values (unknown enums, non-positive integers for `maxTurns`, negative or non-integer values for `maxSubagentDepth`, non-boolean strings) are ignored and fall back to the default (`append`, `fresh`, `none`) for enum fields and to `undefined` for boolean / numeric fields. Empty comma lists are ignored.
 
-> Runtime behavior currently wired up: `tools`, `excludeTools`, `model`, `thinking`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `defaultContext`, `isolation`, `completionCheck`. Every frontmatter field is now active.
+> Runtime behavior currently wired up: `tools`, `excludeTools`, `model`, `thinking`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `defaultContext`, `isolation`, `completionCheck`, `maxSubagentDepth`. Every frontmatter field is now active.
 
 ### Completion Check
 
@@ -220,12 +233,12 @@ Project agents override user agents with the same name when `agentScope: "both"`
 
 ## Bundled Agents
 
-| Agent      | Purpose              | Tools                                            |
-| ---------- | -------------------- | ------------------------------------------------ |
-| `explore`  | Fast codebase recon  | read, grep, find, ls, bash                       |
-| `planner`  | Implementation plans | read, grep, find, ls                             |
-| `reviewer` | Code review          | read, grep, find, ls, bash (no edit/write/agent) |
-| `worker`   | General-purpose      | (all default)                                    |
+| Agent      | Purpose              | Tools                                            | Nested agents                    |
+| ---------- | -------------------- | ------------------------------------------------ | -------------------------------- |
+| `explore`  | Fast codebase recon  | read, grep, find, ls, bash                       | disabled (`maxSubagentDepth: 0`) |
+| `planner`  | Implementation plans | read, grep, find, ls                             | disabled (`maxSubagentDepth: 0`) |
+| `reviewer` | Code review          | read, grep, find, ls, bash (no edit/write/agent) | disabled (`maxSubagentDepth: 0`) |
+| `worker`   | General-purpose      | (all default)                                    | follows `PI_AGENT_MAX_DEPTH`     |
 
 ## Workflow Prompts
 

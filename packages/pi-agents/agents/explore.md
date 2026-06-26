@@ -5,6 +5,7 @@ tools: read, grep, find, ls, bash
 model: ark/deepseek-v4-flash
 thinking: high
 noSkills: true
+maxSubagentDepth: 0
 completionCheck: '## Files Retrieved, ## Key Code, ## Architecture, ## Start Here'
 ---
 

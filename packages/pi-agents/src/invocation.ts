@@ -40,6 +40,7 @@ export function getPiInvocation(args: string[]): { command: string; args: string
 export interface BuildPiArgsOptions {
   tmpPromptPath?: string;
   sessionFile?: string;
+  disableAgentTool?: boolean;
 }
 
 export function buildPiArgs(
@@ -55,7 +56,7 @@ export function buildPiArgs(
   }
   if (agent.model) args.push('--model', agent.model);
   if (agent.thinking) args.push('--thinking', agent.thinking);
-  args.push(...buildToolCliArgs(agent));
+  args.push(...buildToolCliArgs(agent, { disableAgentTool: options.disableAgentTool }));
   if (agent.noContextFiles) args.push('--no-context-files');
   if (agent.noSkills) args.push('--no-skills');
   if (options.tmpPromptPath) {

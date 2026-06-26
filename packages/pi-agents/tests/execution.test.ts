@@ -1,7 +1,7 @@
 // ABOUTME: Execution tests focused on maxTurns enforcement via an injected fake child process.
 // ABOUTME: Emits message_end events on a controllable stdout stream and asserts stop reason + kill behavior.
 
-import { describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import type { AgentConfig } from '../src/agents.ts';
@@ -52,6 +52,106 @@ const makeDetails = (results: SingleResult[]): SubagentDetails => ({
   projectAgentsDir: null,
   builtinAgentsDir: '/tmp',
   results,
+});
+
+describe('runSingleAgent agent capability propagation', () => {
+  const savedEnv: Record<string, string | undefined> = {};
+  const piAgentKeys = [
+    'PI_AGENT_CHILD',
+    'PI_AGENT_DEPTH',
+    'PI_AGENT_MAX_DEPTH',
+    'PI_AGENT_TOOL_AVAILABLE',
+  ] as const;
+
+  beforeEach(() => {
+    for (const key of piAgentKeys) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of piAgentKeys) {
+      const value = savedEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  function captureSpawn(): {
+    fake: FakeChild;
+    spawnFn: SpawnFn;
+    captured: { args: string[]; env: NodeJS.ProcessEnv | undefined };
+  } {
+    const fake = new FakeChild();
+    const captured = {
+      args: [] as string[],
+      env: undefined as NodeJS.ProcessEnv | undefined,
+    };
+    const spawnFn: SpawnFn = ((
+      _command: string,
+      args: string[],
+      opts: { env?: NodeJS.ProcessEnv }
+    ) => {
+      captured.args = args;
+      captured.env = opts.env;
+      return fake as unknown as SpawnedChild;
+    }) as SpawnFn;
+    return { fake, spawnFn, captured };
+  }
+
+  async function runOnce(agent: AgentConfig, captured: ReturnType<typeof captureSpawn>) {
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'do work',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: captured.spawnFn }
+    );
+    setImmediate(() => {
+      captured.fake.stdout.push(null);
+      captured.fake.stderr.push(null);
+      captured.fake.emit('close', 0);
+    });
+    return promise;
+  }
+
+  it('blocks delegation and excludes the agent tool when maxSubagentDepth is 0', async () => {
+    const ctx = captureSpawn();
+    const agent = makeAgent({ name: 'no-fanout', maxSubagentDepth: 0 });
+    await runOnce(agent, ctx);
+    expect(ctx.captured.env?.PI_AGENT_DEPTH).toBe('1');
+    expect(ctx.captured.env?.PI_AGENT_MAX_DEPTH).toBe('1');
+    expect(ctx.captured.env?.PI_AGENT_TOOL_AVAILABLE).toBe('0');
+    expect(ctx.captured.args).toContain('--exclude-tools');
+    const idx = ctx.captured.args.indexOf('--exclude-tools');
+    expect(ctx.captured.args[idx + 1]).toBe('agent');
+  });
+
+  it('blocks delegation when tools allowlist omits agent', async () => {
+    const ctx = captureSpawn();
+    const agent = makeAgent({ name: 'read-only', tools: ['read'] });
+    await runOnce(agent, ctx);
+    expect(ctx.captured.env?.PI_AGENT_TOOL_AVAILABLE).toBe('0');
+    const idx = ctx.captured.args.indexOf('--exclude-tools');
+    expect(idx).toBeGreaterThan(-1);
+    expect(ctx.captured.args[idx + 1]).toBe('agent');
+  });
+
+  it('allows delegation when agent declares tools that include agent', async () => {
+    const ctx = captureSpawn();
+    const agent = makeAgent({ name: 'fan', tools: ['agent', 'read'] });
+    await runOnce(agent, ctx);
+    expect(ctx.captured.env?.PI_AGENT_TOOL_AVAILABLE).toBe('1');
+    // No forced exclusion appended.
+    const idx = ctx.captured.args.indexOf('--exclude-tools');
+    expect(idx).toBe(-1);
+  });
 });
 
 describe('runSingleAgent maxTurns', () => {
