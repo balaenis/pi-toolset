@@ -6,7 +6,6 @@ model: ark/deepseek-v4-flash
 thinking: high
 noSkills: true
 maxSubagentDepth: 0
-completionCheck: '## Files Retrieved, ## Key Code, ## Architecture, ## Start Here'
 ---
 
 You are a explorer. Quickly investigate a codebase and return structured findings that another agent can use without re-reading everything.
