@@ -337,6 +337,239 @@ describe('runChainWorkflow', () => {
     expect(res.details.results[0].stopReason).toBe('structured_output_error');
   });
 
+  it('returns the collected fanout text as the chain final output when fanout is the last step', async () => {
+    const chain: ChainItemInput[] = [
+      {
+        agent: 'explore',
+        task: 'find items',
+        name: 'context',
+        outputSchema: {
+          type: 'object',
+          required: ['items'],
+          properties: { items: { type: 'array', items: { type: 'string' } } },
+        },
+      },
+      {
+        expand: { from: { output: 'context', path: '/items' } },
+        parallel: { agent: 'worker', task: 'Process {item}' },
+        collect: { name: 'results' },
+      },
+    ];
+    const res = await runChainWorkflow({
+      chain,
+      signal: undefined,
+      onUpdate: undefined,
+      makeDetails,
+      runStep: async (req) => {
+        if (req.agent === 'explore')
+          return makeAssistantResult(req.agent, '{"items":["a","b"]}', req.step);
+        return makeAssistantResult(req.agent, `done ${req.task}`, req.step);
+      },
+    });
+    expect(res.isError).toBeUndefined();
+    const final = res.content[0];
+    expect(final.type).toBe('text');
+    if (final.type === 'text') {
+      const parsed = JSON.parse(final.text);
+      expect(parsed).toEqual(['done Process a', 'done Process b']);
+    }
+  });
+
+  it('truncates fanout items to expand.maxItems and notes the skipped count', async () => {
+    const chain: ChainItemInput[] = [
+      {
+        agent: 'explore',
+        task: 'find items',
+        name: 'context',
+        outputSchema: {
+          type: 'object',
+          required: ['items'],
+          properties: { items: { type: 'array', items: { type: 'string' } } },
+        },
+      },
+      {
+        expand: { from: { output: 'context', path: '/items' }, maxItems: 1 },
+        parallel: { agent: 'worker', task: 'Process {item}' },
+        collect: { name: 'results' },
+      },
+    ];
+    const res = await runChainWorkflow({
+      chain,
+      signal: undefined,
+      onUpdate: undefined,
+      makeDetails,
+      runStep: async (req) => {
+        if (req.agent === 'explore')
+          return makeAssistantResult(req.agent, '{"items":["a","b"]}', req.step);
+        return makeAssistantResult(req.agent, 'ok', req.step);
+      },
+    });
+    expect(res.isError).toBeUndefined();
+    const entry = res.details.outputs!.results;
+    expect(Array.isArray(entry.structured)).toBe(true);
+    expect((entry.structured as unknown[]).length).toBe(1);
+    expect(entry.text).toContain('skipped 1');
+  });
+
+  it('fails fanout when expand.maxItems is not a positive integer', async () => {
+    const chain: ChainItemInput[] = [
+      {
+        agent: 'explore',
+        task: 'find items',
+        name: 'context',
+        outputSchema: {
+          type: 'object',
+          required: ['items'],
+          properties: { items: { type: 'array', items: { type: 'string' } } },
+        },
+      },
+      {
+        expand: { from: { output: 'context', path: '/items' }, maxItems: 0 },
+        parallel: { agent: 'worker', task: 'Process {item}' },
+        collect: { name: 'results' },
+      },
+    ];
+    const res = await runChainWorkflow({
+      chain,
+      signal: undefined,
+      onUpdate: undefined,
+      makeDetails,
+      runStep: async (req) => makeAssistantResult(req.agent, '{"items":["a"]}', req.step),
+    });
+    expect(res.isError).toBe(true);
+    expect(res.details.results.at(-1)?.stopReason).toBe('fanout_error');
+  });
+
+  it('rejects ambiguous chain steps that mix sequential and fanout fields', async () => {
+    const ambiguous = {
+      agent: 'explore',
+      task: 'mixed',
+      expand: { from: { output: 'context', path: '/items' } },
+      parallel: { agent: 'worker', task: 'Process {item}' },
+      collect: { name: 'results' },
+    } as unknown as ChainItemInput;
+    const res = await runChainWorkflow({
+      chain: [ambiguous],
+      signal: undefined,
+      onUpdate: undefined,
+      makeDetails,
+      runStep: async (req) => makeAssistantResult(req.agent, 'ok', req.step),
+    });
+    expect(res.isError).toBe(true);
+    expect(res.details.results[0].stopReason).toBe('fanout_error');
+  });
+
+  it('runs fanout over a structured array and collects results', async () => {
+    const tasks: string[] = [];
+    const chain: ChainItemInput[] = [
+      {
+        agent: 'explore',
+        task: 'find items',
+        name: 'context',
+        outputSchema: {
+          type: 'object',
+          required: ['items'],
+          properties: { items: { type: 'array', items: { type: 'string' } } },
+        },
+      },
+      {
+        expand: { from: { output: 'context', path: '/items' } },
+        parallel: { agent: 'worker', task: 'Process {item}' },
+        collect: { name: 'results' },
+      },
+    ];
+    const res = await runChainWorkflow({
+      chain,
+      signal: undefined,
+      onUpdate: undefined,
+      makeDetails,
+      runStep: async (req) => {
+        tasks.push(req.task);
+        if (req.agent === 'explore') {
+          return makeAssistantResult(req.agent, '{"items":["a","b"]}', req.step);
+        }
+        return makeAssistantResult(req.agent, `done ${req.task}`, req.step);
+      },
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(tasks).toContain('Process a');
+    expect(tasks).toContain('Process b');
+    expect(res.details.outputs!.results.structured).toHaveLength(2);
+  });
+
+  it('stops fanout when JSON Pointer does not resolve to an array', async () => {
+    const chain: ChainItemInput[] = [
+      {
+        agent: 'explore',
+        task: 'find items',
+        name: 'context',
+        outputSchema: {
+          type: 'object',
+          required: ['items'],
+          properties: { items: { type: 'string' } },
+        },
+      },
+      {
+        expand: { from: { output: 'context', path: '/items' } },
+        parallel: { agent: 'worker', task: 'Process {item}' },
+        collect: { name: 'results' },
+      },
+    ];
+    const res = await runChainWorkflow({
+      chain,
+      signal: undefined,
+      onUpdate: undefined,
+      makeDetails,
+      runStep: async (req) => makeAssistantResult(req.agent, '{"items":"nope"}', req.step),
+    });
+
+    expect(res.isError).toBe(true);
+    expect(res.details.results[1].stopReason).toBe('fanout_error');
+  });
+
+  it('runs all fanout subtasks and reports aggregate failure', async () => {
+    const calls: string[] = [];
+    const chain: ChainItemInput[] = [
+      {
+        agent: 'explore',
+        task: 'find items',
+        name: 'context',
+        outputSchema: {
+          type: 'object',
+          required: ['items'],
+          properties: { items: { type: 'array', items: { type: 'string' } } },
+        },
+      },
+      {
+        expand: { from: { output: 'context', path: '/items' } },
+        parallel: { agent: 'worker', task: 'Process {item}' },
+        collect: { name: 'results' },
+      },
+    ];
+    const res = await runChainWorkflow({
+      chain,
+      signal: undefined,
+      onUpdate: undefined,
+      makeDetails,
+      runStep: async (req) => {
+        calls.push(req.task);
+        if (req.agent === 'explore') {
+          return makeAssistantResult(req.agent, '{"items":["a","b"]}', req.step);
+        }
+        if (req.task.endsWith('b')) return makeFailureResult(req.agent, req.step, 'bad b');
+        return makeAssistantResult(req.agent, 'ok', req.step);
+      },
+    });
+
+    expect(calls).toContain('Process a');
+    expect(calls).toContain('Process b');
+    expect(res.isError).toBe(true);
+    const summary = res.content[0];
+    expect(summary.type).toBe('text');
+    if (summary.type === 'text') expect(summary.text).toContain('Fanout failed: 1/2 succeeded');
+  });
+
   it('appends a JSON-only instruction to tasks that declare outputSchema', async () => {
     let observed = '';
     const chain: ChainItemInput[] = [

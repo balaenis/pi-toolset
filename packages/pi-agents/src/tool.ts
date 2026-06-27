@@ -99,7 +99,12 @@ export async function executeAgentTool(
 
   if ((agentScope === 'project' || agentScope === 'both') && confirmProjectAgents && ctx.hasUI) {
     const requestedAgentNames = new Set<string>();
-    if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
+    if (params.chain) {
+      for (const step of params.chain) {
+        if ('agent' in step) requestedAgentNames.add(step.agent);
+        else requestedAgentNames.add(step.parallel.agent);
+      }
+    }
     if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
     if (params.agent) requestedAgentNames.add(params.agent);
 

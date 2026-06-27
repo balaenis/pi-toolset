@@ -137,6 +137,34 @@ The schema supports a JSON Schema subset: `type`, `properties`, `required`, `ite
 
 When a step has both `name` and `outputSchema`, the parsed value is also available on `details.outputs[name].structured`. `{outputs.<name>}` in later tasks is replaced with the step's text output, so for structured handoff write tasks that mention the JSON shape explicitly.
 
+### Dynamic fanout
+
+A chain can expand an array from a previous structured output and run one parallel task per item. The fanout step reads `expand.from.output`, applies a JSON Pointer `path`, renders `parallel.task` with `{item}`, then stores the collected results under `collect.name`.
+
+```json
+{
+  "chain": [
+    {
+      "agent": "explore",
+      "name": "context",
+      "task": "Return files to process.",
+      "outputSchema": {
+        "type": "object",
+        "required": ["items"],
+        "properties": { "items": { "type": "array", "items": { "type": "string" } } }
+      }
+    },
+    {
+      "expand": { "from": { "output": "context", "path": "/items" } },
+      "parallel": { "agent": "worker", "task": "Process {item}" },
+      "collect": { "name": "results" }
+    }
+  ]
+}
+```
+
+If `parallel.outputSchema` is set, each fanout worker is parsed and validated like a structured chain step. The collected output's `structured` value is an array of each worker's `structuredOutput` when present, otherwise its final text. Fanout is capped by `MAX_FANOUT_ITEMS` (currently the same as the parallel task cap) and concurrency is capped by `MAX_CONCURRENCY`.
+
 ## Output Display
 
 **Collapsed view** (default):
@@ -311,6 +339,7 @@ Only packages listed in the host project's `dependencies`, `devDependencies`, or
 - **stopReason "completion_check"**: an agent's final message is missing one of its configured `completionCheck` headings (see _Completion Check_)
 - **stopReason "template_error"**: a chain step's task referenced `{outputs.<name>}` for a step that did not run or was not named
 - **stopReason "structured_output_error"**: a chain step with `outputSchema` produced output that could not be parsed or failed schema validation
+- **stopReason "fanout_error"**: a dynamic fanout step could not read an array from a structured output or render its item tasks
 - **Chain mode**: stops at the first failing step and reports which step failed
 
 ## Limitations
@@ -319,5 +348,6 @@ Only packages listed in the host project's `dependencies`, `devDependencies`, or
 - Parallel model-visible output is capped at 50 KB per task; full results remain in tool details
 - Agents discovered fresh on each invocation (allows editing mid-session)
 - Parallel mode limited to 8 tasks, 4 concurrent
+- Dynamic fanout expands at most `MAX_FANOUT_ITEMS` items and uses the same concurrency cap as parallel execution
 - `outputSchema` uses a JSON Schema subset (type, properties, required, items, enum, additionalProperties, minItems, maxItems); it is not a full JSON Schema implementation
 - When a chain step declares `outputSchema`, the agent's `completionCheck` is bypassed for that step because the contract requires JSON-only output

@@ -15,7 +15,7 @@ export const TaskItem = Type.Object({
   isolation: Type.Optional(IsolationSchema),
 });
 
-export const ChainItem = Type.Object({
+export const SequentialChainItem = Type.Object({
   agent: Type.String({ description: 'Name of the agent to invoke' }),
   task: Type.String({
     description:
@@ -37,6 +37,33 @@ export const ChainItem = Type.Object({
   ),
 });
 
+export const FanoutChainItem = Type.Object({
+  expand: Type.Object({
+    from: Type.Object({
+      output: Type.String({ description: 'Name of a previous structured chain output' }),
+      path: Type.String({ description: 'JSON Pointer path to an array inside the output' }),
+    }),
+    maxItems: Type.Optional(Type.Number({ description: 'Maximum items to expand' })),
+  }),
+  parallel: Type.Object({
+    agent: Type.String({ description: 'Name of the agent to invoke for every item' }),
+    task: Type.String({ description: 'Task template with optional {item} placeholder' }),
+    cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
+    isolation: Type.Optional(IsolationSchema),
+    outputSchema: Type.Optional(
+      Type.Any({ description: 'Optional structured output schema for each fanout item' })
+    ),
+  }),
+  collect: Type.Object({
+    name: Type.String({ description: 'Name used to reference collected fanout results' }),
+  }),
+  concurrency: Type.Optional(Type.Number({ description: 'Maximum concurrent fanout workers' })),
+});
+
+export const ChainItem = Type.Union([SequentialChainItem, FanoutChainItem], {
+  description: 'Sequential step or dynamic fanout step',
+});
+
 export const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {
   description:
     'Which agent directories to use. Default: "user". Use "project" or "both" to include project-local and package agents.',
@@ -52,7 +79,9 @@ export const SubagentParams = Type.Object({
     Type.Array(TaskItem, { description: 'Array of {agent, task} for parallel execution' })
   ),
   chain: Type.Optional(
-    Type.Array(ChainItem, { description: 'Array of {agent, task} for sequential execution' })
+    Type.Array(ChainItem, {
+      description: 'Array of sequential chain steps and optional dynamic fanout steps',
+    })
   ),
   agentScope: Type.Optional(AgentScopeSchema),
   confirmProjectAgents: Type.Optional(

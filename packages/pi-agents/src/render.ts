@@ -93,13 +93,15 @@ export function renderCall(args: Static<typeof SubagentParams>, theme: Theme): C
       theme.fg('muted', ` [${scope}]`);
     for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
       const step = args.chain[i];
-      const cleanTask = step.task.replace(/\{previous\}/g, '').trim();
+      const agent = 'agent' in step ? step.agent : step.parallel.agent;
+      const task = 'task' in step ? step.task : step.parallel.task;
+      const cleanTask = task.replace(/\{previous\}/g, '').trim();
       const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
       text +=
         '\n  ' +
         theme.fg('muted', `${i + 1}.`) +
         ' ' +
-        theme.fg('accent', step.agent) +
+        theme.fg('accent', agent) +
         theme.fg('dim', ` ${preview}`);
     }
     if (args.chain.length > 3)
