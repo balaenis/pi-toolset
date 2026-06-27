@@ -8,7 +8,12 @@ import type { Readable } from 'node:stream';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { Message } from '@earendil-works/pi-ai';
 import type { AgentConfig } from './agents.ts';
-import { buildPiArgs, getPiInvocation, writePromptToTempFile } from './invocation.ts';
+import {
+  buildAgentSystemPrompt,
+  buildPiArgs,
+  getPiInvocation,
+  writePromptToTempFile,
+} from './invocation.ts';
 import { getFinalOutput } from './output.ts';
 import { buildChildAgentEnv, isAgentDelegationAllowed } from './security.ts';
 import type { SingleResult, SubagentDetails } from './types.ts';
@@ -117,8 +122,9 @@ export async function runSingleAgent(
   };
 
   try {
-    if (agent.systemPrompt.trim()) {
-      const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+    const composedPrompt = buildAgentSystemPrompt(agent);
+    if (composedPrompt.trim()) {
+      const tmp = await writePromptToTempFile(agent.name, composedPrompt);
       tmpPromptDir = tmp.dir;
       tmpPromptPath = tmp.filePath;
     }

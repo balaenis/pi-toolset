@@ -31,8 +31,10 @@ import {
   type AgentWorktree,
   createAgentWorktree,
   getGitRoot,
+  getWorktreeDiffSummary,
   getWorktreeDirtyStatus,
   removeAgentWorktree,
+  runWorktreeSetupHook,
 } from './worktree.ts';
 
 type Params = Static<typeof SubagentParams>;
@@ -394,6 +396,35 @@ async function runStepWithContext(
       const message = err instanceof Error ? err.message : String(err);
       return synthesizeFailure(agentName, agent, task, step, 'isolation_error', message);
     }
+
+    if (agent.worktreeSetupHook) {
+      const hookResult = runWorktreeSetupHook(worktree.path, agent.worktreeSetupHook);
+      if (!hookResult.ok) {
+        const errSummary = hookResult.error
+          ? `error: ${hookResult.error}`
+          : `exit ${hookResult.exitCode}`;
+        const tail = (hookResult.stderr || hookResult.stdout).trim();
+        const detail = tail ? `\n${tail.slice(-400)}` : '';
+        const failure = synthesizeFailure(
+          agentName,
+          agent,
+          task,
+          step,
+          'worktree_setup_error',
+          `worktreeSetupHook "${agent.worktreeSetupHook}" failed (${errSummary})${detail}`
+        );
+        failure.worktreeSetupError = failure.errorMessage;
+        const cleanupStatus = getWorktreeDirtyStatus(worktree.path);
+        if (cleanupStatus.ok && cleanupStatus.output.trim().length === 0) {
+          removeAgentWorktree(worktree);
+        } else {
+          failure.worktreePath = worktree.path;
+          failure.worktreeDirty = true;
+        }
+        await agentContext.cleanup();
+        return failure;
+      }
+    }
   }
 
   try {
@@ -445,6 +476,14 @@ function finalizeWorktree(worktree: AgentWorktree, result: SingleResult): void {
   if (status.output.trim().length > 0) {
     result.worktreePath = worktree.path;
     result.worktreeDirty = true;
+    const diff = getWorktreeDiffSummary(worktree.path);
+    if (diff.ok) {
+      if (diff.stat) result.worktreeDiffStat = diff.stat;
+      if (diff.changedFiles) result.worktreeChangedFiles = diff.changedFiles;
+    } else {
+      result.stderr += result.stderr ? '\n' : '';
+      result.stderr += `Worktree diff summary failed: ${diff.error ?? 'unknown'}.`;
+    }
     return;
   }
   const removal = removeAgentWorktree(worktree);

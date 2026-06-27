@@ -61,6 +61,7 @@ const FAILURE_STOP_REASONS = new Set([
   'template_error',
   'structured_output_error',
   'fanout_error',
+  'worktree_setup_error',
 ]);
 
 export function isFailedResult(result: SingleResult): boolean {

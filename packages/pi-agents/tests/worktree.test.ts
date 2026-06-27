@@ -9,8 +9,10 @@ import * as path from 'node:path';
 import {
   createAgentWorktree,
   getGitRoot,
+  getWorktreeDiffSummary,
   getWorktreeDirtyStatus,
   removeAgentWorktree,
+  runWorktreeSetupHook,
 } from '../src/worktree.ts';
 
 const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf-8' }).status === 0;
@@ -69,6 +71,50 @@ describe.if(gitAvailable)('worktree isolation', () => {
       const removal = removeAgentWorktree(wt);
       expect(removal.removed).toBe(true);
       expect(existsSync(wt.path)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('runWorktreeSetupHook returns ok and captures stdout for a successful command', () => {
+    const { repo, cleanup } = makeRepo();
+    try {
+      const wt = createAgentWorktree(repo, 'hooked', 2);
+      const result = runWorktreeSetupHook(wt.path, 'printf hello');
+      expect(result.ok).toBe(true);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('hello');
+      removeAgentWorktree(wt);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('runWorktreeSetupHook surfaces non-zero exit codes', () => {
+    const { repo, cleanup } = makeRepo();
+    try {
+      const wt = createAgentWorktree(repo, 'badhook', 3);
+      const result = runWorktreeSetupHook(wt.path, 'exit 7');
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBe(7);
+      removeAgentWorktree(wt);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('getWorktreeDiffSummary reports diff stat and changed files for tracked edits', () => {
+    const { repo, cleanup } = makeRepo();
+    try {
+      const wt = createAgentWorktree(repo, 'differ', 4);
+      writeFileSync(path.join(wt.path, 'README.md'), 'edited\n');
+      writeFileSync(path.join(wt.path, 'NEW.txt'), 'new file\n');
+      const diff = getWorktreeDiffSummary(wt.path);
+      expect(diff.ok).toBe(true);
+      expect(diff.stat ?? '').toContain('README.md');
+      expect(diff.changedFiles).toContain('README.md');
+      expect(diff.changedFiles).toContain('NEW.txt');
+      removeAgentWorktree(wt);
     } finally {
       cleanup();
     }

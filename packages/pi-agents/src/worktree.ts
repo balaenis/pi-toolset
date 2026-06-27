@@ -1,5 +1,5 @@
 // ABOUTME: Git worktree helpers for optional per-agent isolation under <repo>/.worktrees/.
-// ABOUTME: Wraps `git -C <repo> worktree add/remove` and `git status --porcelain` for dirty detection.
+// ABOUTME: Wraps `git worktree add/remove`, `git status --porcelain`, and `git diff` for dirty detection.
 
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -60,6 +60,101 @@ export function getWorktreeDirtyStatus(worktreePath: string): DirtyStatusResult 
     };
   }
   return { ok: true, output: result.stdout };
+}
+
+export interface WorktreeDiffSummary {
+  ok: boolean;
+  stat?: string;
+  changedFiles?: string[];
+  error?: string;
+}
+
+export function getWorktreeDiffSummary(worktreePath: string): WorktreeDiffSummary {
+  const stat = spawnSync('git', ['-C', worktreePath, 'diff', '--stat', '--no-ext-diff', 'HEAD'], {
+    encoding: 'utf-8',
+  });
+  if (stat.status !== 0) {
+    return {
+      ok: false,
+      error: (stat.stderr || stat.stdout || '').trim() || 'git diff --stat failed',
+    };
+  }
+  const names = spawnSync(
+    'git',
+    ['-C', worktreePath, 'diff', '--name-only', '--no-ext-diff', 'HEAD'],
+    { encoding: 'utf-8' }
+  );
+  if (names.status !== 0) {
+    return {
+      ok: false,
+      error: (names.stderr || names.stdout || '').trim() || 'git diff --name-only failed',
+    };
+  }
+  const untracked = spawnSync(
+    'git',
+    ['-C', worktreePath, 'ls-files', '--others', '--exclude-standard'],
+    { encoding: 'utf-8' }
+  );
+  const untrackedFiles =
+    untracked.status === 0
+      ? untracked.stdout
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+  const changedFiles = Array.from(
+    new Set([
+      ...names.stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      ...untrackedFiles,
+    ])
+  );
+  return { ok: true, stat: stat.stdout, changedFiles };
+}
+
+export interface WorktreeSetupHookResult {
+  ok: boolean;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
+
+export function runWorktreeSetupHook(
+  worktreePath: string,
+  command: string
+): WorktreeSetupHookResult {
+  const result = spawnSync(command, {
+    cwd: worktreePath,
+    shell: true,
+    encoding: 'utf-8',
+  });
+  if (result.error) {
+    return {
+      ok: false,
+      exitCode: result.status ?? -1,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+      error: result.error.message,
+    };
+  }
+  const exitCode = result.status ?? -1;
+  if (exitCode !== 0) {
+    return {
+      ok: false,
+      exitCode,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+    };
+  }
+  return {
+    ok: true,
+    exitCode: 0,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
 }
 
 function isUnderWorktreesDir(repoRoot: string, candidate: string): boolean {

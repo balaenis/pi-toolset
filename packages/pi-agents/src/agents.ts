@@ -31,6 +31,8 @@ export interface AgentConfig {
   maxSubagentDepth?: number;
   localName?: string;
   packageName?: string;
+  worktreeSetupHook?: string;
+  criticalSystemReminder?: string;
 }
 
 function parseCsvList(value: unknown): string[] | undefined {
@@ -56,6 +58,12 @@ function parseBoolean(value: unknown): boolean | undefined {
     if (trimmed === 'false') return false;
   }
   return undefined;
+}
+
+function parseTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function parsePositiveInt(value: unknown): number | undefined {
@@ -151,6 +159,8 @@ function loadAgentFromFile(filePath: string, source: AgentSource): AgentConfig |
     isolation: parseEnum(frontmatter.isolation, ['none', 'worktree'] as const) ?? 'none',
     completionCheck: parseCsvList(frontmatter.completionCheck),
     maxSubagentDepth: parseNonNegativeInt(frontmatter.maxSubagentDepth),
+    worktreeSetupHook: parseTrimmedString(frontmatter.worktreeSetupHook),
+    criticalSystemReminder: parseTrimmedString(frontmatter.criticalSystemReminder),
   };
 }
 

@@ -8,6 +8,15 @@ import { withFileMutationQueue } from '@earendil-works/pi-coding-agent';
 import type { AgentConfig } from './agents.ts';
 import { buildToolCliArgs } from './security.ts';
 
+export function buildAgentSystemPrompt(agent: AgentConfig): string {
+  const base = agent.systemPrompt ?? '';
+  const reminder = agent.criticalSystemReminder;
+  if (!reminder || reminder.trim().length === 0) return base;
+  const block = `<critical-system-reminder>\n${reminder.trim()}\n</critical-system-reminder>`;
+  if (!base.trim()) return block;
+  return `${base}\n\n${block}`;
+}
+
 export async function writePromptToTempFile(
   agentName: string,
   prompt: string

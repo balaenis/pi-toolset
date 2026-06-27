@@ -33,6 +33,9 @@ export interface SingleResult {
   step?: number;
   worktreePath?: string;
   worktreeDirty?: boolean;
+  worktreeDiffStat?: string;
+  worktreeChangedFiles?: string[];
+  worktreeSetupError?: string;
   finalOutput?: string;
   structuredOutput?: unknown;
   structuredOutputError?: string;
