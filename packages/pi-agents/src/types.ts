@@ -38,12 +38,20 @@ export interface SingleResult {
   structuredOutputError?: string;
 }
 
+export interface ChainOutputEntry {
+  text: string;
+  structured?: unknown;
+  agent: string;
+  step: number;
+}
+
 export interface SubagentDetails {
   mode: 'single' | 'parallel' | 'chain';
   agentScope: AgentScope;
   projectAgentsDir: string | null;
   builtinAgentsDir: string;
   results: SingleResult[];
+  outputs?: Record<string, ChainOutputEntry>;
 }
 
 export type DisplayItem =

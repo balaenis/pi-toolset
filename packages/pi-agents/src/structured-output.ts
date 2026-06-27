@@ -72,15 +72,52 @@ function jsonEquals(a: JsonValue, b: JsonValue): boolean {
 
 export function validateStructuredOutput(value: JsonValue, schema: JsonSchemaSubset): string[] {
   const errors: string[] = [];
-  walk(value, schema, '$', errors);
+  try {
+    walk(value, schema, '$', errors);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    errors.push(`$: schema evaluation failed: ${message}`);
+  }
   return errors;
 }
 
 function walk(value: JsonValue, schema: JsonSchemaSubset, pointer: string, errors: string[]): void {
-  if (schema.enum && schema.enum.length > 0) {
-    const matched = schema.enum.some((candidate) => jsonEquals(candidate, value));
-    if (!matched) {
-      errors.push(`${pointer}: value not in enum`);
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    errors.push(`${pointer}: invalid schema node`);
+    return;
+  }
+  if (schema.enum !== undefined) {
+    if (!Array.isArray(schema.enum)) {
+      errors.push(`${pointer}: schema.enum must be an array`);
+      return;
+    }
+    if (schema.enum.length > 0) {
+      const matched = schema.enum.some((candidate) => jsonEquals(candidate, value));
+      if (!matched) {
+        errors.push(`${pointer}: value not in enum`);
+        return;
+      }
+    }
+  }
+  if (schema.properties !== undefined && !isPlainObject(schema.properties as JsonValue)) {
+    errors.push(`${pointer}: schema.properties must be an object`);
+    return;
+  }
+  if (schema.required !== undefined && !Array.isArray(schema.required)) {
+    errors.push(`${pointer}: schema.required must be an array`);
+    return;
+  }
+  if (schema.items !== undefined) {
+    if (!schema.items || typeof schema.items !== 'object' || Array.isArray(schema.items)) {
+      errors.push(`${pointer}: schema.items must be a schema object`);
+      return;
+    }
+  }
+
+  if (schema.type !== undefined) {
+    const allowed = ['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'];
+    if (typeof schema.type !== 'string' || !allowed.includes(schema.type)) {
+      errors.push(`${pointer}: unsupported schema.type "${String(schema.type)}"`);
       return;
     }
   }
@@ -157,7 +194,7 @@ function validateArray(
   if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) {
     errors.push(`${pointer}: expected at most ${schema.maxItems} items, got ${value.length}`);
   }
-  if (schema.items) {
+  if (schema.items !== undefined) {
     for (let i = 0; i < value.length; i++) {
       walk(value[i], schema.items, `${pointer}[${i}]`, errors);
     }

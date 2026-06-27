@@ -59,6 +59,7 @@ const FAILURE_STOP_REASONS = new Set([
   'isolation_error',
   'completion_check',
   'template_error',
+  'structured_output_error',
 ]);
 
 export function isFailedResult(result: SingleResult): boolean {

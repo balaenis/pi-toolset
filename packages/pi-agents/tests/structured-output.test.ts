@@ -124,6 +124,21 @@ describe('validateStructuredOutput', () => {
     expect(validateStructuredOutput([1, 2, 3], schema)[0]).toContain('at most 2');
   });
 
+  it('rejects unsupported schema.type values', () => {
+    const schema = { type: 'objectt' } as unknown as JsonSchemaSubset;
+    const errors = validateStructuredOutput({ a: 1 }, schema);
+    expect(errors[0]).toContain('unsupported schema.type');
+  });
+
+  it('rejects malformed keyword shapes even when type is omitted', () => {
+    expect(
+      validateStructuredOutput({}, { properties: [] } as unknown as JsonSchemaSubset)[0]
+    ).toContain('schema.properties must be an object');
+    expect(validateStructuredOutput([], { items: [] } as unknown as JsonSchemaSubset)[0]).toContain(
+      'schema.items must be a schema object'
+    );
+  });
+
   it('uses own-property checks for required and additionalProperties (no prototype leakage)', () => {
     const requiredSchema: JsonSchemaSubset = {
       type: 'object',

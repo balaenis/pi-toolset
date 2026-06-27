@@ -1,25 +1,43 @@
-// ABOUTME: Chain task template expansion — substitutes {previous} and {outputs.<name>} placeholders.
+// ABOUTME: Chain task template expansion — substitutes {previous}, {outputs.<name>}, and {item} placeholders.
 // ABOUTME: Returns ok=false with the unknown name when the template references a missing output.
+
+import type { ChainOutputEntry } from './types.ts';
 
 export interface TemplateContext {
   previous: string;
-  outputs: Map<string, string>;
+  outputs: Map<string, ChainOutputEntry>;
+  item?: unknown;
 }
 
 export type TemplateResult = { ok: true; text: string } | { ok: false; unknown: string };
 
-const TOKEN_RE = /\{(previous|outputs\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*))\}/g;
+const TOKEN_RE = /\{(previous|item|outputs\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*))\}/g;
+
+function renderItem(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return '';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
 
 export function renderTaskTemplate(template: string, context: TemplateContext): TemplateResult {
   let unknown: string | undefined;
   const replaced = template.replace(TOKEN_RE, (_match, full: string, name?: string) => {
     if (full === 'previous') return context.previous;
+    if (full === 'item') {
+      if (!('item' in context)) {
+        if (unknown === undefined) unknown = 'item';
+        return _match;
+      }
+      return renderItem(context.item);
+    }
     if (typeof name === 'string') {
-      if (!context.outputs.has(name)) {
+      const entry = context.outputs.get(name);
+      if (!entry) {
         if (unknown === undefined) unknown = name;
         return _match;
       }
-      return context.outputs.get(name) ?? '';
+      return entry.text;
     }
     return _match;
   });

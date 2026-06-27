@@ -29,6 +29,12 @@ export const ChainItem = Type.Object({
         'Name used to reference this step’s output as `{outputs.<name>}` from later chain steps',
     })
   ),
+  outputSchema: Type.Optional(
+    Type.Any({
+      description:
+        'JSON Schema subset describing the required structured final output for this step. When set, the step task is augmented with a JSON-only contract and the result is parsed and validated. Supports type/properties/required/items/enum/additionalProperties/minItems/maxItems.',
+    })
+  ),
 });
 
 export const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {

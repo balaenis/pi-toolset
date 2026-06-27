@@ -26,7 +26,7 @@ import {
 } from './output.ts';
 import type { SubagentParams } from './schema.ts';
 import { assertAgentDelegationAllowed } from './security.ts';
-import type { IsolationMode, SingleResult, SubagentDetails } from './types.ts';
+import type { IsolationMode, SingleResult, SubagentDetails, ChainOutputEntry } from './types.ts';
 import {
   type AgentWorktree,
   createAgentWorktree,
@@ -157,7 +157,10 @@ async function runChain(
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
   makeDetails: DetailsFactory
 ): Promise<AgentResult> {
-  const chainDetails = makeDetails('chain');
+  const chainDetails = (results: SingleResult[], outputs?: Record<string, ChainOutputEntry>) => ({
+    ...makeDetails('chain')(results),
+    ...(outputs && Object.keys(outputs).length > 0 ? { outputs } : {}),
+  });
   return runChainWorkflow({
     chain,
     signal,
@@ -175,7 +178,8 @@ async function runChain(
         req.step,
         req.signal,
         req.onUpdate,
-        chainDetails
+        (results) => chainDetails(results),
+        { skipCompletionCheck: req.skipCompletionCheck }
       ),
   });
 }
@@ -335,7 +339,8 @@ async function runStepWithContext(
   step: number | undefined,
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
-  makeDetails: (results: SingleResult[]) => SubagentDetails
+  makeDetails: (results: SingleResult[]) => SubagentDetails,
+  options: { skipCompletionCheck?: boolean } = {}
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) {
@@ -402,7 +407,9 @@ async function runStepWithContext(
     if (worktree) {
       finalizeWorktree(worktree, result);
     }
-    enforceCompletionCheck(agent, result);
+    if (!options.skipCompletionCheck) {
+      enforceCompletionCheck(agent, result);
+    }
     return result;
   } catch (err) {
     if (worktree) {

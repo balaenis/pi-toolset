@@ -108,6 +108,35 @@ Each step's text may reference `{previous}` (the immediately preceding step's fi
 | Parallel | `{ tasks: [...] }` | Multiple agents run concurrently (max 8, 4 concurrent)           |
 | Chain    | `{ chain: [...] }` | Sequential with `{previous}` and `{outputs.<name>}` placeholders |
 
+### Structured chain output
+
+A chain step can declare `outputSchema` to demand a JSON final assistant message. The orchestrator appends a JSON-only contract to the rendered task, parses the step's final output, validates it against the schema, and exposes the parsed value to later steps.
+
+```json
+{
+  "chain": [
+    {
+      "agent": "explore",
+      "name": "context",
+      "task": "List code files relevant to auth.",
+      "outputSchema": {
+        "type": "object",
+        "required": ["files"],
+        "properties": { "files": { "type": "array", "items": { "type": "string" } } }
+      }
+    },
+    {
+      "agent": "planner",
+      "task": "Plan changes for {outputs.context}."
+    }
+  ]
+}
+```
+
+The schema supports a JSON Schema subset: `type`, `properties`, `required`, `items`, `enum`, `additionalProperties`, `minItems`, and `maxItems`. `integer` requires `Number.isInteger`. If the final output cannot be parsed or fails the schema, the step is marked failed with `stopReason: "structured_output_error"`, the chain stops, and the parent gets a description of the parse / validation error.
+
+When a step has both `name` and `outputSchema`, the parsed value is also available on `details.outputs[name].structured`. `{outputs.<name>}` in later tasks is replaced with the step's text output, so for structured handoff write tasks that mention the JSON shape explicitly.
+
 ## Output Display
 
 **Collapsed view** (default):
@@ -281,6 +310,7 @@ Only packages listed in the host project's `dependencies`, `devDependencies`, or
 - **stopReason "isolation_error"**: worktree isolation failed before the child started (see _Isolation: Git Worktree_)
 - **stopReason "completion_check"**: an agent's final message is missing one of its configured `completionCheck` headings (see _Completion Check_)
 - **stopReason "template_error"**: a chain step's task referenced `{outputs.<name>}` for a step that did not run or was not named
+- **stopReason "structured_output_error"**: a chain step with `outputSchema` produced output that could not be parsed or failed schema validation
 - **Chain mode**: stops at the first failing step and reports which step failed
 
 ## Limitations
@@ -289,3 +319,5 @@ Only packages listed in the host project's `dependencies`, `devDependencies`, or
 - Parallel model-visible output is capped at 50 KB per task; full results remain in tool details
 - Agents discovered fresh on each invocation (allows editing mid-session)
 - Parallel mode limited to 8 tasks, 4 concurrent
+- `outputSchema` uses a JSON Schema subset (type, properties, required, items, enum, additionalProperties, minItems, maxItems); it is not a full JSON Schema implementation
+- When a chain step declares `outputSchema`, the agent's `completionCheck` is bypassed for that step because the contract requires JSON-only output
