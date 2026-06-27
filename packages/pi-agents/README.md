@@ -7,7 +7,11 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 - **Isolated context** — every subagent runs in a fresh `pi` process
 - **Streaming output** — tool calls and progress arrive live
 - **Three execution modes** — single, parallel (max 8, 4 concurrent), and chained
+- **Structured chain outputs** — per-step `outputSchema` extracts and validates JSON before passing it forward as `{outputs.<name>}`
+- **Dynamic fanout** — chain steps can expand a prior step's array output into parallel subtasks with a collected result
 - **Package agents** — install agents from npm packages that declare `pi.agents`
+- **Worktree isolation + setup hook** — run agents in a throw-away git worktree with an optional shell `worktreeSetupHook` and per-run diff metadata
+- **Critical system reminder** — pair tool-level limits with a strong `<critical-system-reminder>` prompt block
 - **Markdown rendering** — final output is rendered with proper formatting in the expanded view
 - **Usage tracking** — turns, tokens, cost, and context shown per agent
 - **Abort support** — Ctrl+C propagates and kills active subprocesses

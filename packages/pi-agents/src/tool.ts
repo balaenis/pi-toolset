@@ -398,29 +398,8 @@ async function runStepWithContext(
     }
 
     if (agent.worktreeSetupHook) {
-      const hookResult = runWorktreeSetupHook(worktree.path, agent.worktreeSetupHook);
-      if (!hookResult.ok) {
-        const errSummary = hookResult.error
-          ? `error: ${hookResult.error}`
-          : `exit ${hookResult.exitCode}`;
-        const tail = (hookResult.stderr || hookResult.stdout).trim();
-        const detail = tail ? `\n${tail.slice(-400)}` : '';
-        const failure = synthesizeFailure(
-          agentName,
-          agent,
-          task,
-          step,
-          'worktree_setup_error',
-          `worktreeSetupHook "${agent.worktreeSetupHook}" failed (${errSummary})${detail}`
-        );
-        failure.worktreeSetupError = failure.errorMessage;
-        const cleanupStatus = getWorktreeDirtyStatus(worktree.path);
-        if (cleanupStatus.ok && cleanupStatus.output.trim().length === 0) {
-          removeAgentWorktree(worktree);
-        } else {
-          failure.worktreePath = worktree.path;
-          failure.worktreeDirty = true;
-        }
+      const failure = runHookOrSynthesizeFailure(agentName, agent, task, step, worktree);
+      if (failure) {
         await agentContext.cleanup();
         return failure;
       }
@@ -463,7 +442,42 @@ async function runStepWithContext(
   }
 }
 
-function finalizeWorktree(worktree: AgentWorktree, result: SingleResult): void {
+export function runHookOrSynthesizeFailure(
+  agentName: string,
+  agent: AgentConfig,
+  task: string,
+  step: number | undefined,
+  worktree: AgentWorktree
+): SingleResult | undefined {
+  const hook = agent.worktreeSetupHook;
+  if (!hook) return undefined;
+  const hookResult = runWorktreeSetupHook(worktree.path, hook);
+  if (hookResult.ok) return undefined;
+  const errSummary = hookResult.error
+    ? `error: ${hookResult.error}`
+    : `exit ${hookResult.exitCode}`;
+  const tail = (hookResult.stderr || hookResult.stdout).trim();
+  const detail = tail ? `\n${tail.slice(-400)}` : '';
+  const failure = synthesizeFailure(
+    agentName,
+    agent,
+    task,
+    step,
+    'worktree_setup_error',
+    `worktreeSetupHook "${hook}" failed (${errSummary})${detail}`
+  );
+  failure.worktreeSetupError = failure.errorMessage;
+  const cleanupStatus = getWorktreeDirtyStatus(worktree.path);
+  if (cleanupStatus.ok && cleanupStatus.output.trim().length === 0) {
+    removeAgentWorktree(worktree);
+  } else {
+    failure.worktreePath = worktree.path;
+    failure.worktreeDirty = true;
+  }
+  return failure;
+}
+
+export function finalizeWorktree(worktree: AgentWorktree, result: SingleResult): void {
   const status = getWorktreeDirtyStatus(worktree.path);
   if (!status.ok) {
     // Treat unknown status as dirty so we never delete data we can't verify.

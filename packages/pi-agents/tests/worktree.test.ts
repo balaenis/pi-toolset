@@ -14,6 +14,42 @@ import {
   removeAgentWorktree,
   runWorktreeSetupHook,
 } from '../src/worktree.ts';
+import { finalizeWorktree, runHookOrSynthesizeFailure } from '../src/tool.ts';
+import type { AgentConfig } from '../src/agents.ts';
+import type { SingleResult } from '../src/types.ts';
+
+function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return {
+    name: 'tester',
+    description: 'test agent',
+    systemPrompt: '',
+    source: 'builtin',
+    filePath: '/tmp/tester.md',
+    ...overrides,
+  };
+}
+
+function makeResult(overrides: Partial<SingleResult> = {}): SingleResult {
+  return {
+    agent: 'tester',
+    agentSource: 'builtin',
+    task: 'task',
+    exitCode: 0,
+    messages: [],
+    stderr: '',
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+      turns: 0,
+    },
+    finalOutput: '',
+    ...overrides,
+  };
+}
 
 const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf-8' }).status === 0;
 
@@ -140,6 +176,105 @@ describe('worktree helpers (no git)', () => {
       expect(existsSync(tmp)).toBe(true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('finalizeWorktree removes the worktree when the child left it clean', () => {
+    const { repo, cleanup } = makeRepo();
+    try {
+      const wt = createAgentWorktree(repo, 'finalize-clean', 7);
+      const result = makeResult();
+      finalizeWorktree(wt, result);
+      expect(result.worktreePath).toBeUndefined();
+      expect(result.worktreeDirty).toBeUndefined();
+      expect(result.worktreeDiffStat).toBeUndefined();
+      expect(result.worktreeChangedFiles).toBeUndefined();
+      expect(existsSync(wt.path)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('finalizeWorktree retains a dirty worktree and exposes diff metadata', () => {
+    const { repo, cleanup } = makeRepo();
+    try {
+      const wt = createAgentWorktree(repo, 'finalize-dirty', 8);
+      writeFileSync(path.join(wt.path, 'README.md'), 'edited\n');
+      writeFileSync(path.join(wt.path, 'NEW.txt'), 'fresh\n');
+      const result = makeResult();
+      finalizeWorktree(wt, result);
+      expect(result.worktreePath).toBe(wt.path);
+      expect(result.worktreeDirty).toBe(true);
+      expect(result.worktreeDiffStat ?? '').toContain('README.md');
+      expect(result.worktreeChangedFiles).toContain('README.md');
+      expect(result.worktreeChangedFiles).toContain('NEW.txt');
+      expect(existsSync(wt.path)).toBe(true);
+      removeAgentWorktree(wt);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('runHookOrSynthesizeFailure deletes a clean worktree and returns worktree_setup_error', () => {
+    const { repo, cleanup } = makeRepo();
+    try {
+      const wt = createAgentWorktree(repo, 'hook-clean-fail', 9);
+      const failure = runHookOrSynthesizeFailure(
+        'tester',
+        makeAgent({ worktreeSetupHook: 'exit 3' }),
+        'do the thing',
+        2,
+        wt
+      );
+      expect(failure).toBeDefined();
+      expect(failure!.stopReason).toBe('worktree_setup_error');
+      expect(failure!.exitCode).toBe(1);
+      expect(failure!.worktreeSetupError).toContain('exit 3');
+      expect(failure!.worktreePath).toBeUndefined();
+      expect(failure!.worktreeDirty).toBeUndefined();
+      expect(existsSync(wt.path)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('runHookOrSynthesizeFailure keeps a dirty worktree and surfaces its path', () => {
+    const { repo, cleanup } = makeRepo();
+    try {
+      const wt = createAgentWorktree(repo, 'hook-dirty-fail', 10);
+      const failure = runHookOrSynthesizeFailure(
+        'tester',
+        makeAgent({ worktreeSetupHook: 'printf scratch > scratch.txt && exit 4' }),
+        'do the thing',
+        3,
+        wt
+      );
+      expect(failure).toBeDefined();
+      expect(failure!.stopReason).toBe('worktree_setup_error');
+      expect(failure!.worktreePath).toBe(wt.path);
+      expect(failure!.worktreeDirty).toBe(true);
+      expect(existsSync(wt.path)).toBe(true);
+      removeAgentWorktree(wt);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('runHookOrSynthesizeFailure returns undefined when the hook succeeds', () => {
+    const { repo, cleanup } = makeRepo();
+    try {
+      const wt = createAgentWorktree(repo, 'hook-success', 11);
+      const result = runHookOrSynthesizeFailure(
+        'tester',
+        makeAgent({ worktreeSetupHook: 'true' }),
+        'do the thing',
+        4,
+        wt
+      );
+      expect(result).toBeUndefined();
+      removeAgentWorktree(wt);
+    } finally {
+      cleanup();
     }
   });
 });
