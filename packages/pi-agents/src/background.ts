@@ -1,0 +1,353 @@
+// ABOUTME: Session-scoped background job manager for the `agent` tool.
+// ABOUTME: Owns job ids, limits, completion notifications, rendering, and shutdown cancellation.
+
+import type {
+  AgentToolResult,
+  ExtensionAPI,
+  MessageRenderOptions,
+  Theme,
+} from '@earendil-works/pi-coding-agent';
+import { getMarkdownTheme } from '@earendil-works/pi-coding-agent';
+import { Container, Markdown, Spacer, Text, type Component } from '@earendil-works/pi-tui';
+import { getBuiltinAgentsDir, type AgentScope } from './agents.ts';
+import { truncateParallelOutput } from './output.ts';
+import type {
+  BackgroundJobStatus,
+  BackgroundLaunchDetails,
+  BackgroundNotificationDetails,
+  SubagentDetails,
+} from './types.ts';
+
+export const BACKGROUND_MESSAGE_TYPE = 'pi-agents-background-result';
+
+export const DEFAULT_MAX_BACKGROUND_JOBS = 4;
+
+export interface BackgroundLaunchRequest {
+  mode: 'single' | 'parallel' | 'chain';
+  agentScope: AgentScope;
+  description: string;
+  taskPreview: string;
+  projectAgentsDir: string | null;
+  run: (signal: AbortSignal) => Promise<AgentToolResult<SubagentDetails> & { isError?: boolean }>;
+}
+
+export interface BackgroundManager {
+  launch(
+    request: BackgroundLaunchRequest
+  ): AgentToolResult<SubagentDetails> & { isError?: boolean };
+  cancelAll(reason: string): void;
+  activeCount(): number;
+  waitForIdle(): Promise<void>;
+}
+
+export interface BackgroundManagerOptions {
+  maxJobs?: number;
+  now?: () => number;
+}
+
+type MinimalSendMessageApi = Pick<ExtensionAPI, 'sendMessage'>;
+
+interface BackgroundJob {
+  details: BackgroundLaunchDetails;
+  controller: AbortController;
+  promise: Promise<void>;
+  /**
+   * Synchronously emit the terminal notification for this job, deduplicated
+   * against any later run-side `finish()` via the per-job `settled` latch.
+   * Used by `cancelAll()` so cancellation is recorded even when the process
+   * exits before `request.run()` settles.
+   */
+  emitCancellation: () => void;
+}
+
+interface BackgroundNotificationMessage {
+  customType: string;
+  content: string | { type: string; text?: string }[];
+  display: boolean;
+  details?: BackgroundNotificationDetails;
+  timestamp: number;
+}
+
+export function createBackgroundManager(
+  pi: MinimalSendMessageApi,
+  options: BackgroundManagerOptions = {}
+): BackgroundManager {
+  const maxJobs = options.maxJobs ?? DEFAULT_MAX_BACKGROUND_JOBS;
+  const now = options.now ?? (() => Date.now());
+  const jobs = new Map<string, BackgroundJob>();
+
+  const runningCount = (): number => {
+    let count = 0;
+    for (const job of jobs.values()) if (job.details.status === 'running') count++;
+    return count;
+  };
+
+  const makeJobId = (): string => {
+    const stamp = Date.now().toString(36);
+    const suffix = Math.random().toString(36).slice(2, 8);
+    return `agent-bg-${stamp}-${suffix}`;
+  };
+
+  const launch = (
+    request: BackgroundLaunchRequest
+  ): AgentToolResult<SubagentDetails> & { isError?: boolean } => {
+    if (runningCount() >= maxJobs) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Too many background agent jobs in flight (max ${maxJobs}). Wait for one to finish, or run this agent in the foreground.`,
+          },
+        ],
+        details: {
+          mode: 'background',
+          agentScope: request.agentScope,
+          projectAgentsDir: request.projectAgentsDir,
+          builtinAgentsDir: getBuiltinAgentsDir(),
+          results: [],
+          background: [],
+        },
+        isError: true,
+      };
+    }
+
+    const jobId = makeJobId();
+    const startedAt = now();
+    const launchDetails: BackgroundLaunchDetails = {
+      jobId,
+      mode: request.mode,
+      status: 'running',
+      agentScope: request.agentScope,
+      description: request.description,
+      startedAt,
+      taskPreview: request.taskPreview,
+    };
+    const controller = new AbortController();
+    let settled = false;
+
+    const finish = (status: BackgroundJobStatus, result?: string, error?: string): void => {
+      if (settled) return;
+      settled = true;
+      const job = jobs.get(jobId);
+      if (job) job.details.status = status;
+      const finishedAt = now();
+      const notification: BackgroundNotificationDetails = {
+        jobId,
+        mode: request.mode,
+        status,
+        description: request.description,
+        startedAt,
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+        ...(result !== undefined ? { result } : {}),
+        ...(error !== undefined ? { error } : {}),
+      };
+
+      const safeResult = result ? truncateParallelOutput(result) : undefined;
+      const safeError = error ? truncateParallelOutput(error) : undefined;
+      const sections: string[] = [];
+      sections.push(`<pi-agents-background jobId="${jobId}" status="${status}">`);
+      sections.push(`<summary>${escapeXml(request.description)}</summary>`);
+      if (safeResult) sections.push(`<result>\n${safeResult}\n</result>`);
+      if (safeError) sections.push(`<error>\n${safeError}\n</error>`);
+      sections.push('</pi-agents-background>');
+      const messageContent = sections.join('\n');
+
+      try {
+        pi.sendMessage(
+          {
+            customType: BACKGROUND_MESSAGE_TYPE,
+            content: messageContent,
+            display: true,
+            details: notification,
+          },
+          { triggerTurn: status !== 'cancelled', deliverAs: 'followUp' }
+        );
+      } catch {
+        // Best-effort: completion notification is informational. Continue.
+      }
+      jobs.delete(jobId);
+    };
+
+    // Register the job before invoking request.run() so that synchronous
+    // failures and concurrent launches account for it correctly.
+    let runPromise: Promise<void> = Promise.resolve();
+    jobs.set(jobId, {
+      details: launchDetails,
+      controller,
+      promise: runPromise,
+      emitCancellation: () => finish('cancelled'),
+    });
+
+    runPromise = (async () => {
+      let runResult: (AgentToolResult<SubagentDetails> & { isError?: boolean }) | undefined;
+      let runError: unknown;
+      try {
+        runResult = await request.run(controller.signal);
+      } catch (err) {
+        runError = err;
+      }
+      if (controller.signal.aborted) {
+        finish('cancelled');
+        return;
+      }
+      if (runError !== undefined) {
+        const message = runError instanceof Error ? runError.message : String(runError);
+        finish('failed', undefined, message);
+        return;
+      }
+      const text = extractText(runResult!);
+      if (runResult!.isError) {
+        finish('failed', undefined, text);
+      } else {
+        finish('completed', text);
+      }
+    })();
+    runPromise.catch(() => {});
+    // Update the recorded promise so waitForIdle() awaits the actual work.
+    const job = jobs.get(jobId);
+    if (job) job.promise = runPromise;
+
+    const launchText =
+      `⏳ Background agent launched (${jobId}).\n` +
+      `Mode: ${request.mode}. ${request.description}\n` +
+      `You will receive a follow-up message when it completes.`;
+
+    return {
+      content: [{ type: 'text', text: launchText }],
+      details: {
+        mode: 'background',
+        agentScope: request.agentScope,
+        projectAgentsDir: request.projectAgentsDir,
+        builtinAgentsDir: getBuiltinAgentsDir(),
+        results: [],
+        background: [launchDetails],
+      },
+    };
+  };
+
+  const cancelAll = (_reason: string): void => {
+    for (const job of jobs.values()) {
+      if (job.details.status === 'running') {
+        job.details.status = 'cancelled';
+        try {
+          job.controller.abort();
+        } catch {
+          // ignore
+        }
+        // Record the cancellation notification synchronously so it is not lost
+        // when the process exits before request.run() settles. The per-job
+        // `settled` latch deduplicates against any later run-side finish().
+        job.emitCancellation();
+      }
+    }
+  };
+
+  const waitForIdle = async (): Promise<void> => {
+    while (jobs.size > 0) {
+      const pending = Array.from(jobs.values()).map((j) => j.promise);
+      await Promise.allSettled(pending);
+    }
+  };
+
+  return {
+    launch,
+    cancelAll,
+    activeCount: () => runningCount(),
+    waitForIdle,
+  };
+}
+
+function extractText(result: AgentToolResult<SubagentDetails>): string {
+  const parts: string[] = [];
+  for (const part of result.content) {
+    if (part.type === 'text' && typeof part.text === 'string' && part.text.length > 0) {
+      parts.push(part.text);
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function truncate(value: string, max: number): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}…`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = Math.round(seconds - minutes * 60);
+  return `${minutes}m${rem}s`;
+}
+
+export function renderBackgroundMessage(
+  message: BackgroundNotificationMessage,
+  options: MessageRenderOptions,
+  theme: Theme
+): Component {
+  const details = message.details;
+  if (!details) {
+    return new Text(theme.fg('muted', '(background agent: no details)'), 0, 0);
+  }
+
+  const statusIcon = (() => {
+    switch (details.status) {
+      case 'completed':
+        return theme.fg('success', '✓');
+      case 'failed':
+        return theme.fg('error', '✗');
+      case 'cancelled':
+        return theme.fg('warning', '⊘');
+      default:
+        return theme.fg('warning', '⏳');
+    }
+  })();
+
+  const header =
+    `${statusIcon} ${theme.fg('toolTitle', theme.bold('background '))}` +
+    theme.fg('accent', details.jobId) +
+    theme.fg('muted', ` [${details.mode}]`);
+
+  if (!options.expanded) {
+    let text = header;
+    text += `\n${theme.fg('dim', details.description)}`;
+    if (details.status === 'failed' && details.error) {
+      text += `\n${theme.fg('error', truncate(details.error, 240))}`;
+    } else if (details.result) {
+      text += `\n${theme.fg('toolOutput', truncate(details.result, 240))}`;
+    }
+    if (details.durationMs !== undefined) {
+      text += `\n${theme.fg('muted', `(${formatDuration(details.durationMs)})`)}`;
+    }
+    return new Text(text, 0, 0);
+  }
+
+  const container = new Container();
+  container.addChild(new Text(header, 0, 0));
+  container.addChild(new Text(theme.fg('muted', `Status: ${details.status}`), 0, 0));
+  container.addChild(
+    new Text(theme.fg('muted', 'Task: ') + theme.fg('dim', details.description), 0, 0)
+  );
+  if (details.durationMs !== undefined) {
+    container.addChild(
+      new Text(theme.fg('muted', `Duration: ${formatDuration(details.durationMs)}`), 0, 0)
+    );
+  }
+  if (details.result) {
+    container.addChild(new Spacer(1));
+    container.addChild(new Text(theme.fg('muted', '─── Result ───'), 0, 0));
+    container.addChild(new Markdown(details.result.trim(), 0, 0, getMarkdownTheme()));
+  }
+  if (details.error) {
+    container.addChild(new Spacer(1));
+    container.addChild(new Text(theme.fg('muted', '─── Error ───'), 0, 0));
+    container.addChild(new Text(theme.fg('error', details.error.trim()), 0, 0));
+  }
+  return container;
+}

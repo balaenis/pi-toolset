@@ -5,6 +5,7 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 ## Features
 
 - **Isolated context** — every subagent runs in a fresh `pi` process
+- **Background agents** — long-running invocations can return immediately and notify the parent session via a custom message when they finish (`runInBackground: true`)
 - **Streaming output** — tool calls and progress arrive live
 - **Three execution modes** — single, parallel (max 8, 4 concurrent), and chained
 - **Structured chain outputs** — per-step `outputSchema` extracts and validates JSON before passing it forward as `{outputs.<name>}`
@@ -113,6 +114,30 @@ Each step's text may reference `{previous}` (the immediately preceding step's fi
 | Single   | `{ agent, task }`  | One agent, one task                                              |
 | Parallel | `{ tasks: [...] }` | Multiple agents run concurrently (max 8, 4 concurrent)           |
 | Chain    | `{ chain: [...] }` | Sequential with `{previous}` and `{outputs.<name>}` placeholders |
+
+Any of the three modes can be wrapped with `runInBackground: true` to launch the workflow asynchronously. The tool returns immediately with an `agent-bg-*` job id. When the job completes or fails, a follow-up custom message is delivered to the parent session and triggers a new turn so the model can react. When the job is cancelled (for example by `session_shutdown`), the same custom message is recorded but the parent model is not re-entered.
+
+### Background agents
+
+```json
+{
+  "agent": "worker",
+  "task": "Run the full test suite and report failures.",
+  "runInBackground": true
+}
+```
+
+Guidance:
+
+- Use background mode for independent, long-running work whose result the parent does not need immediately. For anything the parent must wait on before proceeding, keep the call foreground.
+- Completion and failure are delivered as a session message (`customType: pi-agents-background-result`) with `triggerTurn: true` and `deliverAs: "followUp"`. Cancelled jobs emit the same message type with `triggerTurn: false`. The parent should not poll for results.
+- Background jobs are scoped to the current Pi process / session. They are cancelled when the session shuts down (`quit`, `reload`, `resume`, `fork`, `new`) and do not survive a Pi restart.
+- The parent abort signal (`Ctrl+C` on the current turn) does **not** cancel a launched background job; it owns an independent abort controller.
+- `runInBackground` is rejected in `json` and `print` modes because those host processes exit when the tool returns. The tool returns an error explaining the limitation instead of silently dropping the work.
+- At most four jobs may be in flight per session. Additional launches return an error containing `Too many background agent jobs` until one finishes.
+- Project- and package-agent confirmation runs **before** the background job is registered; trust prompts cannot be bypassed by setting `runInBackground`.
+- For Claude-style tool calls, `run_in_background` (snake_case) is accepted as a compatibility alias and normalized to `runInBackground` before schema validation.
+- Detaching an already-running foreground agent is intentionally not supported in this implementation.
 
 ### Structured chain output
 
@@ -391,3 +416,4 @@ Package agents go through the same confirmation prompt as project agents because
 - Dynamic fanout expands at most `MAX_FANOUT_ITEMS` items and uses the same concurrency cap as parallel execution
 - `outputSchema` uses a JSON Schema subset (type, properties, required, items, enum, additionalProperties, minItems, maxItems); it is not a full JSON Schema implementation
 - When a chain step declares `outputSchema`, the agent's `completionCheck` is bypassed for that step because the contract requires JSON-only output
+- Background agents are in-memory and per-session: they do not persist across Pi process restarts, and there is no API to detach an already-running foreground agent

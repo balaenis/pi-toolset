@@ -94,4 +94,10 @@ export const SubagentParams = Type.Object({
     Type.String({ description: 'Working directory for the agent process (single mode)' })
   ),
   isolation: Type.Optional(IsolationSchema),
+  runInBackground: Type.Optional(
+    Type.Boolean({
+      description:
+        'Run this agent workflow in the background. The tool returns immediately and the parent session is notified when it completes.',
+    })
+  ),
 });

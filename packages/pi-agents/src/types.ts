@@ -48,13 +48,38 @@ export interface ChainOutputEntry {
   step: number;
 }
 
-export interface SubagentDetails {
+export type BackgroundJobStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface BackgroundLaunchDetails {
+  jobId: string;
   mode: 'single' | 'parallel' | 'chain';
+  status: BackgroundJobStatus;
+  agentScope: AgentScope;
+  description: string;
+  startedAt: number;
+  taskPreview: string;
+}
+
+export interface BackgroundNotificationDetails {
+  jobId: string;
+  mode: 'single' | 'parallel' | 'chain';
+  status: BackgroundJobStatus;
+  description: string;
+  startedAt: number;
+  finishedAt: number;
+  durationMs?: number;
+  result?: string;
+  error?: string;
+}
+
+export interface SubagentDetails {
+  mode: 'single' | 'parallel' | 'chain' | 'background';
   agentScope: AgentScope;
   projectAgentsDir: string | null;
   builtinAgentsDir: string;
   results: SingleResult[];
   outputs?: Record<string, ChainOutputEntry>;
+  background?: BackgroundLaunchDetails[];
 }
 
 export type DisplayItem =

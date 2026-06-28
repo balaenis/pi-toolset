@@ -13,6 +13,7 @@ import {
   discoverAgents,
   getBuiltinAgentsDir,
 } from './agents.ts';
+import type { BackgroundManager } from './background.ts';
 import { runChainWorkflow, synthesizeFailure } from './chain.ts';
 import { MAX_CONCURRENCY, MAX_PARALLEL_TASKS } from './constants.ts';
 import { validateCompletionOutput } from './completion-check.ts';
@@ -42,11 +43,27 @@ type Mode = 'single' | 'parallel' | 'chain';
 type AgentResult = AgentToolResult<SubagentDetails> & { isError?: boolean };
 type DetailsFactory = (mode: Mode) => (results: SingleResult[]) => SubagentDetails;
 
+export interface ExecuteAgentToolOptions {
+  backgroundManager?: BackgroundManager;
+  /** Test seam: override the post-validation workflow runner. */
+  runWorkflow?: WorkflowRunner;
+}
+
+type WorkflowRunner = (
+  params: Params,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
+  ctx: ExtensionContext,
+  agents: AgentConfig[],
+  makeDetails: DetailsFactory
+) => Promise<AgentResult>;
+
 export async function executeAgentTool(
   params: Params,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
-  ctx: ExtensionContext
+  ctx: ExtensionContext,
+  options: ExecuteAgentToolOptions = {}
 ): Promise<AgentResult> {
   const agentScope: AgentScope = params.agentScope ?? 'user';
 
@@ -99,6 +116,19 @@ export async function executeAgentTool(
     };
   }
 
+  if (params.tasks && params.tasks.length > MAX_PARALLEL_TASKS) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+        },
+      ],
+      details: makeDetails('parallel')([]),
+      isError: true,
+    };
+  }
+
   if (confirmProjectAgents && ctx.hasUI) {
     const requestedAgentNames = new Set<string>();
     if (params.chain) {
@@ -147,22 +177,55 @@ export async function executeAgentTool(
   }
 
   if (params.chain && params.chain.length > 0) {
-    return await runChain(ctx, agents, params.chain, signal, onUpdate, makeDetails);
-  }
-  if (params.tasks && params.tasks.length > 0) {
-    return await runParallel(ctx, agents, params.tasks, signal, onUpdate, makeDetails);
-  }
-  if (params.agent && params.task) {
-    return await runSingle(
-      ctx,
-      agents,
-      params.agent,
-      params.task,
-      params.cwd,
-      params.isolation,
+    return await runWithBackgroundOption(
+      params,
       signal,
       onUpdate,
-      makeDetails
+      ctx,
+      agents,
+      makeDetails,
+      'chain',
+      options,
+      (workflowSignal, workflowOnUpdate) =>
+        runChain(ctx, agents, params.chain!, workflowSignal, workflowOnUpdate, makeDetails)
+    );
+  }
+  if (params.tasks && params.tasks.length > 0) {
+    return await runWithBackgroundOption(
+      params,
+      signal,
+      onUpdate,
+      ctx,
+      agents,
+      makeDetails,
+      'parallel',
+      options,
+      (workflowSignal, workflowOnUpdate) =>
+        runParallel(ctx, agents, params.tasks!, workflowSignal, workflowOnUpdate, makeDetails)
+    );
+  }
+  if (params.agent && params.task) {
+    return await runWithBackgroundOption(
+      params,
+      signal,
+      onUpdate,
+      ctx,
+      agents,
+      makeDetails,
+      'single',
+      options,
+      (workflowSignal, workflowOnUpdate) =>
+        runSingle(
+          ctx,
+          agents,
+          params.agent!,
+          params.task!,
+          params.cwd,
+          params.isolation,
+          workflowSignal,
+          workflowOnUpdate,
+          makeDetails
+        )
     );
   }
 
@@ -171,6 +234,103 @@ export async function executeAgentTool(
     content: [{ type: 'text', text: `Invalid parameters. Available agents: ${available}` }],
     details: makeDetails('single')([]),
   };
+}
+
+async function runWithBackgroundOption(
+  params: Params,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
+  ctx: ExtensionContext,
+  agents: AgentConfig[],
+  makeDetails: DetailsFactory,
+  mode: Mode,
+  options: ExecuteAgentToolOptions,
+  runWorkflow: (
+    signal: AbortSignal | undefined,
+    onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined
+  ) => Promise<AgentResult>
+): Promise<AgentResult> {
+  if (!params.runInBackground) {
+    if (options.runWorkflow)
+      return options.runWorkflow(params, signal, onUpdate, ctx, agents, makeDetails);
+    return runWorkflow(signal, onUpdate);
+  }
+
+  if (ctx.mode === 'json' || ctx.mode === 'print') {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Background agents require a long-lived TUI or RPC session; current mode "${ctx.mode}" exits after the tool returns. Re-run without runInBackground.`,
+        },
+      ],
+      details: makeDetails(mode)([]),
+      isError: true,
+    };
+  }
+
+  const manager = options.backgroundManager;
+  if (!manager) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: 'Background execution is not available in this session.',
+        },
+      ],
+      details: makeDetails(mode)([]),
+      isError: true,
+    };
+  }
+
+  const description = describeWorkflow(params, mode);
+  const taskPreview = buildTaskPreview(params, mode);
+  const projectAgentsDir = discoverAgents(ctx.cwd, params.agentScope ?? 'user').projectAgentsDir;
+
+  return manager.launch({
+    mode,
+    agentScope: params.agentScope ?? 'user',
+    description,
+    taskPreview,
+    projectAgentsDir,
+    run: (bgSignal) => {
+      if (options.runWorkflow) {
+        const copy = stripRunInBackground(params);
+        return options.runWorkflow(copy, bgSignal, undefined, ctx, agents, makeDetails);
+      }
+      return runWorkflow(bgSignal, undefined);
+    },
+  });
+}
+
+function stripRunInBackground(params: Params): Params {
+  const { runInBackground: _ignore, ...rest } = params;
+  return rest as Params;
+}
+
+function describeWorkflow(params: Params, mode: Mode): string {
+  if (mode === 'chain') return `chain (${params.chain?.length ?? 0} steps)`;
+  if (mode === 'parallel') return `parallel (${params.tasks?.length ?? 0} tasks)`;
+  return `${params.agent ?? 'agent'}: ${truncatePreview(params.task ?? '', 80)}`;
+}
+
+function buildTaskPreview(params: Params, mode: Mode): string {
+  if (mode === 'chain') {
+    const first = params.chain?.[0];
+    if (!first) return '';
+    const task = 'task' in first ? first.task : first.parallel.task;
+    return truncatePreview(task, 120);
+  }
+  if (mode === 'parallel') {
+    const first = params.tasks?.[0];
+    return first ? truncatePreview(first.task, 120) : '';
+  }
+  return truncatePreview(params.task ?? '', 120);
+}
+
+function truncatePreview(value: string, max: number): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}…`;
 }
 
 async function runChain(
@@ -225,6 +385,7 @@ async function runParallel(
         },
       ],
       details: makeDetails('parallel')([]),
+      isError: true,
     };
 
   const allResults: SingleResult[] = new Array(tasks.length);

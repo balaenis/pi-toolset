@@ -86,11 +86,13 @@ export function formatToolCall(
 
 export function renderCall(args: Static<typeof SubagentParams>, theme: Theme): Component {
   const scope = args.agentScope ?? 'user';
+  const bgMarker = args.runInBackground ? theme.fg('muted', ' [background]') : '';
   if (args.chain && args.chain.length > 0) {
     let text =
       theme.fg('toolTitle', theme.bold('subagent ')) +
       theme.fg('accent', `chain (${args.chain.length} steps)`) +
-      theme.fg('muted', ` [${scope}]`);
+      theme.fg('muted', ` [${scope}]`) +
+      bgMarker;
     for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
       const step = args.chain[i];
       const agent = 'agent' in step ? step.agent : step.parallel.agent;
@@ -112,7 +114,8 @@ export function renderCall(args: Static<typeof SubagentParams>, theme: Theme): C
     let text =
       theme.fg('toolTitle', theme.bold('subagent ')) +
       theme.fg('accent', `parallel (${args.tasks.length} tasks)`) +
-      theme.fg('muted', ` [${scope}]`);
+      theme.fg('muted', ` [${scope}]`) +
+      bgMarker;
     for (const t of args.tasks.slice(0, 3)) {
       const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
       text += `\n  ${theme.fg('accent', t.agent)}${theme.fg('dim', ` ${preview}`)}`;
@@ -130,7 +133,8 @@ export function renderCall(args: Static<typeof SubagentParams>, theme: Theme): C
   let text =
     theme.fg('toolTitle', theme.bold('subagent ')) +
     theme.fg('accent', agentName) +
-    theme.fg('muted', ` [${scope}]`);
+    theme.fg('muted', ` [${scope}]`) +
+    bgMarker;
   text += `\n  ${theme.fg('dim', preview)}`;
   return new Text(text, 0, 0);
 }
@@ -163,13 +167,28 @@ export function renderResult(
   theme: Theme
 ): Component {
   const details = result.details;
+  const mdTheme = getMarkdownTheme();
+  const themeFg: ThemeFg = theme.fg.bind(theme);
+
+  if (details && details.mode === 'background') {
+    const launches = details.background ?? [];
+    if (launches.length > 0) {
+      const launch = launches[0];
+      let text =
+        theme.fg('warning', '⏳ ') +
+        theme.fg('toolTitle', theme.bold('background ')) +
+        theme.fg('accent', launch.jobId) +
+        theme.fg('muted', ` [${launch.mode}]`);
+      text += `\n${theme.fg('dim', launch.description)}`;
+      text += `\n${theme.fg('muted', 'You will be notified when it completes.')}`;
+      return new Text(text, 0, 0);
+    }
+  }
+
   if (!details || details.results.length === 0) {
     const text = result.content[0];
     return new Text(text?.type === 'text' ? (text.text ?? '(no output)') : '(no output)', 0, 0);
   }
-
-  const mdTheme = getMarkdownTheme();
-  const themeFg: ThemeFg = theme.fg.bind(theme);
 
   const renderDisplayItems = (items: DisplayItem[], limit?: number) => {
     const toShow = limit ? items.slice(-limit) : items;
