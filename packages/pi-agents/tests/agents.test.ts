@@ -156,32 +156,6 @@ Body.`
     expect(agents.find((x) => x.name === 'depth-blank')!.maxSubagentDepth).toBeUndefined();
   });
 
-  it('parses criticalSystemReminder as a trimmed non-empty string', () => {
-    env = withAgentsDir((dir) => {
-      writeFileSync(
-        path.join(dir, 'reminder.md'),
-        `---
-name: reminder
-description: reviewer reminder
-criticalSystemReminder: "  No edits.  "
----
-Body.`
-      );
-      writeFileSync(
-        path.join(dir, 'reminder-empty.md'),
-        `---
-name: reminder-empty
-description: blank reminder
-criticalSystemReminder: "   "
----
-Body.`
-      );
-    });
-    const { agents } = discoverAgents(env.cwd, 'project');
-    expect(agents.find((a) => a.name === 'reminder')!.criticalSystemReminder).toBe('No edits.');
-    expect(agents.find((a) => a.name === 'reminder-empty')!.criticalSystemReminder).toBeUndefined();
-  });
-
   it('parses worktreeSetupHook as a trimmed non-empty string', () => {
     env = withAgentsDir((dir) => {
       writeFileSync(

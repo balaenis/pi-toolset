@@ -32,7 +32,6 @@ export interface AgentConfig {
   localName?: string;
   packageName?: string;
   worktreeSetupHook?: string;
-  criticalSystemReminder?: string;
 }
 
 function parseCsvList(value: unknown): string[] | undefined {
@@ -160,7 +159,6 @@ function loadAgentFromFile(filePath: string, source: AgentSource): AgentConfig |
     completionCheck: parseCsvList(frontmatter.completionCheck),
     maxSubagentDepth: parseNonNegativeInt(frontmatter.maxSubagentDepth),
     worktreeSetupHook: parseTrimmedString(frontmatter.worktreeSetupHook),
-    criticalSystemReminder: parseTrimmedString(frontmatter.criticalSystemReminder),
   };
 }
 

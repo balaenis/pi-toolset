@@ -6,12 +6,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentConfig } from '../src/agents.ts';
-import {
-  buildAgentSystemPrompt,
-  buildPiArgs,
-  getPiInvocation,
-  writePromptToTempFile,
-} from '../src/invocation.ts';
+import { buildPiArgs, getPiInvocation, writePromptToTempFile } from '../src/invocation.ts';
 
 function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -119,31 +114,6 @@ describe('buildPiArgs', () => {
     expect(args).not.toContain('--tools');
     const args2 = buildPiArgs(makeAgent({ tools: undefined }), 'go');
     expect(args2).not.toContain('--tools');
-  });
-});
-
-describe('buildAgentSystemPrompt', () => {
-  it('returns the agent systemPrompt unchanged when no reminder is set', () => {
-    const prompt = buildAgentSystemPrompt(makeAgent({ systemPrompt: 'do the thing' }));
-    expect(prompt).toBe('do the thing');
-  });
-
-  it('appends a <critical-system-reminder> block when reminder is set', () => {
-    const prompt = buildAgentSystemPrompt(
-      makeAgent({ systemPrompt: 'do the thing', criticalSystemReminder: 'No edits.' })
-    );
-    expect(prompt).toContain('do the thing');
-    expect(prompt).toMatch(
-      /<critical-system-reminder>\s*No edits\.\s*<\/critical-system-reminder>/
-    );
-  });
-
-  it('uses the reminder block alone when there is no base systemPrompt', () => {
-    const prompt = buildAgentSystemPrompt(
-      makeAgent({ systemPrompt: '', criticalSystemReminder: 'Only review.' })
-    );
-    expect(prompt.startsWith('<critical-system-reminder>')).toBe(true);
-    expect(prompt).toContain('Only review.');
   });
 });
 
