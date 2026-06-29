@@ -38,15 +38,13 @@ This tool executes a separate `pi` subprocess with a delegated system prompt and
 
 **Project-local agents** (`.pi/agents/*.md`) are repo-controlled prompts that can instruct the model to read files, run bash commands, etc.
 
-**Package agents** are agents exposed by packages installed via pi (`pi install ...`). They are discovered from the `packages[]` entries in `~/.pi/agent/settings.json` (user scope) and `.pi/settings.json` (project scope), by reading each package's `package.json#pi.agents` field. They run with the same privileges as project agents and are gated by the same confirmation flow.
+**Package agents** are agents exposed by packages installed via pi (`pi install ...`). They are discovered from the `packages[]` entries in `~/.pi/agent/settings.json` (user scope) and `.pi/settings.json` (project scope), by reading each package's `package.json#pi.agents` field. They run with the same privileges as project agents.
 
-**Default behavior:** Loads **user-level agents** from `~/.pi/agent/agents` and **user-scope package agents** from packages listed in `~/.pi/agent/settings.json#packages`.
+**Default behavior:** With no `agentScope` argument (`agentScope: "both"`), loads **user-level agents** from `~/.pi/agent/agents`, **user-scope package agents** from `~/.pi/agent/settings.json#packages`, **project-local agents** from `.pi/agents`, and **project-scope package agents** from `.pi/settings.json#packages`. Project agents override user agents with the same name.
 
-To additionally enable project-local and project-scope package agents, pass `agentScope: "both"` (or `"project"`). Only do this for repositories you trust — user-scope packages load under `"user"` / `"both"`, project-scope packages load under `"project"` / `"both"`.
+Pass `agentScope: "user"` to skip project sources, or `agentScope: "project"` to skip user sources. Only enable the project sources for repositories you trust — user-scope packages load under `"user"` / `"both"`, project-scope packages load under `"project"` / `"both"`.
 
-When running interactively, the tool prompts for confirmation before running project-local or package agents (any agent whose `source` is `project` or `package`). Set `confirmProjectAgents: false` to disable.
-
-`worktreeSetupHook` is a shell command sourced from an agent definition and runs in the project on `isolation: worktree` agents. Treat it the same as any other agent body: only declare it for trusted sources, and pair it with the project/package confirmation prompt.
+`worktreeSetupHook` is a shell command sourced from an agent definition and runs in the project on `isolation: worktree` agents. Treat it the same as any other agent body: only declare it for trusted sources.
 
 ### Tool Permissions
 
@@ -135,7 +133,6 @@ Guidance:
 - The parent abort signal (`Ctrl+C` on the current turn) does **not** cancel a launched background job; it owns an independent abort controller.
 - `runInBackground` is rejected in `json` and `print` modes because those host processes exit when the tool returns. The tool returns an error explaining the limitation instead of silently dropping the work.
 - At most four jobs may be in flight per session. Additional launches return an error containing `Too many background agent jobs` until one finishes.
-- Project- and package-agent confirmation runs **before** the background job is registered; trust prompts cannot be bypassed by setting `runInBackground`.
 - For Claude-style tool calls, `run_in_background` (snake_case) is accepted as a compatibility alias and normalized to `runInBackground` before schema validation.
 - Detaching an already-running foreground agent is intentionally not supported in this implementation.
 
@@ -274,6 +271,32 @@ Invalid values (unknown enums, non-positive integers for `maxTurns`, negative or
 
 > Runtime behavior currently wired up: `tools`, `excludeTools`, `model`, `thinking`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `defaultContext`, `isolation`, `completionCheck`, `maxSubagentDepth`, `worktreeSetupHook`. Every frontmatter field is now active.
 
+### Config Overrides
+
+You can override fields of any discovered agent (builtin, package, user, or project) without editing its source markdown via a `config.json` under the Pi user or project config directory:
+
+- User scope: `~/.pi/agent/@balaenis/pi-agents/config.json`
+- Project scope: `<repo>/.pi/@balaenis/pi-agents/config.json`
+
+Merging is field-level: project scope overrides only the fields it specifies; any field omitted in project config falls back to the user value, and any field omitted in both falls back to the agent's frontmatter.
+
+```json
+{
+  "agents": {
+    "explore": {
+      "model": "gpt-5",
+      "thinking": "high",
+      "systemPromptMode": "replace"
+    },
+    "@balaenis/pi-agents.reviewer": {
+      "model": "claude-sonnet-4.5"
+    }
+  }
+}
+```
+
+Key is the full agent name as it appears in the catalogue (package agents are namespaced as `<packageName>.<localName>`). Allowed fields match the frontmatter set above: `description`, `model`, `thinking`, `tools`, `excludeTools`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `defaultContext`, `isolation`, `completionCheck`, `maxSubagentDepth`, `worktreeSetupHook`. `name`, `systemPrompt` (the markdown body), `source`, and `filePath` are not overridable. Invalid values are dropped using the same rules as frontmatter parsing.
+
 ### Worktree Setup Hook
 
 Agents with `isolation: worktree` can declare a `worktreeSetupHook` shell command that runs inside the newly created worktree before the child `pi` is spawned. Typical uses are dependency installs or generated-file builds the child relies on (`bun install`, `pnpm install --frozen-lockfile`, `make bootstrap`).
@@ -283,7 +306,7 @@ Behavior:
 - The hook is launched with `spawnSync(command, { cwd: worktreePath, shell: true })` and inherits the parent's environment.
 - A non-zero exit code or spawn error returns a synthetic failure with `stopReason: 'worktree_setup_error'`, exit code `1`, and a truncated tail of stderr/stdout in `errorMessage` / `worktreeSetupError`.
 - After a hook failure the worktree is removed when `git status --porcelain` is clean; otherwise it is retained and surfaced via `worktreePath` + `worktreeDirty: true`.
-- The hook is shell input from the agent definition. Only declare it in agents from sources you trust; project-local and package agents go through the same confirmation prompt as before.
+- The hook is shell input from the agent definition. Only declare it in agents from sources you trust.
 
 After a successful child run, dirty worktrees additionally expose:
 
@@ -364,7 +387,7 @@ When a package identity (`npm:<name>`, `git:<host>/<path>`, or `local:<absolute>
 
 Discovered package agents are namespaced by the package name. An agent declared as `name: reviewer` inside `@acme/pi-frontend` is invocable as `@acme/pi-frontend.reviewer`. The original local name is preserved on `AgentConfig.localName`, and the publishing package name is on `AgentConfig.packageName`.
 
-Package agents go through the same confirmation prompt as project agents because they run with the same privileges. They are not pulled from a project's `dependencies` / `node_modules`; only packages explicitly listed in a pi settings file are considered.
+Package agents run with the same privileges as project agents. They are not pulled from a project's `dependencies` / `node_modules`; only packages explicitly listed in a pi settings file are considered.
 
 ## Bundled Agents
 

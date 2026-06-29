@@ -8,6 +8,9 @@ import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from '@earendil-works/
 import { discoverPackageAgentDirs } from './package-agents.ts';
 import type { DefaultContext, IsolationMode, SystemPromptMode } from './types.ts';
 
+const CONFIG_PACKAGE_DIR = path.join('@balaenis', 'pi-agents');
+const CONFIG_FILE_NAME = 'config.json';
+
 export type AgentScope = 'user' | 'project' | 'both';
 export type AgentSource = 'builtin' | 'package' | 'user' | 'project';
 
@@ -162,6 +165,117 @@ function loadAgentFromFile(filePath: string, source: AgentSource): AgentConfig |
   };
 }
 
+type AgentOverride = Partial<
+  Omit<AgentConfig, 'name' | 'systemPrompt' | 'source' | 'filePath' | 'localName' | 'packageName'>
+>;
+
+function parseAgentOverride(raw: unknown): AgentOverride {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const entry = raw as Record<string, unknown>;
+  const out: AgentOverride = {};
+
+  if (typeof entry.description === 'string') out.description = entry.description;
+  if (typeof entry.model === 'string') out.model = entry.model;
+  if (typeof entry.thinking === 'string') out.thinking = entry.thinking;
+
+  const tools = parseCsvList(entry.tools);
+  if (tools) out.tools = tools;
+  const excludeTools = parseCsvList(entry.excludeTools);
+  if (excludeTools) out.excludeTools = excludeTools;
+
+  const systemPromptMode = parseEnum(entry.systemPromptMode, ['append', 'replace'] as const);
+  if (systemPromptMode) out.systemPromptMode = systemPromptMode;
+
+  const maxTurns = parsePositiveInt(entry.maxTurns);
+  if (maxTurns !== undefined) out.maxTurns = maxTurns;
+
+  const noContextFiles = parseBoolean(entry.noContextFiles);
+  if (noContextFiles !== undefined) out.noContextFiles = noContextFiles;
+  const noSkills = parseBoolean(entry.noSkills);
+  if (noSkills !== undefined) out.noSkills = noSkills;
+
+  const defaultContext = parseEnum(entry.defaultContext, ['fresh', 'fork'] as const);
+  if (defaultContext) out.defaultContext = defaultContext;
+  const isolation = parseEnum(entry.isolation, ['none', 'worktree'] as const);
+  if (isolation) out.isolation = isolation;
+
+  const completionCheck = parseCsvList(entry.completionCheck);
+  if (completionCheck) out.completionCheck = completionCheck;
+
+  const maxSubagentDepth = parseNonNegativeInt(entry.maxSubagentDepth);
+  if (maxSubagentDepth !== undefined) out.maxSubagentDepth = maxSubagentDepth;
+
+  const worktreeSetupHook = parseTrimmedString(entry.worktreeSetupHook);
+  if (worktreeSetupHook !== undefined) out.worktreeSetupHook = worktreeSetupHook;
+
+  return out;
+}
+
+function readOverridesFromConfig(configPath: string): Map<string, AgentOverride> {
+  const result = new Map<string, AgentOverride>();
+  let content: string;
+  try {
+    content = fs.readFileSync(configPath, 'utf-8');
+  } catch {
+    return result;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return result;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return result;
+  const agents = (parsed as Record<string, unknown>).agents;
+  if (!agents || typeof agents !== 'object' || Array.isArray(agents)) return result;
+  for (const [name, value] of Object.entries(agents as Record<string, unknown>)) {
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const override = parseAgentOverride(value);
+    if (Object.keys(override).length > 0) result.set(name, override);
+  }
+  return result;
+}
+
+function mergeOverrideMap(
+  base: Map<string, AgentOverride>,
+  next: Map<string, AgentOverride>
+): void {
+  for (const [name, override] of next) {
+    const existing = base.get(name);
+    base.set(name, existing ? { ...existing, ...override } : override);
+  }
+}
+
+function loadAgentOverrides(cwd: string, scope: AgentScope): Map<string, AgentOverride> {
+  const merged = new Map<string, AgentOverride>();
+
+  if (scope !== 'project') {
+    const userConfig = path.join(getAgentDir(), CONFIG_PACKAGE_DIR, CONFIG_FILE_NAME);
+    mergeOverrideMap(merged, readOverridesFromConfig(userConfig));
+  }
+
+  if (scope !== 'user') {
+    const projectConfigDir = findNearestProjectConfigDir(cwd);
+    if (projectConfigDir) {
+      const projectConfig = path.join(projectConfigDir, CONFIG_PACKAGE_DIR, CONFIG_FILE_NAME);
+      mergeOverrideMap(merged, readOverridesFromConfig(projectConfig));
+    }
+  }
+
+  return merged;
+}
+
+function findNearestProjectConfigDir(cwd: string): string | null {
+  let currentDir = cwd;
+  while (true) {
+    const candidate = path.join(currentDir, CONFIG_DIR_NAME);
+    if (isDirectory(candidate)) return candidate;
+    const parent = path.dirname(currentDir);
+    if (parent === currentDir) return null;
+    currentDir = parent;
+  }
+}
+
 function loadAgentsFromPackagePath(
   agentPath: string,
   packageName: string,
@@ -265,6 +379,15 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
   }
   if (scope === 'both' || scope === 'project') {
     for (const agent of projectAgents) agentMap.set(agent.name, agent);
+  }
+
+  const overrides = loadAgentOverrides(cwd, scope);
+  if (overrides.size > 0) {
+    for (const [name, agent] of agentMap) {
+      const override = overrides.get(name);
+      if (!override) continue;
+      agentMap.set(name, { ...agent, ...override });
+    }
   }
 
   return {

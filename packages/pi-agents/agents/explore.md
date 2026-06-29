@@ -1,9 +1,7 @@
 ---
 name: explore
-description: Fast codebase recon that returns compressed context for handoff to other agents
+description: Fast codebase exploration or multi-file reading
 tools: read, grep, find, ls, bash
-model: ark/deepseek-v4-flash
-thinking: high
 noSkills: true
 maxSubagentDepth: 0
 ---

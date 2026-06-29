@@ -54,6 +54,9 @@ When using the Agent tool, specify a \`agent\` parameter to select which agent t
 ## When to use
 Reach for this when the task matches an available agent type, when you have independent work to run in parallel, or when answering would mean reading across several files — delegate it and you keep the conclusion, not the file dumps. For a single-fact lookup where you already know the file, symbol, or value, search directly. Once you've delegated a search, don't also run it yourself — wait for the result.
 - The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters.`,
+    promptGuidelines: [
+      'Use the `explore` agent when you need to search across multiple files or do broad code analysis exploration.',
+    ],
     parameters: SubagentParams,
     prepareArguments: (args) => normalizeAgentArgs(args) as Static<typeof SubagentParams>,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {

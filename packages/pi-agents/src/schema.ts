@@ -66,8 +66,8 @@ export const ChainItem = Type.Union([SequentialChainItem, FanoutChainItem], {
 
 export const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {
   description:
-    'Which agent directories to use. Default: "user". "user" loads ~/.pi/agent/agents plus packages installed via `pi install` in user settings (~/.pi/agent/settings.json). "project" loads .pi/agents plus packages installed in project settings (.pi/settings.json). "both" merges them with project overriding user.',
-  default: 'user',
+    'Which agent directories to use. Default: "both". "user" loads ~/.pi/agent/agents plus packages installed via `pi install` in user settings (~/.pi/agent/settings.json). "project" loads .pi/agents plus packages installed in project settings (.pi/settings.json). "both" merges them with project overriding user.',
+  default: 'both',
 });
 
 export const SubagentParams = Type.Object({
@@ -84,12 +84,6 @@ export const SubagentParams = Type.Object({
     })
   ),
   agentScope: Type.Optional(AgentScopeSchema),
-  confirmProjectAgents: Type.Optional(
-    Type.Boolean({
-      description: 'Prompt before running project-local or package agents. Default: true.',
-      default: true,
-    })
-  ),
   cwd: Type.Optional(
     Type.String({ description: 'Working directory for the agent process (single mode)' })
   ),

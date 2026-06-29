@@ -1,4 +1,4 @@
-// ABOUTME: Tool orchestration for the `agent` tool — mode dispatch, confirmation, and result assembly.
+// ABOUTME: Tool orchestration for the `agent` tool — mode dispatch and result assembly.
 // ABOUTME: Owns single/parallel/chain execution flows so `index.ts` stays a thin extension entrypoint.
 
 import type { Static } from '@earendil-works/pi-ai';
@@ -65,7 +65,7 @@ export async function executeAgentTool(
   ctx: ExtensionContext,
   options: ExecuteAgentToolOptions = {}
 ): Promise<AgentResult> {
-  const agentScope: AgentScope = params.agentScope ?? 'user';
+  const agentScope: AgentScope = params.agentScope ?? 'both';
 
   try {
     assertAgentDelegationAllowed(process.env);
@@ -86,7 +86,6 @@ export async function executeAgentTool(
 
   const discovery = discoverAgents(ctx.cwd, agentScope);
   const agents = discovery.agents;
-  const confirmProjectAgents = params.confirmProjectAgents ?? true;
 
   const hasChain = (params.chain?.length ?? 0) > 0;
   const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -127,53 +126,6 @@ export async function executeAgentTool(
       details: makeDetails('parallel')([]),
       isError: true,
     };
-  }
-
-  if (confirmProjectAgents && ctx.hasUI) {
-    const requestedAgentNames = new Set<string>();
-    if (params.chain) {
-      for (const step of params.chain) {
-        if ('agent' in step) requestedAgentNames.add(step.agent);
-        else requestedAgentNames.add(step.parallel.agent);
-      }
-    }
-    if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
-    if (params.agent) requestedAgentNames.add(params.agent);
-
-    const elevatedAgentsRequested = Array.from(requestedAgentNames)
-      .map((name) => agents.find((a) => a.name === name))
-      .filter((a): a is AgentConfig => a?.source === 'project' || a?.source === 'package');
-
-    if (elevatedAgentsRequested.length > 0) {
-      // Strip control characters so a hostile package name / file path cannot spoof
-      // the confirmation dialog with embedded newlines or terminal escapes.
-      const sanitize = (value: string): string =>
-        // eslint-disable-next-line no-control-regex
-        value.replace(/[\x00-\x1f\x7f]/g, '\uFFFD');
-      const formatEntry = (a: AgentConfig): string =>
-        `  - ${sanitize(a.name)} (${sanitize(a.filePath)})`;
-      const projectEntries = elevatedAgentsRequested.filter((a) => a.source === 'project');
-      const packageEntries = elevatedAgentsRequested.filter((a) => a.source === 'package');
-      const sections: string[] = [];
-      if (projectEntries.length > 0) {
-        const lines = projectEntries.map(formatEntry).join('\n');
-        const projectDir = sanitize(discovery.projectAgentsDir ?? '(unknown)');
-        sections.push(`Project agents (from ${projectDir}):\n${lines}`);
-      }
-      if (packageEntries.length > 0) {
-        const lines = packageEntries.map(formatEntry).join('\n');
-        sections.push(`Package agents:\n${lines}`);
-      }
-      const ok = await ctx.ui.confirm(
-        'Run project-trust agents?',
-        `${sections.join('\n\n')}\n\nProject and package agents are repo- or package-controlled. Only continue for trusted repositories and packages.`
-      );
-      if (!ok)
-        return {
-          content: [{ type: 'text', text: 'Canceled: project-trust agents not approved.' }],
-          details: makeDetails(hasChain ? 'chain' : hasTasks ? 'parallel' : 'single')([]),
-        };
-    }
   }
 
   if (params.chain && params.chain.length > 0) {

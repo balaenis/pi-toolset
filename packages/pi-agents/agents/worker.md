@@ -1,8 +1,6 @@
 ---
 name: worker
 description: General-purpose subagent with full capabilities, isolated context
-model: ark/glm-5.2
-thinking: xhigh
 completionCheck: '## Completed, ## Files Changed, ## Validation'
 ---
 

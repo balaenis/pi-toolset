@@ -175,54 +175,6 @@ describe('executeAgentTool background dispatch', () => {
     expect((result.content[0] as { text: string }).text).toMatch(/Invalid parameters/);
   });
 
-  it('confirms project agents before launching a background job', async () => {
-    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
-    const os = await import('node:os');
-    const path = await import('node:path');
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'pi-agents-bg-confirm-'));
-    const agentsDir = path.join(dir, '.pi', 'agents');
-    mkdirSync(agentsDir, { recursive: true });
-    writeFileSync(
-      path.join(agentsDir, 'myagent.md'),
-      '---\nname: myagent\ndescription: confirm me\n---\nbody\n'
-    );
-
-    try {
-      const { manager, launches } = fakeManager();
-      const calls: Array<{ title: string }> = [];
-      const ctx = makeCtx({
-        cwd: dir,
-        hasUI: true,
-        ui: {
-          confirm: async (title: string) => {
-            calls.push({ title });
-            return false;
-          },
-          select: async () => undefined,
-          input: async () => undefined,
-          notify: () => {},
-        },
-      } as unknown as Partial<ExtensionContext>);
-      const result = await executeAgentTool(
-        {
-          agent: 'myagent',
-          task: 'do it later',
-          agentScope: 'project',
-          runInBackground: true,
-        },
-        undefined,
-        undefined,
-        ctx,
-        { backgroundManager: manager, runWorkflow: fakeWorkflow('should not run') }
-      );
-      expect(calls.length).toBe(1);
-      expect(launches.length).toBe(0);
-      expect((result.content[0] as { text: string }).text).toMatch(/Canceled/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it('rejects oversized parallel tasks before launching a background job', async () => {
     const { manager, launches } = fakeManager();
     const oversized = Array.from({ length: 12 }, (_, i) => ({

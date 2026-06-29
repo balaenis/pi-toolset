@@ -1,7 +1,7 @@
 // ABOUTME: Tests for agent frontmatter parsing — extended fields, defaults, and invalid value handling.
 // ABOUTME: Writes temporary markdown agent files and reads them back via discoverAgents.
 
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -225,5 +225,165 @@ Body.`
     const a = agents.find((x) => x.name === 'list')!;
     expect(a.tools).toEqual(['read', 'grep']);
     expect(a.excludeTools).toBeUndefined();
+  });
+});
+
+describe('agent config overrides', () => {
+  let env: { cwd: string; cleanup: () => void } | null = null;
+  let userAgentDir: string | null = null;
+  const ENV_KEY = 'PI_CODING_AGENT_DIR';
+  let originalEnv: string | undefined;
+  let originalEnvPresent = false;
+
+  beforeAll(() => {
+    originalEnvPresent = ENV_KEY in process.env;
+    originalEnv = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    env?.cleanup();
+    env = null;
+    if (userAgentDir) {
+      rmSync(userAgentDir, { recursive: true, force: true });
+      userAgentDir = null;
+    }
+    if (originalEnvPresent) {
+      process.env[ENV_KEY] = originalEnv ?? '';
+    } else {
+      delete process.env[ENV_KEY];
+    }
+  });
+
+  function setUserAgentDir(): string {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'pi-agents-user-'));
+    process.env[ENV_KEY] = dir;
+    userAgentDir = dir;
+    return dir;
+  }
+
+  function writeAgent(dir: string, name: string, frontmatter: string): void {
+    writeFileSync(
+      path.join(dir, `${name}.md`),
+      `---\nname: ${name}\ndescription: base\n${frontmatter}\n---\nBody.`
+    );
+  }
+
+  it('project config overrides frontmatter fields and wins over user config', () => {
+    const userDir = setUserAgentDir();
+    const userConfigDir = path.join(userDir, '@balaenis', 'pi-agents');
+    mkdirSync(userConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(userConfigDir, 'config.json'),
+      JSON.stringify({
+        agents: {
+          target: {
+            model: 'user-model',
+            thinking: 'low',
+            systemPromptMode: 'replace',
+            tools: 'read, grep',
+          },
+        },
+      })
+    );
+
+    env = withAgentsDir((dir) => {
+      writeAgent(dir, 'target', 'model: original-model');
+    });
+
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(projectConfigDir, 'config.json'),
+      JSON.stringify({
+        agents: {
+          target: { model: 'project-model', maxTurns: 5 },
+        },
+      })
+    );
+
+    const { agents } = discoverAgents(env.cwd, 'both');
+    const a = agents.find((x) => x.name === 'target')!;
+    expect(a.model).toBe('project-model');
+    expect(a.thinking).toBe('low');
+    expect(a.systemPromptMode).toBe('replace');
+    expect(a.tools).toEqual(['read', 'grep']);
+    expect(a.maxTurns).toBe(5);
+  });
+
+  it('drops invalid override values and leaves frontmatter intact', () => {
+    env = withAgentsDir((dir) => {
+      writeAgent(dir, 'strict', 'systemPromptMode: replace\nmaxTurns: 3');
+    });
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(projectConfigDir, 'config.json'),
+      JSON.stringify({
+        agents: {
+          strict: { systemPromptMode: 'weird', maxTurns: -1, isolation: 'docker' },
+        },
+      })
+    );
+
+    const { agents } = discoverAgents(env.cwd, 'project');
+    const a = agents.find((x) => x.name === 'strict')!;
+    expect(a.systemPromptMode).toBe('replace');
+    expect(a.maxTurns).toBe(3);
+    expect(a.isolation).toBe('none');
+  });
+
+  it('does not apply project config overrides when scope is user', () => {
+    const userDir = setUserAgentDir();
+    const userAgentsSubDir = path.join(userDir, 'agents');
+    mkdirSync(userAgentsSubDir, { recursive: true });
+    writeAgent(userAgentsSubDir, 'shared', 'model: original-model');
+
+    env = withAgentsDir(() => {});
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(projectConfigDir, 'config.json'),
+      JSON.stringify({ agents: { shared: { model: 'project-model' } } })
+    );
+
+    const { agents } = discoverAgents(env.cwd, 'user');
+    const a = agents.find((x) => x.name === 'shared')!;
+    expect(a.model).toBe('original-model');
+  });
+
+  it('applies project config overrides to non-project agents', () => {
+    const userDir = setUserAgentDir();
+    const userAgentsSubDir = path.join(userDir, 'agents');
+    mkdirSync(userAgentsSubDir, { recursive: true });
+    writeAgent(userAgentsSubDir, 'shared', 'model: original-model');
+
+    env = withAgentsDir(() => {});
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(projectConfigDir, 'config.json'),
+      JSON.stringify({
+        agents: { shared: { isolation: 'worktree', worktreeSetupHook: 'echo hi' } },
+      })
+    );
+
+    const { agents } = discoverAgents(env.cwd, 'both');
+    const a = agents.find((x) => x.name === 'shared')!;
+    expect(a.source).toBe('user');
+    expect(a.isolation).toBe('worktree');
+    expect(a.worktreeSetupHook).toBe('echo hi');
+  });
+
+  it('ignores malformed config files', () => {
+    env = withAgentsDir((dir) => {
+      writeAgent(dir, 'safe', 'model: original-model');
+    });
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(path.join(projectConfigDir, 'config.json'), '{ not valid json');
+
+    const { agents } = discoverAgents(env.cwd, 'project');
+    const a = agents.find((x) => x.name === 'safe')!;
+    expect(a.model).toBe('original-model');
   });
 });
