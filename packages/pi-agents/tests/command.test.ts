@@ -316,7 +316,7 @@ describe('registerAgentCommand', () => {
     await commands.get('agent:myagent')!.handler('find the auth code', ctx);
 
     expect(exec.calls).toHaveLength(1);
-    expect(widgets[0].key).toBe('pi-agent-command');
+    expect(widgets[0].key).toBe('pi-agents-command');
     expect(typeof widgets[0].value).toBe('function');
     const rendered = renderWidget(widgets[0]);
     expect(rendered).toContain('subagent myagent');
@@ -324,7 +324,7 @@ describe('registerAgentCommand', () => {
     expect(rendered).toContain('Status: running...');
     expect(rendered).toContain('Turns: 2');
     expect(rendered).toContain('Latest: searching files');
-    expect(widgets.at(-1)).toMatchObject({ key: 'pi-agent-command', value: undefined });
+    expect(widgets.at(-1)).toMatchObject({ key: 'pi-agents-command', value: undefined });
     expect(notifications[0].message).toBe('final result');
   });
 
@@ -342,7 +342,7 @@ describe('registerAgentCommand', () => {
 
     expect(typeof widgets[0].value).toBe('function');
     expect(renderWidget(widgets[0])).toContain('Latest: working before failure');
-    expect(widgets.at(-1)).toMatchObject({ key: 'pi-agent-command', value: undefined });
+    expect(widgets.at(-1)).toMatchObject({ key: 'pi-agents-command', value: undefined });
     expect(notifications[0].type).toBe('error');
     expect(notifications[0].message).toContain('spawn failed');
   });

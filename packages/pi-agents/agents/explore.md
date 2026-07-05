@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Fast codebase exploration or multi-file reading
+description: A fast, read-only agent for exploring codebases. Cannot modify files. Use this when you need to quickly find files by patterns, search code for keywords, or answer questions about the codebase.
 tools: read, grep, find, ls, bash
 noSkills: true
 maxSubagentDepth: 0

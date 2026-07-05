@@ -35,7 +35,7 @@ export interface RegisterAgentCommandOptions {
 }
 
 const LIST_KEYWORD = 'list';
-const AGENT_WIDGET_KEY = 'pi-agent-command';
+const AGENT_WIDGET_KEY = 'pi-agents-command';
 const AGENT_COMMAND_DESCRIPTION =
   'List discovered subagents (/agent list); invoke a specific one via /agent:<name> <task...>';
 
