@@ -142,6 +142,8 @@ Retryable failures are tried again on the next LSP use until the startup attempt
 
 `maxRestarts` also caps retryable startup attempts. With the default `maxRestarts: 3`, Pi will make at most three startup attempts for an unknown/retryable failure, then leave the server blocked with a retry-limit message. Fixing a permanent startup failure currently requires correcting the config or `PATH` and reloading/restarting the Pi session; this version does not watch config changes or expose a reset command.
 
+> **Windows note**: npm/pnpm/yarn install CLIs as `.cmd`/`.bat` shims that Node's `spawn()` cannot launch directly. When the resolved command is a batch file, pi-lsp automatically routes it through `cmd.exe` (`shell: true`) and folds the args into a single quoted command string, so commands like `typescript-language-server` work without extra configuration. Native `.exe` servers (e.g. `rust-analyzer`) keep the direct spawn.
+
 ### Zero-config autodetection
 
 With no `servers` block in `config.json`, the extension scans `PATH` for the following built-in recipes and enables each one whose command is found:

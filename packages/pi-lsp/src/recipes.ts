@@ -261,7 +261,10 @@ function expandCandidates(command: string, isWindows: boolean): string[] {
   if (!isWindows) return [command];
   const ext = path.extname(command).toLowerCase();
   if (ext && WINDOWS_EXEC_SUFFIXES.includes(ext)) return [command];
-  return [command, ...WINDOWS_EXEC_SUFFIXES.map((s) => command + s)];
+  // On Windows, try real executable suffixes first. npm/pnpm/yarn also write a
+  // bare POSIX shell shim (no extension) next to the .cmd; it is not runnable
+  // on Windows and must not shadow the .cmd (matches PATHEXT resolution).
+  return [...WINDOWS_EXEC_SUFFIXES.map((s) => command + s), command];
 }
 
 function isExecutableFile(filePath: string, isWindows: boolean): boolean {

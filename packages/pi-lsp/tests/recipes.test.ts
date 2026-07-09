@@ -55,6 +55,19 @@ describe('findExecutable', () => {
     expect(found!.includes('fake-lsp')).toBe(true);
   });
 
+  it('on Windows, prefers the .cmd shim over the bare POSIX script when both exist', () => {
+    if (!isWindows) return;
+    // npm writes both a bare POSIX shell shim (no extension, not runnable on
+    // Windows) and a .cmd next to it. findExecutable must return the .cmd.
+    const dir = path.join(tmpRoot, 'npm-shim');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'fake-lsp'), '#!/bin/sh\nexit 0\n');
+    writeFileSync(path.join(dir, 'fake-lsp.cmd'), '@echo off\r\nexit /b 0\r\n');
+    const found = findExecutable('fake-lsp', dir);
+    expect(found).toBeDefined();
+    expect(found!.endsWith('fake-lsp.cmd')).toBe(true);
+  });
+
   it('returns undefined when command is missing on PATH', () => {
     const found = findExecutable('does-not-exist-zz', pathDir);
     expect(found).toBeUndefined();

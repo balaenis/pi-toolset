@@ -2,6 +2,7 @@
 // ABOUTME: Faithful port of Claude Code's LSPClient, adapted to Pi (ESM dynamic import + local logging).
 
 import { type ChildProcess, spawn } from 'node:child_process';
+import * as path from 'node:path';
 import type { GenericRequestHandler, MessageConnection } from 'vscode-jsonrpc/node';
 import type {
   InitializeParams,
@@ -9,9 +10,52 @@ import type {
   ServerCapabilities,
 } from 'vscode-languageserver-protocol';
 import { errorMessage, logError, logForDebugging } from './log.ts';
+import { findExecutable } from './recipes.ts';
 import { attachStartupErrorMetadata, type StartupErrorMetadata } from './startup-errors.ts';
 
 const STARTUP_STDERR_LIMIT_BYTES = 8 * 1024;
+
+const IS_WINDOWS = process.platform === 'win32';
+const BATCH_EXTENSIONS = new Set(['.cmd', '.bat']);
+
+/**
+ * Decide how to invoke `command` on this platform.
+ *
+ * On Windows, npm/pnpm/yarn install CLIs as `.cmd`/`.bat` shims that Node's
+ * `spawn()` cannot launch directly: `CreateProcess` ignores PATHEXT, so a bare
+ * `typescript-language-server` fails with `ENOENT` even though the `.cmd` is
+ * on PATH. When the resolved executable is a batch file we route through
+ * cmd.exe via `shell: true`, folding args into a single quoted command string
+ * (passing args separately with `shell: true` is deprecated since Node 22,
+ * DEP0190). Native executables keep the direct spawn.
+ */
+export function resolveSpawnInvocation(
+  command: string,
+  args: string[],
+  pathValue: string | undefined = process.env.PATH
+): { command: string; args: string[] | undefined; shell: boolean } {
+  if (!IS_WINDOWS) return { command, args, shell: false };
+
+  const resolved = findExecutable(command, pathValue);
+  const target = resolved ?? command;
+  if (!BATCH_EXTENSIONS.has(path.extname(target).toLowerCase())) {
+    return { command, args, shell: false };
+  }
+
+  const parts = [resolved ?? command, ...args].map(quoteWindowsArg);
+  return { command: parts.join(' '), args: undefined, shell: true };
+}
+
+/**
+ * Quote a single command/arg token for cmd.exe. Tokens without whitespace or
+ * shell metacharacters pass through unchanged; others are wrapped in double
+ * quotes with embedded quotes doubled (the cmd.exe convention).
+ */
+export function quoteWindowsArg(token: string): string {
+  if (token === '') return '""';
+  if (!/[\s"&|<>^()%!]/.test(token)) return token;
+  return `"${token.replace(/"/g, '""')}"`;
+}
 
 /**
  * LSP client interface.
@@ -118,13 +162,16 @@ export function createLSPClient(serverName: string, onCrash?: (error: Error) => 
         const { createMessageConnection, StreamMessageReader, StreamMessageWriter, Trace } =
           await import('vscode-jsonrpc/node');
 
-        // 1. Spawn LSP server process
-        childProcess = spawn(command, args, {
+        // 1. Spawn LSP server process. On Windows, batch shims (.cmd/.bat)
+        // require shell mode (see resolveSpawnInvocation).
+        const invocation = resolveSpawnInvocation(command, args);
+        childProcess = spawn(invocation.command, invocation.args, {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env, ...options?.env },
           cwd: options?.cwd,
           // Prevent visible console window on Windows (no-op on other platforms)
           windowsHide: true,
+          ...(invocation.shell ? { shell: true } : {}),
         });
 
         if (!childProcess.stdout || !childProcess.stdin) {
