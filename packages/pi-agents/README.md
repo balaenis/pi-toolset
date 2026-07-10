@@ -261,6 +261,7 @@ defaultContext: fresh
 isolation: none
 completionCheck: '## Completed, ## Files Changed, ## Validation'
 maxSubagentDepth: 0
+runtime: pi
 ---
 
 System prompt for the agent goes here.
@@ -285,11 +286,12 @@ System prompt for the agent goes here.
 | `isolation`         | `none` \| `worktree`  | `none`       | When `worktree`, the child runs in `<repo>/.worktrees/pi-agent-<safe-name>-<timestamp>-<index>/` created by `git worktree add --detach HEAD`. Clean worktrees are removed after the child exits; dirty worktrees are kept and reported on `SingleResult.worktreePath`.                                |
 | `completionCheck`   | comma list            | none         | Required final-message headings. When set, each configured heading must appear as an exact line; otherwise the result is marked `stopReason: completion_check` with exit code `1`.                                                                                                                    |
 | `maxSubagentDepth`  | non-negative integer  | unset        | Caps how many further `agent` delegations may happen from inside the spawned agent. `0` removes the `agent` tool and the catalogue prompt for that child. When unset, the global `PI_AGENT_MAX_DEPTH` limit applies as before.                                                                        |
-| `worktreeSetupHook` | non-empty string      | unset        | Shell command run inside the freshly created worktree before the child `pi` starts (only when `isolation: worktree`). Failure produces `stopReason: 'worktree_setup_error'` and stops the chain.                                                                                                      |
+| `worktreeSetupHook` | non-empty string      | unset        | Shell command run inside the freshly created worktree before the child runtime starts (only when `isolation: worktree`). Applies to both `pi` and `grok`. Failure produces `stopReason: 'worktree_setup_error'` and stops the chain.                                                                   |
+| `runtime`           | `pi` \| `grok`        | `pi`         | Which CLI binary to spawn for the agent. `pi` (default) spawns `pi --mode json -p`; `grok` spawns `grok -p --output-format streaming-json`. See [Grok Runtime](#grok-runtime) for prerequisites and caveats.                                                                                          |
 
 Invalid values (unknown enums, non-positive integers for `maxTurns`, negative or non-integer values for `maxSubagentDepth`, non-boolean strings) are ignored and fall back to the default (`append`, `fresh`, `none`) for enum fields and to `undefined` for boolean / numeric fields. Empty comma lists are ignored.
 
-> Runtime behavior currently wired up: `tools`, `excludeTools`, `model`, `thinking`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `skills`, `defaultContext`, `isolation`, `completionCheck`, `maxSubagentDepth`, `worktreeSetupHook`. Every frontmatter field is now active.
+> Runtime behavior currently wired up: `tools`, `excludeTools`, `model`, `thinking`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `skills`, `defaultContext`, `isolation`, `completionCheck`, `maxSubagentDepth`, `worktreeSetupHook`, `runtime`. Every frontmatter field is now active.
 
 ### Config Overrides
 
@@ -315,7 +317,7 @@ Merging is field-level: project scope overrides only the fields it specifies; an
 }
 ```
 
-Key is the full agent name as it appears in the catalogue (package agents are namespaced as `<packageName>.<localName>`). Allowed fields match the frontmatter set above: `description`, `model`, `thinking`, `tools`, `excludeTools`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `skills`, `defaultContext`, `isolation`, `completionCheck`, `maxSubagentDepth`, `worktreeSetupHook`. `name`, `systemPrompt` (the markdown body), `source`, and `filePath` are not overridable. Invalid values are dropped using the same rules as frontmatter parsing.
+Key is the full agent name as it appears in the catalogue (package agents are namespaced as `<packageName>.<localName>`). Allowed fields match the frontmatter set above: `description`, `model`, `thinking`, `tools`, `excludeTools`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`, `skills`, `defaultContext`, `isolation`, `completionCheck`, `maxSubagentDepth`, `worktreeSetupHook`, `runtime`. `name`, `systemPrompt` (the markdown body), `source`, and `filePath` are not overridable. Invalid values are dropped using the same rules as frontmatter parsing.
 
 ### Worktree Setup Hook
 
@@ -429,6 +431,70 @@ When a package identity (`npm:<name>`, `git:<host>/<path>`, or `local:<absolute>
 Discovered package agents are namespaced by the package name. An agent declared as `name: reviewer` inside `@acme/pi-frontend` is invocable as `@acme/pi-frontend.reviewer`. The original local name is preserved on `AgentConfig.localName`, and the publishing package name is on `AgentConfig.packageName`.
 
 Package agents run with the same privileges as project agents. They are not pulled from a project's `dependencies` / `node_modules`; only packages explicitly listed in a pi settings file are considered.
+
+### Grok Runtime
+
+When an agent declares `runtime: grok`, the tool spawns the [Grok Build CLI](https://docs.x.ai/build/cli) (`grok -p --output-format streaming-json`) instead of `pi`. This lets you route specific subagent types to xAI models (Grok 4.5, etc.) for different cost/quality trade-offs.
+
+**Prerequisites:**
+
+- Install the Grok CLI and authenticate with `grok login` or set `XAI_API_KEY` in your environment.
+- If `grok` is not on `PATH`, the spawn fails with a clear error.
+
+**Example agent definition:**
+
+```markdown
+---
+name: grok-reviewer
+description: Code review powered by Grok
+runtime: grok
+model: grok-4.5
+thinking: high
+maxTurns: 10
+systemPromptMode: append
+---
+
+You are a code review specialist. Analyze the provided code for correctness, security, and maintainability.
+```
+
+**Field mapping** (pi -> Grok native flags):
+
+| AgentConfig field                    | Grok CLI flag                            |
+| ------------------------------------ | ---------------------------------------- |
+| `model`                              | `--model <value>`                        |
+| `thinking` (see downgrade map below) | `--effort <value>`                       |
+| `maxTurns`                           | `--max-turns <value>`                    |
+| `systemPrompt` (append mode)         | `--rules <inline text>`                  |
+| `systemPrompt` (replace mode)        | `--system-prompt-override <inline text>` |
+| `tools`                              | `--tools <csv>`                          |
+| `excludeTools`                       | `--disallowed-tools <csv>`               |
+| (always)                             | `--no-subagents`                         |
+
+Hardcoded flags: `--no-auto-update`, `--always-approve`, `--output-format streaming-json`, `--no-memory`, `--no-subagents`.
+
+**thinking -> effort downgrade** (pi has 7 levels, Grok has 3):
+
+| pi `thinking` | Grok `effort` |
+| ------------- | ------------- |
+| `off`         | (omitted)     |
+| `minimal`     | `low`         |
+| `low`         | `low`         |
+| `medium`      | `medium`      |
+| `high`        | `high`        |
+| `xhigh`       | `high`        |
+| `max`         | `high`        |
+
+**Caveats and limitations:**
+
+- **No usage stats** - Grok's streaming-json does not expose token counts or cost. `SingleResult.usage` is all zeros; only `turns` is set (to 1 on completion).
+- **No tool call visibility** - Grok handles tools transparently. Tool executions are not in the output stream, so `SingleResult.messages` contains only the final assistant text.
+- **stopReason mapping** - Grok's `EndTurn` maps to pi's `end`; `Cancelled` (max turns reached, exit code 1) maps to `max_turns`.
+- **Skills are no-ops** - pi skills are not transferable to Grok. Skill name resolution is skipped for Grok agents (a warning is emitted if `skills` is set). Use `pi` runtime if skills are needed.
+- **`worktreeSetupHook` still runs** - when `isolation: worktree`, the setup hook runs inside the worktree before the Grok child is spawned (same as the pi path).
+- **Fork context is ignored** - `defaultContext: fork` is treated as `fresh` for Grok agents (Grok manages sessions independently). A warning is emitted at invoke time.
+- **Tool names are runtime-specific** - pi tool names (`read`, `bash`, `edit`, etc.) may not match Grok's built-in tool names. Tool lists are passed through as-is; restrictions may be silently ignored by Grok.
+- **System prompt replace mode** - `--system-prompt-override` may not fully suppress Grok's default behavior; project-level `.grok/` config may still influence output. Prefer `append` mode (`--rules`) unless full replacement is explicitly required.
+- **No nested Grok subagents** - Grok ignores `PI_AGENT_DEPTH` / nesting env vars. Every Grok spawn always passes `--no-subagents` so Grok cannot fan out further.
 
 ## Bundled Agents
 

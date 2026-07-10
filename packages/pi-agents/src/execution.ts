@@ -1,5 +1,5 @@
 // ABOUTME: Subprocess execution for the `agent` tool — concurrency limiter and single-agent run loop.
-// ABOUTME: Spawns a `pi` child per agent, consumes JSON event stream, and accumulates messages, usage, and stop reason.
+// ABOUTME: Dispatches to pi or grok runtime, consumes JSON/NDJSON streams, accumulates messages and stop reason.
 
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -8,6 +8,9 @@ import type { Readable } from 'node:stream';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { Message } from '@earendil-works/pi-ai';
 import type { AgentConfig } from './agents.ts';
+import { GROK_RUNTIME } from './constants.ts';
+import { buildGrokArgs, getGrokInvocation } from './grok-invocation.ts';
+import { parseGrokEvent } from './grok-parser.ts';
 import { buildPiArgs, getPiInvocation, writePromptToTempFile } from './invocation.ts';
 import { getFinalOutput } from './output.ts';
 import { buildChildAgentEnv, isAgentDelegationAllowed } from './security.ts';
@@ -82,6 +85,21 @@ export async function runSingleAgent(
       },
       step,
     };
+  }
+
+  if (agent.runtime === GROK_RUNTIME) {
+    return runSingleAgentGrok(
+      defaultCwd,
+      agents,
+      agentName,
+      task,
+      cwd,
+      step,
+      signal,
+      onUpdate,
+      makeDetails,
+      options
+    );
   }
 
   let tmpPromptDir: string | null = null;
@@ -245,8 +263,14 @@ export async function runSingleAgent(
         settle(maxTurnsExceeded ? (code ?? 1) : (code ?? 0));
       });
 
-      proc.on('error', () => {
+      proc.on('error', (err: Error) => {
         hasClosed = true;
+        const message = err?.message || String(err);
+        currentResult.stderr = currentResult.stderr
+          ? `${currentResult.stderr}\n${message}`
+          : message;
+        currentResult.errorMessage = message;
+        currentResult.stopReason = 'error';
         settle(1);
       });
 
@@ -284,4 +308,131 @@ export async function runSingleAgent(
         /* ignore */
       }
   }
+}
+
+async function runSingleAgentGrok(
+  defaultCwd: string,
+  agents: AgentConfig[],
+  agentName: string,
+  task: string,
+  cwd: string | undefined,
+  step: number | undefined,
+  signal: AbortSignal | undefined,
+  onUpdate: OnUpdateCallback | undefined,
+  makeDetails: (results: SingleResult[]) => SubagentDetails,
+  options: RunSingleAgentOptions = {}
+): Promise<SingleResult> {
+  const agent = agents.find((a) => a.name === agentName)!;
+
+  const currentResult: SingleResult = {
+    agent: agentName,
+    agentSource: agent.source,
+    task,
+    exitCode: 0,
+    messages: [],
+    stderr: '',
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+      turns: 0,
+    },
+    model: agent.model,
+    thinking: agent.thinking,
+    step,
+  };
+
+  const emitUpdate = () => {
+    if (onUpdate) {
+      onUpdate({
+        content: [{ type: 'text', text: getFinalOutput(currentResult.messages) || '(running...)' }],
+        details: makeDetails([currentResult]),
+      });
+    }
+  };
+
+  const childEnv = buildChildAgentEnv(process.env, { agent });
+  const args = buildGrokArgs(agent, task, {
+    resolvedSkillPaths: options.resolvedSkillPaths,
+  });
+
+  let wasAborted = false;
+
+  const exitCode = await new Promise<number>((resolve) => {
+    const invocation = getGrokInvocation(args);
+    const spawnFn = options.spawnFn ?? (spawn as unknown as SpawnFn);
+    const proc = spawnFn(invocation.command, invocation.args, {
+      cwd: cwd ?? defaultCwd,
+      env: childEnv,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let buffer = '';
+    let hasClosed = false;
+    let settled = false;
+
+    const flushBuffer = () => {
+      if (buffer.trim()) {
+        const remaining = buffer;
+        buffer = '';
+        parseGrokEvent(remaining, currentResult, emitUpdate);
+      }
+    };
+
+    const settle = (code: number) => {
+      if (settled) return;
+      settled = true;
+      flushBuffer();
+      resolve(code);
+    };
+
+    proc.stdout.on('data', (data) => {
+      buffer += data.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) parseGrokEvent(line, currentResult, emitUpdate);
+    });
+
+    proc.stderr.on('data', (data) => {
+      currentResult.stderr += data.toString();
+    });
+
+    proc.on('close', (code) => {
+      hasClosed = true;
+      settle(code ?? 0);
+    });
+
+    proc.on('error', (err: Error) => {
+      hasClosed = true;
+      const message = err?.message || String(err);
+      currentResult.stderr = currentResult.stderr ? `${currentResult.stderr}\n${message}` : message;
+      currentResult.errorMessage = message;
+      currentResult.stopReason = 'error';
+      settle(1);
+    });
+
+    if (signal) {
+      const killProc = () => {
+        wasAborted = true;
+        proc.kill('SIGTERM');
+        setTimeout(() => {
+          if (!hasClosed) proc.kill('SIGKILL');
+        }, 5000);
+      };
+      if (signal.aborted) killProc();
+      else signal.addEventListener('abort', killProc, { once: true });
+    }
+  });
+
+  currentResult.exitCode = exitCode;
+  if (currentResult.stopReason === 'max_turns' && !currentResult.errorMessage) {
+    currentResult.errorMessage = agent.maxTurns
+      ? `Agent exceeded maxTurns=${agent.maxTurns}`
+      : 'Agent exceeded max turns';
+  }
+  if (wasAborted) throw new Error('Subagent was aborted');
+  return currentResult;
 }

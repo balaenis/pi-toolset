@@ -276,3 +276,181 @@ describe('runSingleAgent maxTurns', () => {
     expect(result.exitCode).toBe(0);
   });
 });
+
+describe('runSingleAgentGrok', () => {
+  function captureGrokSpawn(): {
+    fake: FakeChild;
+    spawnFn: SpawnFn;
+    captured: { command: string; args: string[] };
+  } {
+    const fake = new FakeChild();
+    const captured = { command: '', args: [] as string[] };
+    const spawnFn: SpawnFn = ((command: string, args: string[]) => {
+      captured.command = command;
+      captured.args = args;
+      return fake as unknown as SpawnedChild;
+    }) as SpawnFn;
+    return { fake, spawnFn, captured };
+  }
+
+  it('spawns grok with streaming-json flags and always --no-subagents', async () => {
+    const ctx = captureGrokSpawn();
+    const agent = makeAgent({ name: 'g', runtime: 'grok', model: 'grok-4.5', maxTurns: 3 });
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'review this',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn }
+    );
+    setImmediate(() => {
+      ctx.fake.stdout.push(
+        JSON.stringify({ type: 'text', data: 'ok' }) +
+          '\n' +
+          JSON.stringify({ type: 'end', stopReason: 'EndTurn' }) +
+          '\n'
+      );
+      ctx.fake.stdout.push(null);
+      ctx.fake.stderr.push(null);
+      ctx.fake.emit('close', 0);
+    });
+    const result = await promise;
+    expect(ctx.captured.command).toBe('grok');
+    expect(ctx.captured.args).toContain('--output-format');
+    expect(ctx.captured.args[ctx.captured.args.indexOf('--output-format') + 1]).toBe(
+      'streaming-json'
+    );
+    expect(ctx.captured.args).toContain('--no-subagents');
+    expect(ctx.captured.args).toContain('--no-memory');
+    expect(ctx.captured.args).toContain('--always-approve');
+    expect(result.exitCode).toBe(0);
+    expect(result.stopReason).toBe('end');
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].content[0]).toEqual({ type: 'text', text: 'ok' });
+  });
+
+  it('maps Cancelled to max_turns and sets a stable errorMessage', async () => {
+    const ctx = captureGrokSpawn();
+    const agent = makeAgent({ name: 'g', runtime: 'grok', maxTurns: 2 });
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'long task',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn }
+    );
+    setImmediate(() => {
+      ctx.fake.stderr.push('Error: max turns reached\n');
+      ctx.fake.stdout.push(JSON.stringify({ type: 'end', stopReason: 'Cancelled' }) + '\n');
+      ctx.fake.stdout.push(null);
+      ctx.fake.stderr.push(null);
+      ctx.fake.emit('close', 1);
+    });
+    const result = await promise;
+    expect(result.exitCode).toBe(1);
+    expect(result.stopReason).toBe('max_turns');
+    expect(result.errorMessage).toContain('maxTurns=2');
+    expect(result.stderr).toContain('max turns reached');
+  });
+
+  it('surfaces spawn errors on stderr and stopReason', async () => {
+    const fake = new FakeChild();
+    const spawnFn: SpawnFn = (() => fake as unknown as SpawnedChild) as SpawnFn;
+    const agent = makeAgent({ name: 'g', runtime: 'grok' });
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'go',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn }
+    );
+    setImmediate(() => {
+      fake.emit('error', Object.assign(new Error('spawn grok ENOENT'), { code: 'ENOENT' }));
+    });
+    const result = await promise;
+    expect(result.exitCode).toBe(1);
+    expect(result.stopReason).toBe('error');
+    expect(result.errorMessage).toContain('ENOENT');
+    expect(result.stderr).toContain('ENOENT');
+  });
+
+  it('supports progressive text updates via onUpdate', async () => {
+    const ctx = captureGrokSpawn();
+    const agent = makeAgent({ name: 'g', runtime: 'grok' });
+    const updates: string[] = [];
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'go',
+      undefined,
+      undefined,
+      undefined,
+      (partial) => {
+        const text = partial.content.find((c) => c.type === 'text');
+        if (text && text.type === 'text') updates.push(text.text);
+      },
+      makeDetails,
+      { spawnFn: ctx.spawnFn }
+    );
+    setImmediate(() => {
+      ctx.fake.stdout.push(JSON.stringify({ type: 'text', data: 'Hel' }) + '\n');
+      setImmediate(() => {
+        ctx.fake.stdout.push(JSON.stringify({ type: 'text', data: 'lo' }) + '\n');
+        setImmediate(() => {
+          ctx.fake.stdout.push(JSON.stringify({ type: 'end', stopReason: 'EndTurn' }) + '\n');
+          ctx.fake.stdout.push(null);
+          ctx.fake.stderr.push(null);
+          ctx.fake.emit('close', 0);
+        });
+      });
+    });
+    const result = await promise;
+    expect(result.exitCode).toBe(0);
+    expect(updates.some((u) => u.includes('Hel'))).toBe(true);
+    expect(result.messages[0].content[0]).toEqual({ type: 'text', text: 'Hello' });
+  });
+
+  it('throws when aborted', async () => {
+    const ctx = captureGrokSpawn();
+    const agent = makeAgent({ name: 'g', runtime: 'grok' });
+    const controller = new AbortController();
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'go',
+      undefined,
+      undefined,
+      controller.signal,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn }
+    );
+    setImmediate(() => {
+      controller.abort();
+      setImmediate(() => {
+        ctx.fake.stdout.push(null);
+        ctx.fake.stderr.push(null);
+        ctx.fake.emit('close', 1);
+      });
+    });
+    await expect(promise).rejects.toThrow('Subagent was aborted');
+    expect(ctx.fake.killSignals).toContain('SIGTERM');
+  });
+});

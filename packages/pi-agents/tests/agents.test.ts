@@ -47,6 +47,7 @@ defaultContext: fork
 isolation: worktree
 completionCheck: "## Completed, ## Files Changed, ## Validation"
 maxSubagentDepth: 0
+runtime: grok
 ---
 System prompt body.`
       );
@@ -65,6 +66,7 @@ System prompt body.`
     expect(a!.isolation).toBe('worktree');
     expect(a!.completionCheck).toEqual(['## Completed', '## Files Changed', '## Validation']);
     expect(a!.maxSubagentDepth).toBe(0);
+    expect(a!.runtime).toBe('grok');
   });
 
   it('leaves omitted optional fields undefined and applies enum defaults', () => {
@@ -91,6 +93,7 @@ Body.`
     expect(a.isolation).toBe('none');
     expect(a.completionCheck).toBeUndefined();
     expect(a.maxSubagentDepth).toBeUndefined();
+    expect(a.runtime).toBeUndefined();
   });
 
   it('ignores invalid enum and integer values, falling back to defaults', () => {
@@ -104,6 +107,7 @@ systemPromptMode: weird
 maxTurns: -3
 defaultContext: shared
 isolation: docker
+runtime: weird
 noContextFiles: maybe
 noSkills: yep
 completionCheck: ""
@@ -121,6 +125,7 @@ Body.`
     expect(a.noSkills).toBeUndefined();
     expect(a.completionCheck).toBeUndefined();
     expect(a.maxSubagentDepth).toBeUndefined();
+    expect(a.runtime).toBeUndefined();
   });
 
   it('ignores negative, fractional, and blank maxSubagentDepth values', () => {
@@ -334,6 +339,23 @@ describe('agent config overrides', () => {
     expect(a.systemPromptMode).toBe('replace');
     expect(a.maxTurns).toBe(3);
     expect(a.isolation).toBe('none');
+  });
+
+  it('config override can set runtime to grok', () => {
+    env = withAgentsDir((dir) => {
+      writeAgent(dir, 'overridable', 'model: original-model');
+    });
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(projectConfigDir, 'config.json'),
+      JSON.stringify({
+        agents: { overridable: { runtime: 'grok' } },
+      })
+    );
+    const { agents } = discoverAgents(env.cwd, 'project');
+    const a = agents.find((x) => x.name === 'overridable')!;
+    expect(a.runtime).toBe('grok');
   });
 
   it('does not apply project config overrides when scope is user', () => {

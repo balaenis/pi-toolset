@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from '@earendil-works/pi-coding-agent';
+import { DEFAULT_RUNTIME, GROK_RUNTIME } from './constants.ts';
 import { discoverPackageAgentDirs } from './package-agents.ts';
 import type { DefaultContext, IsolationMode, SystemPromptMode } from './types.ts';
 
@@ -13,6 +14,10 @@ const CONFIG_FILE_NAME = 'config.json';
 
 export type AgentScope = 'user' | 'project' | 'both';
 export type AgentSource = 'builtin' | 'package' | 'user' | 'project';
+
+export type Runtime = typeof DEFAULT_RUNTIME | typeof GROK_RUNTIME;
+
+const RUNTIME_VALUES = [DEFAULT_RUNTIME, GROK_RUNTIME] as const;
 
 export interface AgentConfig {
   name: string;
@@ -36,6 +41,7 @@ export interface AgentConfig {
   localName?: string;
   packageName?: string;
   worktreeSetupHook?: string;
+  runtime?: Runtime;
 }
 
 function parseCsvList(value: unknown): string[] | undefined {
@@ -164,6 +170,7 @@ function loadAgentFromFile(filePath: string, source: AgentSource): AgentConfig |
     completionCheck: parseCsvList(frontmatter.completionCheck),
     maxSubagentDepth: parseNonNegativeInt(frontmatter.maxSubagentDepth),
     worktreeSetupHook: parseTrimmedString(frontmatter.worktreeSetupHook),
+    runtime: parseEnum(frontmatter.runtime, RUNTIME_VALUES),
   };
 }
 
@@ -212,6 +219,9 @@ function parseAgentOverride(raw: unknown): AgentOverride {
 
   const worktreeSetupHook = parseTrimmedString(entry.worktreeSetupHook);
   if (worktreeSetupHook !== undefined) out.worktreeSetupHook = worktreeSetupHook;
+
+  const runtime = parseEnum(entry.runtime, RUNTIME_VALUES);
+  if (runtime) out.runtime = runtime;
 
   return out;
 }

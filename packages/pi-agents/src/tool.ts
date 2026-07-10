@@ -15,7 +15,7 @@ import {
 } from './agents.ts';
 import type { BackgroundManager } from './background.ts';
 import { runChainWorkflow, synthesizeFailure } from './chain.ts';
-import { MAX_CONCURRENCY, MAX_PARALLEL_TASKS } from './constants.ts';
+import { GROK_RUNTIME, MAX_CONCURRENCY, MAX_PARALLEL_TASKS } from './constants.ts';
 import { validateCompletionOutput } from './completion-check.ts';
 import { prepareAgentContext } from './context.ts';
 import { listAvailableSkillNames, resolveSkillNames } from './skills.ts';
@@ -496,7 +496,14 @@ async function runStepWithContext(
   }
 
   let resolvedSkillPaths: string[] | undefined;
-  if (agent.skills && agent.skills.length > 0) {
+  if (agent.runtime === GROK_RUNTIME) {
+    if (agent.skills && agent.skills.length > 0) {
+      ctx.ui.notify(
+        `Agent "${agentName}" uses runtime: grok; skills are ignored (not transferable to Grok).`,
+        'warning'
+      );
+    }
+  } else if (agent.skills && agent.skills.length > 0) {
     const { resolved, missing } = resolveSkillNames(agent.skills);
     if (missing.length > 0) {
       const available = listAvailableSkillNames();
@@ -521,7 +528,21 @@ async function runStepWithContext(
 
   let agentContext;
   try {
-    agentContext = prepareAgentContext(agent, ctx);
+    if (agent.runtime === GROK_RUNTIME) {
+      if (agent.defaultContext === 'fork') {
+        ctx.ui.notify(
+          `Agent "${agentName}" uses runtime: grok; defaultContext: fork is ignored (runs as fresh).`,
+          'warning'
+        );
+      }
+      agentContext = {
+        mode: 'fresh' as const,
+        sessionFile: undefined,
+        cleanup: async () => {},
+      };
+    } else {
+      agentContext = prepareAgentContext(agent, ctx);
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return synthesizeFailure(agentName, agent, task, step, 'context_error', message);

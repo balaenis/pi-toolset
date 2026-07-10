@@ -13,3 +13,7 @@ export const PI_AGENT_MAX_DEPTH = 'PI_AGENT_MAX_DEPTH';
 export const PI_AGENT_TOOL_AVAILABLE = 'PI_AGENT_TOOL_AVAILABLE';
 export const DEFAULT_AGENT_MAX_DEPTH = 2;
 export const AGENT_TOOL_NAME = 'agent';
+
+export const GROK_RUNTIME = 'grok' as const;
+export const DEFAULT_RUNTIME = 'pi' as const;
+export const GROK_BINARY = 'grok' as const;
