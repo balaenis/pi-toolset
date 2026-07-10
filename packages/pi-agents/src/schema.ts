@@ -94,4 +94,16 @@ export const SubagentParams = Type.Object({
         'Run this agent workflow in the background. The tool returns immediately and the parent session is notified when it completes.',
     })
   ),
+  model: Type.Optional(
+    Type.String({
+      description:
+        "Temporarily override the agent config `model` for every agent invoked in this call (single/parallel/chain/fanout). Defaults to each agent's configured model; set only when you need to force a specific model for this run.",
+    })
+  ),
+  thinking: Type.Optional(
+    Type.String({
+      description:
+        "Temporarily override the agent config `thinking` for every agent invoked in this call (single/parallel/chain/fanout). Defaults to each agent's configured thinking; set only when you need a specific thinking level for this run.",
+    })
+  ),
 });

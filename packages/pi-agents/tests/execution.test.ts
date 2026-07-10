@@ -182,6 +182,87 @@ describe('runSingleAgent agent capability propagation', () => {
   });
 });
 
+describe('runSingleAgent model/thinking overrides', () => {
+  function captureSpawn(): {
+    fake: FakeChild;
+    spawnFn: SpawnFn;
+    captured: { args: string[] };
+  } {
+    const fake = new FakeChild();
+    const captured = { args: [] as string[] };
+    const spawnFn: SpawnFn = ((_command: string, args: string[]) => {
+      captured.args = args;
+      return fake as unknown as SpawnedChild;
+    }) as SpawnFn;
+    return { fake, spawnFn, captured };
+  }
+
+  async function runOnce(agent: AgentConfig, options: Parameters<typeof runSingleAgent>[9] = {}) {
+    const ctx = captureSpawn();
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'do work',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn, ...options }
+    );
+    setImmediate(() => {
+      ctx.fake.stdout.push(null);
+      ctx.fake.stderr.push(null);
+      ctx.fake.emit('close', 0);
+    });
+    const result = await promise;
+    return { result, captured: ctx.captured };
+  }
+
+  it('forwards modelOverride/thinkingOverride as --model/--thinking when the agent has none', async () => {
+    const { captured, result } = await runOnce(makeAgent(), {
+      modelOverride: 'gpt-5',
+      thinkingOverride: 'high',
+    });
+    expect(captured.args).toContain('--model');
+    expect(captured.args[captured.args.indexOf('--model') + 1]).toBe('gpt-5');
+    expect(captured.args).toContain('--thinking');
+    expect(captured.args[captured.args.indexOf('--thinking') + 1]).toBe('high');
+    expect(result.model).toBe('gpt-5');
+    expect(result.thinking).toBe('high');
+  });
+
+  it('override takes precedence over the agent config model/thinking', async () => {
+    const { captured, result } = await runOnce(
+      makeAgent({ model: 'claude-haiku-4-5', thinking: 'low' }),
+      { modelOverride: 'gpt-5', thinkingOverride: 'high' }
+    );
+    expect(captured.args[captured.args.indexOf('--model') + 1]).toBe('gpt-5');
+    expect(captured.args[captured.args.indexOf('--thinking') + 1]).toBe('high');
+    expect(result.model).toBe('gpt-5');
+    expect(result.thinking).toBe('high');
+  });
+
+  it('falls back to the agent config when no override is given', async () => {
+    const { captured, result } = await runOnce(
+      makeAgent({ model: 'claude-haiku-4-5', thinking: 'medium' })
+    );
+    expect(captured.args[captured.args.indexOf('--model') + 1]).toBe('claude-haiku-4-5');
+    expect(captured.args[captured.args.indexOf('--thinking') + 1]).toBe('medium');
+    expect(result.model).toBe('claude-haiku-4-5');
+    expect(result.thinking).toBe('medium');
+  });
+
+  it('omits --model/--thinking when neither override nor config is set', async () => {
+    const { captured, result } = await runOnce(makeAgent());
+    expect(captured.args).not.toContain('--model');
+    expect(captured.args).not.toContain('--thinking');
+    expect(result.model).toBeUndefined();
+    expect(result.thinking).toBeUndefined();
+  });
+});
+
 describe('runSingleAgent maxTurns', () => {
   it('terminates the child and reports max_turns once the budget is exceeded', async () => {
     const fake = new FakeChild();
@@ -452,5 +533,43 @@ describe('runSingleAgentGrok', () => {
     });
     await expect(promise).rejects.toThrow('Subagent was aborted');
     expect(ctx.fake.killSignals).toContain('SIGTERM');
+  });
+
+  it('modelOverride/thinkingOverride win over the grok agent config and map to --model/--effort', async () => {
+    const ctx = captureGrokSpawn();
+    const agent = makeAgent({
+      name: 'g',
+      runtime: 'grok',
+      model: 'grok-4.5',
+      thinking: 'low',
+    });
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'go',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn, modelOverride: 'grok-4', thinkingOverride: 'high' }
+    );
+    setImmediate(() => {
+      ctx.fake.stdout.push(
+        JSON.stringify({ type: 'text', data: 'ok' }) +
+          '\n' +
+          JSON.stringify({ type: 'end', stopReason: 'EndTurn' }) +
+          '\n'
+      );
+      ctx.fake.stdout.push(null);
+      ctx.fake.stderr.push(null);
+      ctx.fake.emit('close', 0);
+    });
+    const result = await promise;
+    expect(ctx.captured.args[ctx.captured.args.indexOf('--model') + 1]).toBe('grok-4');
+    expect(ctx.captured.args[ctx.captured.args.indexOf('--effort') + 1]).toBe('high');
+    expect(result.model).toBe('grok-4');
+    expect(result.thinking).toBe('high');
   });
 });

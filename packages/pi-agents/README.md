@@ -133,6 +133,21 @@ Command invocations are foreground: the command waits for the agent to finish st
 
 Any of the three modes can be wrapped with `runInBackground: true` to launch the workflow asynchronously. The tool returns immediately with an `agent-bg-*` job id. When the job completes or fails, a follow-up custom message is delivered to the parent session and triggers a new turn so the model can react. When the job is cancelled (for example by `session_shutdown`), the same custom message is recorded but the parent model is not re-entered.
 
+### Per-invocation model / thinking override
+
+The tool accepts optional top-level `model` and `thinking` parameters that temporarily override each agent's configured `model` / `thinking` for the duration of a single tool call. They apply to every agent spawned by the call (single, parallel, chain, and fanout steps) and take precedence over both the agent frontmatter and any config-file overrides. Leave them unset to keep each agent's own model/thinking.
+
+```json
+{
+  "agent": "worker",
+  "task": "Refactor the session store.",
+  "model": "gpt-5",
+  "thinking": "high"
+}
+```
+
+This is intended as a dynamic adjustment point: the orchestrating agent (e.g. the `worker`) can pin a specific model for a particular run without editing agent definitions or config files. The effective model/thinking is forwarded to the child as `pi --model` / `pi --thinking` (or `grok --model` / `grok --effort` for the grok runtime) and recorded on the result's `model` / `thinking` fields.
+
 ### Background agents
 
 ```json
@@ -286,7 +301,7 @@ System prompt for the agent goes here.
 | `isolation`         | `none` \| `worktree`  | `none`       | When `worktree`, the child runs in `<repo>/.worktrees/pi-agent-<safe-name>-<timestamp>-<index>/` created by `git worktree add --detach HEAD`. Clean worktrees are removed after the child exits; dirty worktrees are kept and reported on `SingleResult.worktreePath`.                                |
 | `completionCheck`   | comma list            | none         | Required final-message headings. When set, each configured heading must appear as an exact line; otherwise the result is marked `stopReason: completion_check` with exit code `1`.                                                                                                                    |
 | `maxSubagentDepth`  | non-negative integer  | unset        | Caps how many further `agent` delegations may happen from inside the spawned agent. `0` removes the `agent` tool and the catalogue prompt for that child. When unset, the global `PI_AGENT_MAX_DEPTH` limit applies as before.                                                                        |
-| `worktreeSetupHook` | non-empty string      | unset        | Shell command run inside the freshly created worktree before the child runtime starts (only when `isolation: worktree`). Applies to both `pi` and `grok`. Failure produces `stopReason: 'worktree_setup_error'` and stops the chain.                                                                   |
+| `worktreeSetupHook` | non-empty string      | unset        | Shell command run inside the freshly created worktree before the child runtime starts (only when `isolation: worktree`). Applies to both `pi` and `grok`. Failure produces `stopReason: 'worktree_setup_error'` and stops the chain.                                                                  |
 | `runtime`           | `pi` \| `grok`        | `pi`         | Which CLI binary to spawn for the agent. `pi` (default) spawns `pi --mode json -p`; `grok` spawns `grok -p --output-format streaming-json`. See [Grok Runtime](#grok-runtime) for prerequisites and caveats.                                                                                          |
 
 Invalid values (unknown enums, non-positive integers for `maxTurns`, negative or non-integer values for `maxSubagentDepth`, non-boolean strings) are ignored and fall back to the default (`append`, `fresh`, `none`) for enum fields and to `undefined` for boolean / numeric fields. Empty comma lists are ignored.

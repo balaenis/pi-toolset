@@ -27,6 +27,8 @@ export interface RunSingleAgentOptions {
   spawnFn?: SpawnFn;
   sessionFile?: string;
   resolvedSkillPaths?: string[];
+  modelOverride?: string;
+  thinkingOverride?: string;
 }
 
 export async function mapWithConcurrencyLimit<TIn, TOut>(
@@ -87,6 +89,14 @@ export async function runSingleAgent(
     };
   }
 
+  const effectiveModel = options.modelOverride ?? agent.model;
+  const effectiveThinking = options.thinkingOverride ?? agent.thinking;
+  const effectiveAgent: AgentConfig = {
+    ...agent,
+    model: effectiveModel,
+    thinking: effectiveThinking,
+  };
+
   if (agent.runtime === GROK_RUNTIME) {
     return runSingleAgentGrok(
       defaultCwd,
@@ -121,8 +131,8 @@ export async function runSingleAgent(
       contextTokens: 0,
       turns: 0,
     },
-    model: agent.model,
-    thinking: agent.thinking,
+    model: effectiveModel,
+    thinking: effectiveThinking,
     step,
   };
 
@@ -142,9 +152,9 @@ export async function runSingleAgent(
       tmpPromptPath = tmp.filePath;
     }
 
-    const childEnv = buildChildAgentEnv(process.env, { agent });
+    const childEnv = buildChildAgentEnv(process.env, { agent: effectiveAgent });
     const disableAgentTool = !isAgentDelegationAllowed(childEnv);
-    const args = buildPiArgs(agent, task, {
+    const args = buildPiArgs(effectiveAgent, task, {
       tmpPromptPath: tmpPromptPath ?? undefined,
       sessionFile: options.sessionFile,
       disableAgentTool,
@@ -324,6 +334,14 @@ async function runSingleAgentGrok(
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName)!;
 
+  const effectiveModel = options.modelOverride ?? agent.model;
+  const effectiveThinking = options.thinkingOverride ?? agent.thinking;
+  const effectiveAgent: AgentConfig = {
+    ...agent,
+    model: effectiveModel,
+    thinking: effectiveThinking,
+  };
+
   const currentResult: SingleResult = {
     agent: agentName,
     agentSource: agent.source,
@@ -340,8 +358,8 @@ async function runSingleAgentGrok(
       contextTokens: 0,
       turns: 0,
     },
-    model: agent.model,
-    thinking: agent.thinking,
+    model: effectiveModel,
+    thinking: effectiveThinking,
     step,
   };
 
@@ -354,8 +372,8 @@ async function runSingleAgentGrok(
     }
   };
 
-  const childEnv = buildChildAgentEnv(process.env, { agent });
-  const args = buildGrokArgs(agent, task, {
+  const childEnv = buildChildAgentEnv(process.env, { agent: effectiveAgent });
+  const args = buildGrokArgs(effectiveAgent, task, {
     resolvedSkillPaths: options.resolvedSkillPaths,
   });
 

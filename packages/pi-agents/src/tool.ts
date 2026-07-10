@@ -140,7 +140,16 @@ export async function executeAgentTool(
       'chain',
       options,
       (workflowSignal, workflowOnUpdate) =>
-        runChain(ctx, agents, params.chain!, workflowSignal, workflowOnUpdate, makeDetails)
+        runChain(
+          ctx,
+          agents,
+          params.chain!,
+          workflowSignal,
+          workflowOnUpdate,
+          makeDetails,
+          params.model,
+          params.thinking
+        )
     );
   }
   if (params.tasks && params.tasks.length > 0) {
@@ -154,7 +163,16 @@ export async function executeAgentTool(
       'parallel',
       options,
       (workflowSignal, workflowOnUpdate) =>
-        runParallel(ctx, agents, params.tasks!, workflowSignal, workflowOnUpdate, makeDetails)
+        runParallel(
+          ctx,
+          agents,
+          params.tasks!,
+          workflowSignal,
+          workflowOnUpdate,
+          makeDetails,
+          params.model,
+          params.thinking
+        )
     );
   }
   if (params.agent && params.task) {
@@ -177,7 +195,9 @@ export async function executeAgentTool(
           params.isolation,
           workflowSignal,
           workflowOnUpdate,
-          makeDetails
+          makeDetails,
+          params.model,
+          params.thinking
         )
     );
   }
@@ -292,7 +312,9 @@ async function runChain(
   chain: NonNullable<Params['chain']>,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
-  makeDetails: DetailsFactory
+  makeDetails: DetailsFactory,
+  modelOverride?: string,
+  thinkingOverride?: string
 ): Promise<AgentResult> {
   const chainDetails = (results: SingleResult[], outputs?: Record<string, ChainOutputEntry>) => ({
     ...makeDetails('chain')(results),
@@ -316,7 +338,11 @@ async function runChain(
         req.signal,
         req.onUpdate,
         (results) => chainDetails(results),
-        { skipCompletionCheck: req.skipCompletionCheck }
+        {
+          skipCompletionCheck: req.skipCompletionCheck,
+          modelOverride,
+          thinkingOverride,
+        }
       ),
   });
 }
@@ -327,7 +353,9 @@ async function runParallel(
   tasks: NonNullable<Params['tasks']>,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
-  makeDetails: DetailsFactory
+  makeDetails: DetailsFactory,
+  modelOverride?: string,
+  thinkingOverride?: string
 ): Promise<AgentResult> {
   if (tasks.length > MAX_PARALLEL_TASKS)
     return {
@@ -395,7 +423,8 @@ async function runParallel(
           emitParallelUpdate();
         }
       },
-      makeDetails('parallel')
+      makeDetails('parallel'),
+      { modelOverride, thinkingOverride }
     );
     allResults[index] = result;
     emitParallelUpdate();
@@ -430,7 +459,9 @@ async function runSingle(
   isolation: IsolationMode | undefined,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
-  makeDetails: DetailsFactory
+  makeDetails: DetailsFactory,
+  modelOverride?: string,
+  thinkingOverride?: string
 ): Promise<AgentResult> {
   const result = await runStepWithContext(
     ctx,
@@ -443,7 +474,8 @@ async function runSingle(
     undefined,
     signal,
     onUpdate,
-    makeDetails('single')
+    makeDetails('single'),
+    { modelOverride, thinkingOverride }
   );
   if (isFailedResult(result)) {
     const errorMsg = getResultOutput(result);
@@ -478,7 +510,11 @@ async function runStepWithContext(
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
   makeDetails: (results: SingleResult[]) => SubagentDetails,
-  options: { skipCompletionCheck?: boolean } = {}
+  options: {
+    skipCompletionCheck?: boolean;
+    modelOverride?: string;
+    thinkingOverride?: string;
+  } = {}
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) {
@@ -491,7 +527,8 @@ async function runStepWithContext(
       step,
       signal,
       onUpdate,
-      makeDetails
+      makeDetails,
+      { modelOverride: options.modelOverride, thinkingOverride: options.thinkingOverride }
     );
   }
 
@@ -593,7 +630,12 @@ async function runStepWithContext(
       signal,
       onUpdate,
       makeDetails,
-      { sessionFile: agentContext.sessionFile, resolvedSkillPaths }
+      {
+        sessionFile: agentContext.sessionFile,
+        resolvedSkillPaths,
+        modelOverride: options.modelOverride,
+        thinkingOverride: options.thinkingOverride,
+      }
     );
     if (worktree) {
       finalizeWorktree(worktree, result);
