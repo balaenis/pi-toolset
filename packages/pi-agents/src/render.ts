@@ -141,6 +141,7 @@ export function renderCall(args: Static<typeof SubagentParams>, theme: Theme): C
 
 interface RenderResultOptions {
   expanded: boolean;
+  isPartial?: boolean;
 }
 
 interface RenderResultInput {
@@ -149,7 +150,15 @@ interface RenderResultInput {
 }
 
 function aggregateUsage(results: SingleResult[]) {
-  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+  const total = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    turns: 0,
+    contextTokens: 0,
+  };
   for (const r of results) {
     total.input += r.usage.input;
     total.output += r.usage.output;
@@ -157,13 +166,28 @@ function aggregateUsage(results: SingleResult[]) {
     total.cacheWrite += r.usage.cacheWrite;
     total.cost += r.usage.cost;
     total.turns += r.usage.turns;
+    if (r.usage.contextTokens > total.contextTokens) {
+      total.contextTokens = r.usage.contextTokens;
+    }
   }
   return total;
 }
 
+function appendUsageLine(
+  text: string,
+  usage: Parameters<typeof formatUsageStats>[0],
+  theme: Theme,
+  model?: string,
+  thinking?: string
+): string {
+  const usageStr = formatUsageStats(usage, model, thinking);
+  if (!usageStr) return text;
+  return `${text}\n${theme.fg('dim', usageStr)}`;
+}
+
 export function renderResult(
   result: RenderResultInput,
-  { expanded }: RenderResultOptions,
+  { expanded, isPartial = false }: RenderResultOptions,
   theme: Theme
 ): Component {
   const details = result.details;
@@ -209,7 +233,11 @@ export function renderResult(
   if (details.mode === 'single' && details.results.length === 1) {
     const r = details.results[0];
     const isError = isFailedResult(r);
-    const icon = isError ? theme.fg('error', '✗') : theme.fg('success', '✓');
+    const icon = isError
+      ? theme.fg('error', '✗')
+      : isPartial
+        ? theme.fg('warning', '⏳')
+        : theme.fg('success', '✓');
     const displayItems = getDisplayItems(r.messages);
     const finalOutput = getFinalOutput(r.messages);
 
@@ -226,7 +254,9 @@ export function renderResult(
       container.addChild(new Spacer(1));
       container.addChild(new Text(theme.fg('muted', '─── Output ───'), 0, 0));
       if (displayItems.length === 0 && !finalOutput) {
-        container.addChild(new Text(theme.fg('muted', '(no output)'), 0, 0));
+        container.addChild(
+          new Text(theme.fg('muted', isPartial ? '(running...)' : '(no output)'), 0, 0)
+        );
       } else {
         for (const item of displayItems) {
           if (item.type === 'toolCall')
@@ -254,14 +284,14 @@ export function renderResult(
     let text = `${icon} ${theme.fg('toolTitle', theme.bold(r.agent))}${theme.fg('muted', ` (${r.agentSource})`)}`;
     if (isError && r.stopReason) text += ` ${theme.fg('error', `[${r.stopReason}]`)}`;
     if (isError && r.errorMessage) text += `\n${theme.fg('error', `Error: ${r.errorMessage}`)}`;
-    else if (displayItems.length === 0) text += `\n${theme.fg('muted', '(no output)')}`;
+    else if (displayItems.length === 0)
+      text += `\n${theme.fg('muted', isPartial ? '(running...)' : '(no output)')}`;
     else {
       text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
       if (displayItems.length > COLLAPSED_ITEM_COUNT)
         text += `\n${theme.fg('muted', '(Ctrl+O to expand)')}`;
     }
-    const usageStr = formatUsageStats(r.usage, r.model, r.thinking);
-    if (usageStr) text += `\n${theme.fg('dim', usageStr)}`;
+    text = appendUsageLine(text, r.usage, theme, r.model, r.thinking);
     return new Text(text, 0, 0);
   }
 
@@ -424,11 +454,10 @@ export function renderResult(
       if (displayItems.length === 0)
         text += `\n${theme.fg('muted', r.exitCode === -1 ? '(running...)' : '(no output)')}`;
       else text += `\n${renderDisplayItems(displayItems, 5)}`;
+      text = appendUsageLine(text, r.usage, theme, r.model, r.thinking);
     }
-    if (!isRunning) {
-      const usageStr = formatUsageStats(aggregateUsage(details.results));
-      if (usageStr) text += `\n\n${theme.fg('dim', `Total: ${usageStr}`)}`;
-    }
+    const usageStr = formatUsageStats(aggregateUsage(details.results));
+    if (usageStr) text += `\n\n${theme.fg('dim', `Total: ${usageStr}`)}`;
     if (!expanded) text += `\n${theme.fg('muted', '(Ctrl+O to expand)')}`;
     return new Text(text, 0, 0);
   }

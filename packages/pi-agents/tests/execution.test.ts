@@ -919,6 +919,12 @@ describe('runSingleAgentGrokAcp', () => {
       tools: ['read'],
     });
     const updates: string[] = [];
+    const usageSnapshots: Array<{
+      input: number;
+      output: number;
+      cost: number;
+      contextTokens: number;
+    }> = [];
     const promise = runSingleAgent(
       process.cwd(),
       [agent],
@@ -930,6 +936,15 @@ describe('runSingleAgentGrokAcp', () => {
       (partial) => {
         const text = partial.content.find((c) => c.type === 'text');
         if (text && text.type === 'text') updates.push(text.text);
+        const usage = partial.details?.results[0]?.usage;
+        if (usage) {
+          usageSnapshots.push({
+            input: usage.input,
+            output: usage.output,
+            cost: usage.cost,
+            contextTokens: usage.contextTokens,
+          });
+        }
       },
       makeDetails,
       { spawnFn: ctx.spawnFn }
@@ -970,6 +985,19 @@ describe('runSingleAgentGrokAcp', () => {
     expect(result.errorMessage).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain('maxTurns=1');
     expect(updates.some((u) => u.includes('preamble') || u.includes('Completed'))).toBe(true);
+
+    // Progressive usage: usage_update cost/ctx arrive mid-turn before token breakdown.
+    const midTurn = usageSnapshots.find(
+      (u) => u.cost === 0.01 && u.contextTokens === 42 && u.input === 0 && u.output === 0
+    );
+    expect(midTurn).toBeDefined();
+    const finalSnap = usageSnapshots[usageSnapshots.length - 1];
+    expect(finalSnap).toMatchObject({
+      input: 11,
+      output: 7,
+      cost: 0.01,
+      contextTokens: 21,
+    });
   });
 
   it('ignores maxTurns=1 across multiple ACP tool/message cycles', async () => {

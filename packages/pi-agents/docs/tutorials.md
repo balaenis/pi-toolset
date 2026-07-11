@@ -42,7 +42,9 @@ While the agent runs, the collapsed view shows a live status icon, the agent
 name, and the last few tool calls.
 
 - **Collapsed view** (default): status icon (✓/✗/⏳), agent name, last 5-10
-  items, and usage stats (`turns ↑input ↓output cache $cost ctx model`).
+  items, and usage stats. Fields appear as they become known (for `grok-acp`,
+  ctx can stream mid-turn; the full `turns ↑input ↓output cache ctx model` line
+  appears at turn end).
 - **Expanded view** (Ctrl+O): full task text, every tool call with formatted
   arguments, and the final output rendered as Markdown.
 

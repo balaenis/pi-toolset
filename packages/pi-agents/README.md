@@ -15,7 +15,7 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 - **Worktree isolation + setup hook** - run agents in a throw-away git worktree with an optional shell `worktreeSetupHook` and per-run diff metadata
 - **Completion check** - require final-message headings via frontmatter
 - **Markdown rendering** - final output is rendered with proper formatting in the expanded view
-- **Usage tracking** - turns, tokens, cost, and context shown per agent
+- **Usage tracking** - turns, tokens, and context shown per agent (partial stats stream live for `grok-acp`)
 - **Abort support** - Ctrl+C propagates and kills active subprocesses
 
 ## Local development

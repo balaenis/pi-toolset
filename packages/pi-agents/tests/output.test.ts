@@ -61,7 +61,7 @@ describe('getFinalOutput', () => {
 });
 
 describe('formatUsageStats', () => {
-  const usage = {
+  const emptyUsage = {
     input: 0,
     output: 0,
     cacheRead: 0,
@@ -72,15 +72,56 @@ describe('formatUsageStats', () => {
   };
 
   it('appends model when provided', () => {
-    expect(formatUsageStats(usage, 'glm-5.2')).toBe('glm-5.2');
+    expect(formatUsageStats(emptyUsage, 'glm-5.2')).toBe('glm-5.2');
   });
 
   it('appends thinking level next to model when provided', () => {
-    expect(formatUsageStats(usage, 'glm-5.2', 'xhigh')).toBe('glm-5.2 • xhigh');
+    expect(formatUsageStats(emptyUsage, 'glm-5.2', 'xhigh')).toBe('glm-5.2 • xhigh');
   });
 
   it('omits thinking when model is missing', () => {
-    expect(formatUsageStats(usage, undefined, 'xhigh')).toBe('');
+    expect(formatUsageStats(emptyUsage, undefined, 'xhigh')).toBe('');
+  });
+
+  it('shows only mid-turn fields (ctx) without zero token breakdown', () => {
+    expect(
+      formatUsageStats({
+        ...emptyUsage,
+        cost: 0.0123,
+        contextTokens: 111,
+      })
+    ).toBe('ctx:111');
+  });
+
+  it('omits cost from display even when present', () => {
+    expect(
+      formatUsageStats({
+        ...emptyUsage,
+        cost: 0.0123,
+      })
+    ).toBe('');
+  });
+
+  it('shows context alone when that is the only known field', () => {
+    expect(formatUsageStats({ ...emptyUsage, contextTokens: 50 })).toBe('ctx:50');
+  });
+
+  it('shows the full breakdown when all fields are present', () => {
+    expect(
+      formatUsageStats(
+        {
+          input: 10,
+          output: 4,
+          cacheRead: 2,
+          cacheWrite: 1,
+          cost: 0.0123,
+          contextTokens: 17,
+          turns: 1,
+        },
+        'fake-model',
+        'high'
+      )
+    ).toBe('1 turn ↑10 ↓4 R2 W1 ctx:17 fake-model • high');
   });
 });
 

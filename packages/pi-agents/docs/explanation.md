@@ -224,15 +224,25 @@ run still throws `Subagent was aborted`); the client advertises empty
 `clientCapabilities` so Grok uses its own built-in tools. Skills and fork context
 behave as in streaming-json (ignored/treated as fresh with a warning).
 
+**Progressive usage (grok-acp):** During a turn, standard `usage_update`
+notifications may set `cost` and/or `contextTokens` while input/output/cache
+fields are still unknown (zeros). Cost is collected but not shown; the UI shows
+only the other fields that are already known (e.g. `ctx:111 model`). When the
+`session/prompt` response `_meta` arrives at turn end, the full breakdown
+(`turns`, `↑input`, `↓output`, cache read/write, ctx, model) is shown together.
+Zero/unknown fields are never printed as misleading zeros.
+
 ## Output display
 
-The collapsed view is a live snapshot: status icon, agent name, the last 5-10
-items, and usage stats. The expanded view (Ctrl+O) adds the full task text,
-every tool call with formatted arguments, and the final output rendered as
-Markdown. Tool-call formatting mimics Pi's built-in tools (`$ command` for bash,
-`read ~/path:1-10` for read, `grep /pattern/ in ~/path` for grep, etc.).
+The collapsed view is a live snapshot: status icon (⏳ while streaming, ✓/✗ when
+finished), agent name, the last 5-10 items, and usage stats as fields arrive.
+The expanded view (Ctrl+O) adds the full task text, every tool call with
+formatted arguments, and the final output rendered as Markdown. Tool-call
+formatting mimics Pi's built-in tools (`$ command` for bash, `read ~/path:1-10`
+for read, `grep /pattern/ in ~/path` for grep, etc.).
 
 Parallel mode shows all tasks with live status and a "n/m done, k running"
-summary, returning each completed task's final output (capped at 50 KB per task)
-and failure diagnostics from stderr/error messages when a child exits before
+summary, per-task progressive usage when available, and a running total.
+It returns each completed task's final output (capped at 50 KB per task) and
+failure diagnostics from stderr/error messages when a child exits before
 producing output.
