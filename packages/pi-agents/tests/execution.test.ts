@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import type { AgentConfig } from '../src/agents.ts';
 import type { SpawnFn, SpawnedChild } from '../src/execution.ts';
 import { runSingleAgent } from '../src/execution.ts';
@@ -676,5 +676,411 @@ describe('runSingleAgentGrok', () => {
     expect(ctx.captured.args[ctx.captured.args.indexOf('--effort') + 1]).toBe('high');
     expect(result.model).toBe('grok-4');
     expect(result.thinking).toBe('high');
+  });
+});
+
+describe('runSingleAgentGrokAcp', () => {
+  class FakeAcpChild extends EventEmitter {
+    stdout = new Readable({ read() {} });
+    stderr = new Readable({ read() {} });
+    stdin: Writable;
+    killed = false;
+    killSignals: NodeJS.Signals[] = [];
+    private buffer = '';
+    private closed = false;
+    private sessionId = 'sess-exec';
+    cancelReceived = false;
+    private readonly behavior: {
+      multiCycle?: boolean;
+      hang?: boolean;
+      protocolVersion?: number;
+      stopReason?: string;
+      stderrText?: string;
+      failSpawn?: boolean;
+    };
+
+    constructor(behavior: FakeAcpChild['behavior'] = {}) {
+      super();
+      this.behavior = behavior;
+      this.stdin = new Writable({
+        write: (chunk: Buffer | string, _enc: unknown, cb: (err?: Error | null) => void) => {
+          if (this.behavior.failSpawn) {
+            cb();
+            return;
+          }
+          this.buffer += chunk.toString();
+          const lines = this.buffer.split('\n');
+          this.buffer = lines.pop() || '';
+          for (const line of lines) void this.handleLine(line);
+          cb();
+        },
+      });
+    }
+
+    private writeMsg(msg: unknown) {
+      if (this.closed) return;
+      this.stdout.push(JSON.stringify(msg) + '\n');
+    }
+
+    private async handleLine(line: string) {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let msg: {
+        id?: number | string;
+        method?: string;
+        params?: Record<string, unknown>;
+      };
+      try {
+        msg = JSON.parse(trimmed);
+      } catch {
+        return;
+      }
+      if (!msg.method) return;
+
+      if (msg.method === 'initialize') {
+        this.writeMsg({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            protocolVersion: this.behavior.protocolVersion ?? 1,
+            agentCapabilities: {},
+            authMethods: [{ id: 'cached_token', name: 'Cached' }],
+          },
+        });
+        return;
+      }
+      if (msg.method === 'authenticate') {
+        this.writeMsg({ jsonrpc: '2.0', id: msg.id, result: {} });
+        return;
+      }
+      if (msg.method === 'session/new') {
+        this.writeMsg({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { sessionId: this.sessionId },
+        });
+        return;
+      }
+      if (msg.method === 'session/cancel') {
+        this.cancelReceived = true;
+        return;
+      }
+      if (msg.method === 'session/prompt') {
+        if (this.behavior.stderrText) this.stderr.push(this.behavior.stderrText);
+
+        this.writeMsg({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: this.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'preamble ' },
+            },
+          },
+        });
+
+        this.writeMsg({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: this.sessionId,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: 't1',
+              title: 'read',
+              status: 'completed',
+              rawInput: { path: 'a.ts' },
+              _meta: { 'x.ai/tool': { name: 'read_file' } },
+            },
+          },
+        });
+
+        if (this.behavior.multiCycle) {
+          this.writeMsg({
+            jsonrpc: '2.0',
+            method: 'session/update',
+            params: {
+              sessionId: this.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'mid ' },
+              },
+            },
+          });
+          this.writeMsg({
+            jsonrpc: '2.0',
+            method: 'session/update',
+            params: {
+              sessionId: this.sessionId,
+              update: {
+                sessionUpdate: 'tool_call',
+                toolCallId: 't2',
+                title: 'grep',
+                status: 'completed',
+                rawInput: { pattern: 'x' },
+              },
+            },
+          });
+        }
+
+        this.writeMsg({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: this.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: '## Completed\n\nDone.\n' },
+            },
+          },
+        });
+
+        this.writeMsg({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: this.sessionId,
+            update: {
+              sessionUpdate: 'usage_update',
+              used: 42,
+              size: 200000,
+              cost: { amount: 0.01, currency: 'USD' },
+            },
+          },
+        });
+
+        if (this.behavior.hang) return;
+
+        this.writeMsg({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            stopReason: this.behavior.stopReason ?? 'end_turn',
+            _meta: {
+              inputTokens: 11,
+              outputTokens: 7,
+              cachedReadTokens: 3,
+              totalTokens: 21,
+              modelId: 'fake-acp-model',
+            },
+          },
+        });
+      }
+    }
+
+    kill(signal: NodeJS.Signals = 'SIGTERM') {
+      this.killSignals.push(signal);
+      this.killed = true;
+      this.close(1);
+      return true;
+    }
+
+    close(code = 0) {
+      if (this.closed) return;
+      this.closed = true;
+      this.stdout.push(null);
+      this.stderr.push(null);
+      setImmediate(() => this.emit('close', code));
+    }
+  }
+
+  function captureAcpSpawn(behavior: ConstructorParameters<typeof FakeAcpChild>[0] = {}) {
+    const fake = new FakeAcpChild(behavior);
+    const captured = {
+      command: '',
+      args: [] as string[],
+      env: undefined as NodeJS.ProcessEnv | undefined,
+    };
+    const spawnFn: SpawnFn = ((
+      command: string,
+      args: string[],
+      opts: { env?: NodeJS.ProcessEnv }
+    ) => {
+      captured.command = command;
+      captured.args = args;
+      captured.env = opts.env;
+      if (behavior.failSpawn) {
+        throw Object.assign(new Error('spawn grok ENOENT'), { code: 'ENOENT' });
+      }
+      return fake as unknown as SpawnedChild;
+    }) as SpawnFn;
+    return { fake, spawnFn, captured };
+  }
+
+  it('routes grok-acp through ACP args/env and returns structured messages/tools/usage', async () => {
+    const ctx = captureAcpSpawn();
+    const agent = makeAgent({
+      name: 'g',
+      runtime: 'grok-acp',
+      model: 'grok-4.5',
+      maxTurns: 1,
+      systemPrompt: 'Be careful',
+      tools: ['read'],
+    });
+    const updates: string[] = [];
+    const promise = runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'review this',
+      undefined,
+      undefined,
+      undefined,
+      (partial) => {
+        const text = partial.content.find((c) => c.type === 'text');
+        if (text && text.type === 'text') updates.push(text.text);
+      },
+      makeDetails,
+      { spawnFn: ctx.spawnFn }
+    );
+    const result = await promise;
+
+    expect(ctx.captured.command).toBe('grok');
+    expect(ctx.captured.args[0]).toBe('agent');
+    expect(ctx.captured.args).toContain('stdio');
+    expect(ctx.captured.args).toContain('--always-approve');
+    expect(ctx.captured.args).toContain('--no-leader');
+    expect(ctx.captured.args).not.toContain('--max-turns');
+    expect(ctx.captured.args).not.toContain('-p');
+    expect(ctx.captured.env?.GROK_MEMORY).toBe('0');
+    expect(ctx.captured.env?.GROK_SUBAGENTS).toBe('0');
+    expect(ctx.captured.env?.GROK_DISABLE_AUTOUPDATER).toBe('1');
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stopReason).toBe('end');
+    expect(result.model).toBe('fake-acp-model');
+    expect(result.usage.input).toBe(11);
+    expect(result.usage.output).toBe(7);
+    expect(result.usage.cacheRead).toBe(3);
+    expect(result.usage.contextTokens).toBe(21);
+    expect(result.usage.cost).toBe(0.01);
+    expect(result.messages.length).toBeGreaterThanOrEqual(2);
+    const content = result.messages[0].content as Array<{
+      type: string;
+      name?: string;
+      arguments?: unknown;
+    }>;
+    const toolPart = content.find((p) => p.type === 'toolCall');
+    expect(toolPart).toMatchObject({
+      type: 'toolCall',
+      name: 'read_file',
+      arguments: { path: 'a.ts' },
+    });
+    expect(result.errorMessage).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('maxTurns=1');
+    expect(updates.some((u) => u.includes('preamble') || u.includes('Completed'))).toBe(true);
+  });
+
+  it('ignores maxTurns=1 across multiple ACP tool/message cycles', async () => {
+    const ctx = captureAcpSpawn({ multiCycle: true });
+    const agent = makeAgent({ name: 'g', runtime: 'grok-acp', maxTurns: 1 });
+    const result = await runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'multi',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn }
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stopReason).toBe('end');
+    expect(result.errorMessage).toBeUndefined();
+    expect(ctx.captured.args).not.toContain('--max-turns');
+    const toolCalls = result.messages.flatMap((m) =>
+      m.role === 'assistant' ? m.content.filter((p) => p.type === 'toolCall') : []
+    );
+    expect(toolCalls.length).toBe(2);
+  });
+
+  it('forces a pi agent through runtimeOverride grok-acp', async () => {
+    const ctx = captureAcpSpawn();
+    const agent = makeAgent({ name: 'p', runtime: 'pi' });
+    const result = await runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'go',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn, runtimeOverride: 'grok-acp' }
+    );
+    expect(ctx.captured.command).toBe('grok');
+    expect(ctx.captured.args[0]).toBe('agent');
+    expect(result.stopReason).toBe('end');
+  });
+
+  it(
+    'throws when aborted during ACP prompt',
+    async () => {
+      const ctx = captureAcpSpawn({ hang: true });
+      const agent = makeAgent({ name: 'g', runtime: 'grok-acp' });
+      const controller = new AbortController();
+      const promise = runSingleAgent(
+        process.cwd(),
+        [agent],
+        agent.name,
+        'hang',
+        undefined,
+        undefined,
+        controller.signal,
+        undefined,
+        makeDetails,
+        { spawnFn: ctx.spawnFn }
+      );
+      await new Promise((r) => setTimeout(r, 80));
+      controller.abort();
+      await expect(promise).rejects.toThrow('Subagent was aborted');
+      expect(ctx.fake.cancelReceived).toBe(true);
+    },
+    { timeout: 15_000 }
+  );
+
+  it('surfaces protocol version errors without falling back to streaming-json', async () => {
+    const ctx = captureAcpSpawn({ protocolVersion: 99 });
+    const agent = makeAgent({ name: 'g', runtime: 'grok-acp' });
+    const result = await runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'go',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn }
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stopReason).toBe('error');
+    expect(result.errorMessage).toMatch(/protocol version/i);
+    expect(ctx.captured.args).not.toContain('--output-format');
+  });
+
+  it('surfaces spawn errors for grok-acp', async () => {
+    const ctx = captureAcpSpawn({ failSpawn: true });
+    const agent = makeAgent({ name: 'g', runtime: 'grok-acp' });
+    const result = await runSingleAgent(
+      process.cwd(),
+      [agent],
+      agent.name,
+      'go',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: ctx.spawnFn }
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stopReason).toBe('error');
+    expect(result.errorMessage).toMatch(/ENOENT|failed/i);
   });
 });

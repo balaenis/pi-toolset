@@ -27,6 +27,9 @@
     ],
     "agents": [
       "./agents"
+    ],
+    "external": [
+      "@agentclientprotocol/sdk"
     ]
   },
   "repository": {
@@ -55,5 +58,8 @@
     "@earendil-works/pi-coding-agent": "^0.80.1",
     "@earendil-works/pi-tui": "^0.80.1",
     "typebox": "^1.3.0"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.2.1"
   }
 }

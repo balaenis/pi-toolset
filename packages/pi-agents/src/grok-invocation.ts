@@ -11,7 +11,7 @@ export interface BuildGrokArgsOptions {
   resolvedSkillPaths?: string[];
 }
 
-function mapThinkingToEffort(thinking?: string): string | undefined {
+export function mapThinkingToEffort(thinking?: string): string | undefined {
   switch (thinking) {
     case 'off':
       return undefined;

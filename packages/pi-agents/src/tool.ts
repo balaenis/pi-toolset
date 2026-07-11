@@ -16,7 +16,12 @@ import {
 } from './agents.ts';
 import type { BackgroundManager } from './background.ts';
 import { runChainWorkflow, synthesizeFailure } from './chain.ts';
-import { GROK_RUNTIME, MAX_CONCURRENCY, MAX_PARALLEL_TASKS } from './constants.ts';
+import {
+  GROK_ACP_RUNTIME,
+  GROK_RUNTIME,
+  MAX_CONCURRENCY,
+  MAX_PARALLEL_TASKS,
+} from './constants.ts';
 import { validateCompletionOutput } from './completion-check.ts';
 import { prepareAgentContext } from './context.ts';
 import { listAvailableSkillNames, resolveSkillNames } from './skills.ts';
@@ -547,11 +552,13 @@ async function runStepWithContext(
 
   const effectiveRuntime: Runtime | undefined = options.runtimeOverride ?? agent.runtime;
 
+  const isGrokFamily = effectiveRuntime === GROK_RUNTIME || effectiveRuntime === GROK_ACP_RUNTIME;
+
   let resolvedSkillPaths: string[] | undefined;
-  if (effectiveRuntime === GROK_RUNTIME) {
+  if (isGrokFamily) {
     if (agent.skills && agent.skills.length > 0) {
       ctx.ui.notify(
-        `Agent "${agentName}" uses runtime: grok; skills are ignored (not transferable to Grok).`,
+        `Agent "${agentName}" uses runtime: ${effectiveRuntime}; skills are ignored (not transferable to Grok).`,
         'warning'
       );
     }
@@ -580,10 +587,10 @@ async function runStepWithContext(
 
   let agentContext;
   try {
-    if (effectiveRuntime === GROK_RUNTIME) {
+    if (isGrokFamily) {
       if (agent.defaultContext === 'fork') {
         ctx.ui.notify(
-          `Agent "${agentName}" uses runtime: grok; defaultContext: fork is ignored (runs as fresh).`,
+          `Agent "${agentName}" uses runtime: ${effectiveRuntime}; defaultContext: fork is ignored (runs as fresh).`,
           'warning'
         );
       }

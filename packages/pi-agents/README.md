@@ -149,8 +149,8 @@ The tool accepts optional top-level `model`, `thinking`, and `runtime` parameter
 
 This is intended as a dynamic adjustment point: the orchestrating agent (e.g. the `worker`) can pin a specific model, thinking level, or runtime for a particular run without editing agent definitions or config files.
 
-- `model` / `thinking` are forwarded to the child as `pi --model` / `pi --thinking` (or `grok --model` / `grok --effort` for the grok runtime) and recorded on the result's `model` / `thinking` fields.
-- `runtime` selects which CLI is spawned: `"pi"` (default) or `"grok"`. Overriding it switches the child between the pi and Grok runtimes, so all runtime-dependent behavior (skill resolution, context preparation, invocation flags) follows the effective runtime for that call. See [Grok runtime](#grok-runtime) for the grok-specific flag and thinking→effort mapping.
+- `model` / `thinking` are forwarded to the child as `pi --model` / `pi --thinking` (or `grok --model` / `grok --effort` / `grok --reasoning-effort` depending on runtime) and recorded on the result's `model` / `thinking` fields.
+- `runtime` selects which CLI is spawned: `"pi"` (default), `"grok"` (Grok streaming-json), or `"grok-acp"` (Grok ACP over stdio). Overriding it switches the child between runtimes, so all runtime-dependent behavior (skill resolution, context preparation, invocation flags) follows the effective runtime for that call. See [Grok Runtime](#grok-runtime) and [Grok ACP Runtime](#grok-acp-runtime).
 
 ### Background agents
 
@@ -288,25 +288,25 @@ System prompt for the agent goes here.
 
 ### Frontmatter Fields
 
-| Field               | Type                  | Default      | Description                                                                                                                                                                                                                                                                                           |
-| ------------------- | --------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`              | string                | (required)   | Agent identifier used by the `agent` tool.                                                                                                                                                                                                                                                            |
-| `description`       | string                | (required)   | Shown to the parent model in the agent catalogue.                                                                                                                                                                                                                                                     |
-| `tools`             | comma list            | inherit all  | Allowlist passed to `pi --tools`.                                                                                                                                                                                                                                                                     |
-| `excludeTools`      | comma list            | none         | Denylist passed to `pi --exclude-tools` (applied after the allowlist).                                                                                                                                                                                                                                |
-| `model`             | string                | host default | Forwarded as `pi --model`.                                                                                                                                                                                                                                                                            |
-| `thinking`          | string                | host default | Forwarded as `pi --thinking`.                                                                                                                                                                                                                                                                         |
-| `systemPromptMode`  | `append` \| `replace` | `append`     | `replace` swaps the host system prompt with the agent body via `--system-prompt`; `append` uses `--append-system-prompt`.                                                                                                                                                                             |
-| `maxTurns`          | positive integer      | unbounded    | Maximum assistant turns; the child is `SIGTERM`'d when exceeded and the result is marked with `stopReason: max_turns`.                                                                                                                                                                                |
-| `noContextFiles`    | boolean               | `false`      | When `true`, runs the child with `--no-context-files`.                                                                                                                                                                                                                                                |
-| `noSkills`          | boolean               | `false`      | When `true`, runs the child with `--no-skills`.                                                                                                                                                                                                                                                       |
-| `skills`            | comma list            | none         | Skill **names** to allowlist for the child. When set, the child runs with `--no-skills` plus one `--skill <path>` per resolved name, loading only those skills. Names resolve against the host's discovered skills (see [Skills](#skills)). Unresolvable names fail with `stopReason: 'skill_error'`. |
-| `defaultContext`    | `fresh` \| `fork`     | `fresh`      | `fork` branches the parent session via `SessionManager.createBranchedSession(getLeafId())` and runs the child with `--session <branched-file>`; `fresh` runs with `--no-session`. Requires a persisted parent session for `fork`.                                                                     |
-| `isolation`         | `none` \| `worktree`  | `none`       | When `worktree`, the child runs in `<repo>/.worktrees/pi-agent-<safe-name>-<timestamp>-<index>/` created by `git worktree add --detach HEAD`. Clean worktrees are removed after the child exits; dirty worktrees are kept and reported on `SingleResult.worktreePath`.                                |
-| `completionCheck`   | comma list            | none         | Required final-message headings. When set, each configured heading must appear as an exact line; otherwise the result is marked `stopReason: completion_check` with exit code `1`.                                                                                                                    |
-| `maxSubagentDepth`  | non-negative integer  | unset        | Caps how many further `agent` delegations may happen from inside the spawned agent. `0` removes the `agent` tool and the catalogue prompt for that child. When unset, the global `PI_AGENT_MAX_DEPTH` limit applies as before.                                                                        |
-| `worktreeSetupHook` | non-empty string      | unset        | Shell command run inside the freshly created worktree before the child runtime starts (only when `isolation: worktree`). Applies to both `pi` and `grok`. Failure produces `stopReason: 'worktree_setup_error'` and stops the chain.                                                                  |
-| `runtime`           | `pi` \| `grok`        | `pi`         | Which CLI binary to spawn for the agent. `pi` (default) spawns `pi --mode json -p`; `grok` spawns `grok -p --output-format streaming-json`. See [Grok Runtime](#grok-runtime) for prerequisites and caveats.                                                                                          |
+| Field               | Type                         | Default      | Description                                                                                                                                                                                                                                                                                           |
+| ------------------- | ---------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`              | string                       | (required)   | Agent identifier used by the `agent` tool.                                                                                                                                                                                                                                                            |
+| `description`       | string                       | (required)   | Shown to the parent model in the agent catalogue.                                                                                                                                                                                                                                                     |
+| `tools`             | comma list                   | inherit all  | Allowlist passed to `pi --tools`.                                                                                                                                                                                                                                                                     |
+| `excludeTools`      | comma list                   | none         | Denylist passed to `pi --exclude-tools` (applied after the allowlist).                                                                                                                                                                                                                                |
+| `model`             | string                       | host default | Forwarded as `pi --model`.                                                                                                                                                                                                                                                                            |
+| `thinking`          | string                       | host default | Forwarded as `pi --thinking`.                                                                                                                                                                                                                                                                         |
+| `systemPromptMode`  | `append` \| `replace`        | `append`     | `replace` swaps the host system prompt with the agent body via `--system-prompt`; `append` uses `--append-system-prompt`.                                                                                                                                                                             |
+| `maxTurns`          | positive integer             | unbounded    | Maximum assistant turns for `pi` and `grok` (streaming-json); the child is `SIGTERM`'d when exceeded and the result is marked with `stopReason: max_turns`. **Ignored entirely by `grok-acp`** (not sent to Grok, not enforced client-side).                                                          |
+| `noContextFiles`    | boolean                      | `false`      | When `true`, runs the child with `--no-context-files`.                                                                                                                                                                                                                                                |
+| `noSkills`          | boolean                      | `false`      | When `true`, runs the child with `--no-skills`.                                                                                                                                                                                                                                                       |
+| `skills`            | comma list                   | none         | Skill **names** to allowlist for the child. When set, the child runs with `--no-skills` plus one `--skill <path>` per resolved name, loading only those skills. Names resolve against the host's discovered skills (see [Skills](#skills)). Unresolvable names fail with `stopReason: 'skill_error'`. |
+| `defaultContext`    | `fresh` \| `fork`            | `fresh`      | `fork` branches the parent session via `SessionManager.createBranchedSession(getLeafId())` and runs the child with `--session <branched-file>`; `fresh` runs with `--no-session`. Requires a persisted parent session for `fork`.                                                                     |
+| `isolation`         | `none` \| `worktree`         | `none`       | When `worktree`, the child runs in `<repo>/.worktrees/pi-agent-<safe-name>-<timestamp>-<index>/` created by `git worktree add --detach HEAD`. Clean worktrees are removed after the child exits; dirty worktrees are kept and reported on `SingleResult.worktreePath`.                                |
+| `completionCheck`   | comma list                   | none         | Required final-message headings. When set, each configured heading must appear as an exact line; otherwise the result is marked `stopReason: completion_check` with exit code `1`.                                                                                                                    |
+| `maxSubagentDepth`  | non-negative integer         | unset        | Caps how many further `agent` delegations may happen from inside the spawned agent. `0` removes the `agent` tool and the catalogue prompt for that child. When unset, the global `PI_AGENT_MAX_DEPTH` limit applies as before.                                                                        |
+| `worktreeSetupHook` | non-empty string             | unset        | Shell command run inside the freshly created worktree before the child runtime starts (only when `isolation: worktree`). Applies to `pi`, `grok`, and `grok-acp`. Failure produces `stopReason: 'worktree_setup_error'` and stops the chain.                                                          |
+| `runtime`           | `pi` \| `grok` \| `grok-acp` | `pi`         | Which CLI binary/protocol to spawn. `pi` (default) spawns `pi --mode json -p`; `grok` spawns `grok -p --output-format streaming-json`; `grok-acp` spawns `grok agent … stdio` (ACP). See [Grok Runtime](#grok-runtime) and [Grok ACP Runtime](#grok-acp-runtime).                                     |
 
 Invalid values (unknown enums, non-positive integers for `maxTurns`, negative or non-integer values for `maxSubagentDepth`, non-boolean strings) are ignored and fall back to the default (`append`, `fresh`, `none`) for enum fields and to `undefined` for boolean / numeric fields. Empty comma lists are ignored.
 
@@ -453,7 +453,7 @@ Package agents run with the same privileges as project agents. They are not pull
 
 ### Grok Runtime
 
-When an agent declares `runtime: grok`, the tool spawns the [Grok Build CLI](https://docs.x.ai/build/cli) (`grok -p --output-format streaming-json`) instead of `pi`. This lets you route specific subagent types to xAI models (Grok 4.5, etc.) for different cost/quality trade-offs.
+When an agent declares `runtime: grok`, the tool spawns the [Grok Build CLI](https://docs.x.ai/build/cli) (`grok -p --output-format streaming-json`) instead of `pi`. This is the **streaming-json** path and remains fully supported. Prefer `runtime: grok-acp` when you need structured tool calls, usage, and ACP cancellation (see [Grok ACP Runtime](#grok-acp-runtime)). Existing `runtime: grok` configs are **not** migrated automatically.
 
 **Prerequisites:**
 
@@ -503,7 +503,7 @@ Hardcoded flags: `--no-auto-update`, `--always-approve`, `--output-format stream
 | `xhigh`       | `high`        |
 | `max`         | `high`        |
 
-**Caveats and limitations:**
+**Caveats and limitations (streaming-json only):**
 
 - **No usage stats** - Grok's streaming-json does not expose token counts or cost. `SingleResult.usage` is all zeros; `turns` reflects the number of assistant turns detected via thought boundaries.
 - **No tool call visibility** - Grok handles tools transparently. Tool executions are not in the output stream, so `SingleResult.messages` contains no `toolCall` parts. Text is split into one assistant message per turn using `thought` events as turn boundaries (Grok emits no tool-call/result events); `getFinalOutput()` returns only the last turn.
@@ -514,6 +514,62 @@ Hardcoded flags: `--no-auto-update`, `--always-approve`, `--output-format stream
 - **Tool names are runtime-specific** - pi tool names (`read`, `bash`, `edit`, etc.) may not match Grok's built-in tool names. Tool lists are passed through as-is; restrictions may be silently ignored by Grok.
 - **System prompt replace mode** - `--system-prompt-override` may not fully suppress Grok's default behavior; project-level `.grok/` config may still influence output. Prefer `append` mode (`--rules`) unless full replacement is explicitly required.
 - **No nested Grok subagents** - Grok ignores `PI_AGENT_DEPTH` / nesting env vars. Every Grok spawn always passes `--no-subagents` so Grok cannot fan out further.
+
+### Grok ACP Runtime
+
+When an agent declares `runtime: grok-acp`, the tool spawns `grok agent … stdio` and speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP v1) over NDJSON. This is **opt-in**; it does not replace or silently fall back to `runtime: grok`.
+
+**Example agent definition:**
+
+```markdown
+---
+name: grok-acp-worker
+description: Grok via ACP with structured tools and usage
+runtime: grok-acp
+model: grok-4.5
+thinking: high
+systemPromptMode: append
+---
+
+Complete the task and report with the required headings.
+```
+
+**Per-call override:**
+
+```json
+{
+  "agent": "worker",
+  "task": "Read package.json and summarize scripts.",
+  "runtime": "grok-acp"
+}
+```
+
+**Process invocation:**
+
+```text
+grok agent [--model <model>] [--reasoning-effort <effort>] --always-approve --no-leader stdio
+```
+
+Environment overrides (on top of the usual child env): `GROK_DISABLE_AUTOUPDATER=1`, `GROK_MEMORY=0`, `GROK_SUBAGENTS=0`.
+
+**Configuration mapping via `session/new._meta`:**
+
+| AgentConfig field        | ACP session metadata                                        |
+| ------------------------ | ----------------------------------------------------------- |
+| `systemPrompt` (append)  | `_meta.rules`                                               |
+| `systemPrompt` (replace) | `_meta.systemPromptOverride`                                |
+| `tools` / `excludeTools` | `_meta.agentProfile.tools` / `.disallowedTools`             |
+| `maxTurns`               | **ignored** — not sent in CLI, env, session meta, or prompt |
+
+**Capabilities and behavior:**
+
+- **Authentication** — after `initialize`, the client selects an advertised method: `_meta.defaultAuthMethodId` when valid, else `xai.api_key` when `XAI_API_KEY` is set, else `cached_token`. Otherwise it fails with instructions to run `grok login` or set `XAI_API_KEY`.
+- **Structured tool visibility** — ACP `tool_call` / `tool_call_update` events become assistant `toolCall` content parts (name from `x.ai/tool` metadata or title; arguments from `rawInput`).
+- **Usage** — token/cache fields from prompt-response `_meta` and standard `usage_update` notifications populate `SingleResult.usage` (cost when currency is `USD`).
+- **Cancellation** — `AbortSignal` sends `session/cancel`, cancels pending permissions, then SIGTERM/SIGKILL; the public run still throws `Subagent was aborted`.
+- **No client fs/terminal capabilities** — the client advertises empty `clientCapabilities`; Grok uses its own built-in tools and reports them through ACP.
+- **Skills / fork context** — same as streaming-json Grok: skills ignored with a warning; `defaultContext: fork` treated as fresh with a warning.
+- **`maxTurns`** — accepted at the shared config layer for frontmatter/overrides but **ignored entirely** by `grok-acp` (unlike `pi` and `grok`).
 
 ## Bundled Agents
 

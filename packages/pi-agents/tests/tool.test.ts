@@ -287,3 +287,91 @@ describe('executeAgentTool skill resolution', () => {
     expect(single?.errorMessage).toContain('librarian');
   });
 });
+
+describe('runtime override schema and grok-acp skill/fork warnings', () => {
+  const piAgentKeys = [
+    'PI_AGENT_CHILD',
+    'PI_AGENT_DEPTH',
+    'PI_AGENT_MAX_DEPTH',
+    'PI_AGENT_TOOL_AVAILABLE',
+  ] as const;
+  const savedEnv: Record<string, string | undefined> = {};
+  let tmpCwd: string | null = null;
+
+  beforeEach(() => {
+    for (const key of piAgentKeys) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    clearDiscoveredSkills();
+  });
+
+  afterEach(() => {
+    for (const key of piAgentKeys) {
+      const value = savedEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    if (tmpCwd) {
+      rmSync(tmpCwd, { recursive: true, force: true });
+      tmpCwd = null;
+    }
+    clearDiscoveredSkills();
+  });
+
+  it('accepts runtimeOverride grok-acp in the tool parameter schema', async () => {
+    const { RuntimeSchema } = await import('../src/schema.ts');
+    const { Value } = await import('typebox/value');
+    expect(Value.Check(RuntimeSchema, 'pi')).toBe(true);
+    expect(Value.Check(RuntimeSchema, 'grok')).toBe(true);
+    expect(Value.Check(RuntimeSchema, 'grok-acp')).toBe(true);
+    expect(Value.Check(RuntimeSchema, 'claude')).toBe(false);
+    expect(Value.Check(RuntimeSchema, 'weird')).toBe(false);
+  });
+
+  it('emits skill and fork warnings for grok-acp before spawn failure', async () => {
+    tmpCwd = mkdtempSync(path.join(os.tmpdir(), 'pi-acp-warn-'));
+    const agentsDir = path.join(tmpCwd, '.pi', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(
+      path.join(agentsDir, 'acp.md'),
+      `---\nname: acp\ndescription: acp agent\nruntime: grok-acp\nskills: ghost\ndefaultContext: fork\n---\nBody.`
+    );
+
+    const warnings: string[] = [];
+    const ctx = makeCtx({
+      cwd: tmpCwd,
+      ui: {
+        confirm: async () => true,
+        select: async () => undefined,
+        input: async () => undefined,
+        notify: (msg: string, level?: string) => {
+          if (level === 'warning') warnings.push(msg);
+        },
+      } as unknown as ExtensionContext['ui'],
+    });
+
+    // PATH without grok causes spawn ENOENT; warnings fire before spawn.
+    const savedPath = process.env.PATH;
+    process.env.PATH = '/nonexistent';
+    try {
+      const result = await executeAgentTool(
+        { agent: 'acp', task: 'go' },
+        undefined,
+        undefined,
+        ctx
+      );
+      expect(warnings.some((w) => w.includes('runtime: grok-acp') && w.includes('skills'))).toBe(
+        true
+      );
+      expect(warnings.some((w) => w.includes('runtime: grok-acp') && w.includes('fork'))).toBe(
+        true
+      );
+      // Result may be error from spawn; skill_error must not occur (skills ignored).
+      const single = result.details?.results[0];
+      expect(single?.stopReason).not.toBe('skill_error');
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+});

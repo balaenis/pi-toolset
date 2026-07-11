@@ -1,5 +1,5 @@
 // ABOUTME: Subprocess execution for the `agent` tool — concurrency limiter and single-agent run loop.
-// ABOUTME: Dispatches to pi or grok runtime, consumes JSON/NDJSON streams, accumulates messages and stop reason.
+// ABOUTME: Dispatches to pi, grok, or grok-acp runtime and accumulates messages and stop reason.
 
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -8,7 +8,19 @@ import type { Readable } from 'node:stream';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { Message } from '@earendil-works/pi-ai';
 import type { AgentConfig, Runtime } from './agents.ts';
-import { GROK_RUNTIME } from './constants.ts';
+import { GROK_ACP_RUNTIME, GROK_RUNTIME } from './constants.ts';
+import { GrokAcpClientError, runGrokAcpClient } from './grok-acp-client.ts';
+import {
+  buildGrokAcpArgs,
+  buildGrokAcpEnv,
+  buildGrokAcpInitializeParams,
+  buildGrokAcpSessionNewParams,
+} from './grok-acp-invocation.ts';
+import {
+  createGrokAcpParserState,
+  finalizeGrokAcpPrompt,
+  handleGrokAcpSessionUpdate,
+} from './grok-acp-parser.ts';
 import { buildGrokArgs, getGrokInvocation } from './grok-invocation.ts';
 import { createGrokParserState, parseGrokEvent } from './grok-parser.ts';
 import { buildPiArgs, getPiInvocation, writePromptToTempFile } from './invocation.ts';
@@ -99,6 +111,21 @@ export async function runSingleAgent(
     thinking: effectiveThinking,
     runtime: effectiveRuntime,
   };
+
+  if (effectiveRuntime === GROK_ACP_RUNTIME) {
+    return runSingleAgentGrokAcp(
+      defaultCwd,
+      agents,
+      agentName,
+      task,
+      cwd,
+      step,
+      signal,
+      onUpdate,
+      makeDetails,
+      options
+    );
+  }
 
   if (effectiveRuntime === GROK_RUNTIME) {
     return runSingleAgentGrok(
@@ -459,4 +486,123 @@ async function runSingleAgentGrok(
   }
   if (wasAborted) throw new Error('Subagent was aborted');
   return currentResult;
+}
+
+async function runSingleAgentGrokAcp(
+  defaultCwd: string,
+  agents: AgentConfig[],
+  agentName: string,
+  task: string,
+  cwd: string | undefined,
+  step: number | undefined,
+  signal: AbortSignal | undefined,
+  onUpdate: OnUpdateCallback | undefined,
+  makeDetails: (results: SingleResult[]) => SubagentDetails,
+  options: RunSingleAgentOptions = {}
+): Promise<SingleResult> {
+  const agent = agents.find((a) => a.name === agentName)!;
+
+  const effectiveModel = options.modelOverride ?? agent.model;
+  const effectiveThinking = options.thinkingOverride ?? agent.thinking;
+  const effectiveRuntime: Runtime | undefined = options.runtimeOverride ?? agent.runtime;
+  const effectiveAgent: AgentConfig = {
+    ...agent,
+    model: effectiveModel,
+    thinking: effectiveThinking,
+    runtime: effectiveRuntime,
+  };
+
+  const currentResult: SingleResult = {
+    agent: agentName,
+    agentSource: agent.source,
+    task,
+    exitCode: 0,
+    messages: [],
+    stderr: '',
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+      turns: 0,
+    },
+    model: effectiveModel,
+    thinking: effectiveThinking,
+    step,
+  };
+
+  const emitUpdate = () => {
+    if (onUpdate) {
+      onUpdate({
+        content: [{ type: 'text', text: getFinalOutput(currentResult.messages) || '(running...)' }],
+        details: makeDetails([currentResult]),
+      });
+    }
+  };
+
+  const parserState = createGrokAcpParserState(effectiveModel);
+  const workCwd = cwd ?? defaultCwd;
+  const childEnv = buildGrokAcpEnv(buildChildAgentEnv(process.env, { agent: effectiveAgent }));
+  const args = buildGrokAcpArgs(effectiveAgent);
+  const invocation = getGrokInvocation(args);
+
+  try {
+    const acpResult = await runGrokAcpClient({
+      command: invocation.command,
+      args: invocation.args,
+      cwd: workCwd,
+      env: childEnv,
+      spawnFn: options.spawnFn as never,
+      signal,
+      initializeParams: buildGrokAcpInitializeParams(),
+      sessionNewParams: buildGrokAcpSessionNewParams(workCwd, effectiveAgent),
+      task,
+      onSessionUpdate: (notification) => {
+        handleGrokAcpSessionUpdate(notification, currentResult, parserState, emitUpdate);
+      },
+    });
+
+    currentResult.stderr = acpResult.stderr;
+    finalizeGrokAcpPrompt(
+      currentResult,
+      acpResult.promptResponse.stopReason,
+      acpResult.promptResponse._meta as Record<string, unknown> | null | undefined,
+      parserState,
+      { wasAborted: acpResult.wasAborted },
+      emitUpdate
+    );
+
+    // Successful ACP prompt completion is treated as process success even when
+    // the long-lived agent exits non-zero during shutdown cleanup.
+    if (currentResult.stopReason === 'end') {
+      currentResult.exitCode = 0;
+    } else if (currentResult.exitCode === 0 && acpResult.exitCode !== 0) {
+      currentResult.exitCode = acpResult.exitCode;
+    }
+
+    if (acpResult.wasAborted) throw new Error('Subagent was aborted');
+    return currentResult;
+  } catch (err) {
+    if (err instanceof Error && err.message === 'Subagent was aborted') throw err;
+    if (err instanceof GrokAcpClientError && err.message === 'Subagent was aborted') {
+      throw new Error('Subagent was aborted', { cause: err });
+    }
+
+    const message = err instanceof Error ? err.message : String(err);
+    currentResult.stopReason = 'error';
+    currentResult.exitCode = 1;
+    currentResult.errorMessage = message;
+    if (err instanceof GrokAcpClientError) {
+      currentResult.stderr = err.stderr || currentResult.stderr;
+      if (!currentResult.errorMessage.startsWith('Grok ACP')) {
+        currentResult.errorMessage = `Grok ACP ${err.stage} failed: ${message}`;
+      }
+    } else if (!currentResult.stderr) {
+      currentResult.stderr = message;
+    }
+    emitUpdate();
+    return currentResult;
+  }
 }

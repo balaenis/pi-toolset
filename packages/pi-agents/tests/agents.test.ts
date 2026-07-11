@@ -358,6 +358,48 @@ describe('agent config overrides', () => {
     expect(a.runtime).toBe('grok');
   });
 
+  it('parses runtime: grok-acp from frontmatter', () => {
+    env = withAgentsDir((dir) => {
+      writeFileSync(
+        path.join(dir, 'acp.md'),
+        `---
+name: acp-agent
+description: ACP runtime agent
+runtime: grok-acp
+---
+Body.`
+      );
+    });
+    const { agents } = discoverAgents(env.cwd, 'project');
+    const a = agents.find((x) => x.name === 'acp-agent');
+    expect(a).toBeDefined();
+    expect(a!.runtime).toBe('grok-acp');
+  });
+
+  it('config override can set runtime to grok-acp with project overriding user', () => {
+    const userDir = setUserAgentDir();
+    const userAgentsSubDir = path.join(userDir, 'agents');
+    mkdirSync(userAgentsSubDir, { recursive: true });
+    writeAgent(userAgentsSubDir, 'shared-acp', 'runtime: grok');
+
+    env = withAgentsDir((dir) => {
+      writeAgent(dir, 'shared-acp', 'model: project-model');
+    });
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(projectConfigDir, 'config.json'),
+      JSON.stringify({
+        agents: { 'shared-acp': { runtime: 'grok-acp' } },
+      })
+    );
+
+    const { agents } = discoverAgents(env.cwd, 'both');
+    const a = agents.find((x) => x.name === 'shared-acp')!;
+    expect(a.runtime).toBe('grok-acp');
+    expect(a.model).toBe('project-model');
+  });
+
   it('does not apply project config overrides when scope is user', () => {
     const userDir = setUserAgentDir();
     const userAgentsSubDir = path.join(userDir, 'agents');

@@ -67,6 +67,8 @@ Use Grok **native flags** (not Claude Code aliases). Empirically verified that a
 - Session lifecycle management is more complex
 - Overkill for a one-shot "send task, get result" workflow
 
+> **Follow-up (2026-07-11):** ACP was later added as a **separate** opt-in runtime (`runtime: grok-acp`) after real streaming-json limitations were observed — missing tool-call visibility and weak message boundaries for completion checks. The original `runtime: grok` streaming-json path is preserved unchanged; ACP was not retroactively declared the original choice. See `docs/plans/2026-07-11-grok-acp-runtime-plan.md`.
+
 ### Decision 2: New `AgentConfig.runtime` field
 
 ```typescript
