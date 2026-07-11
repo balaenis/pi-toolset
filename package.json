@@ -23,6 +23,9 @@
   "pi": {
     "extensions": [
       "packages/*/src/index.ts"
+    ],
+    "prompts": [
+      "packages/*/prompts"
     ]
   }
 }

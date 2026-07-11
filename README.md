@@ -4,15 +4,17 @@ A monorepo of [Pi](https://github.com/earendil-works/pi) extension packages. Eac
 
 ## Packages
 
-| Package                            | npm                   | Description                                                                    |
-| ---------------------------------- | --------------------- | ------------------------------------------------------------------------------ |
-| [`pi-lsp`](packages/pi-lsp/)       | `@balaenis/pi-lsp`    | LSP support for Pi (language-server lifecycle, diagnostics, tools, statusline) |
-| [`pi-format`](packages/pi-format/) | `@balaenis/pi-format` | Format files via tool, `/format` command, and automatic post-write/edit hook   |
-| [`pi-agents`](packages/pi-agents/) | `@balaenis/pi-agents` | Delegate tasks to specialized subagents with isolated context windows          |
+| Package                            | Description                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------ |
+| [`pi-lsp`](packages/pi-lsp/)       | LSP support for Pi (language-server lifecycle, diagnostics, tools, statusline) |
+| [`pi-format`](packages/pi-format/) | Format files via tool, `/format` command, and automatic post-write/edit hook   |
+| [`pi-agents`](packages/pi-agents/) | Delegate tasks to specialized subagents with isolated context windows          |
 
-See each package's `README.md` for usage and configuration.
+The packages target the npm names `@balaenis/pi-lsp`, `@balaenis/pi-format`, and `@balaenis/pi-agents`, but are not published to a registry yet. Until they are, load them from a local build with `pi -e` (see each package's README).
 
-## Repository Layout
+See each package's `README.md` and `docs/` for usage and configuration.
+
+## Repository layout
 
 ```
 packages/<name>/          # independently released packages
@@ -21,12 +23,21 @@ release-please-config.json        # manifest-mode release config
 .mise/tasks/              # parameterized tasks (build/test/typecheck/publish take --package)
 ```
 
-## Development
+## Getting started
 
-This repo uses [`mise`](https://mise.jdx.dev) for tooling and [`bun`](https://bun.sh) as the package manager (bun workspaces). Per-package tasks take `--package`:
+This repo uses [`mise`](https://mise.jdx.dev) for tooling and [`bun`](https://bun.sh) as the package manager (bun workspaces).
 
 ```sh
 mise run setup                                        # install workspace deps + hk
+mise run build --package packages/pi-lsp              # build a package
+pi -e ./packages/pi-lsp/dist/index.js                 # load it into Pi
+```
+
+## Development
+
+Per-package tasks take `--package`:
+
+```sh
 mise run typecheck --package packages/pi-lsp
 mise run test --package packages/pi-lsp
 mise run build --package packages/pi-lsp
