@@ -353,7 +353,7 @@ export function renderResult(
       icon = theme.fg('error', '✗');
     } else if (isPartial) {
       startSpinner(context);
-      icon = theme.fg('warning', runningStatusGlyph(true, context));
+      icon = theme.fg('accent', runningStatusGlyph(true, context));
     } else {
       stopSpinner(context);
       icon = theme.fg('success', '✓');
@@ -507,7 +507,7 @@ export function renderResult(
     else stopSpinner(context);
     const runningGlyph = runningStatusGlyph(isRunning, context);
     const icon = isRunning
-      ? theme.fg('warning', runningGlyph)
+      ? theme.fg('accent', runningGlyph)
       : failCount > 0
         ? theme.fg('warning', '◐')
         : theme.fg('success', '✓');
@@ -569,7 +569,7 @@ export function renderResult(
     for (const r of details.results) {
       const rIcon =
         r.exitCode === -1
-          ? theme.fg('warning', runningGlyph)
+          ? theme.fg('accent', runningGlyph)
           : isFailedResult(r)
             ? theme.fg('error', '✗')
             : theme.fg('success', '✓');
