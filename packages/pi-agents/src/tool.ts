@@ -22,19 +22,36 @@ import {
   MAX_CONCURRENCY,
   MAX_PARALLEL_TASKS,
 } from './constants.ts';
-import { validateCompletionOutput } from './completion-check.ts';
+import { enforceCompletionCheck } from './completion-check.ts';
 import { prepareAgentContext } from './context.ts';
 import { listAvailableSkillNames, resolveSkillNames } from './skills.ts';
-import { mapWithConcurrencyLimit, type OnUpdateCallback, runSingleAgent } from './execution.ts';
 import {
+  ABORT_MESSAGE,
+  getAbortResult,
+  isAbortError,
+  mapWithConcurrencyLimit,
+  type OnUpdateCallback,
+  runSingleAgent,
+} from './execution.ts';
+import {
+  applyTerminalStatus,
   getFinalOutput,
   getResultOutput,
   isFailedResult,
+  resolveExecutionStatus,
   truncateParallelOutput,
 } from './output.ts';
 import type { SubagentParams } from './schema.ts';
 import { assertAgentDelegationAllowed } from './security.ts';
-import type { IsolationMode, SingleResult, SubagentDetails, ChainOutputEntry } from './types.ts';
+import {
+  cloneResults,
+  cloneSingleResult,
+  emptyUsage,
+  type IsolationMode,
+  type SingleResult,
+  type SubagentDetails,
+  type ChainOutputEntry,
+} from './types.ts';
 import {
   type AgentWorktree,
   createAgentWorktree,
@@ -206,7 +223,8 @@ export async function executeAgentTool(
           makeDetails,
           params.model,
           params.thinking,
-          params.runtime
+          params.runtime,
+          params.title
         )
     );
   }
@@ -267,6 +285,7 @@ async function runWithBackgroundOption(
 
   const description = describeWorkflow(params, mode);
   const taskPreview = buildTaskPreview(params, mode);
+  const title = extractLaunchTitle(params, mode);
   const projectAgentsDir = discoverAgents(ctx.cwd, params.agentScope ?? 'user').projectAgentsDir;
 
   return manager.launch({
@@ -274,6 +293,7 @@ async function runWithBackgroundOption(
     agentScope: params.agentScope ?? 'user',
     description,
     taskPreview,
+    title,
     projectAgentsDir,
     run: (bgSignal) => {
       if (options.runWorkflow) {
@@ -308,6 +328,19 @@ function buildTaskPreview(params: Params, mode: Mode): string {
     return first ? truncatePreview(first.task, 120) : '';
   }
   return truncatePreview(params.task ?? '', 120);
+}
+
+/** Short launch label; for multi-task modes use the first item's title. */
+function extractLaunchTitle(params: Params, mode: Mode): string | undefined {
+  if (mode === 'single') return params.title;
+  if (mode === 'parallel') return params.tasks?.[0]?.title;
+  if (mode === 'chain') {
+    const first = params.chain?.[0];
+    if (!first) return undefined;
+    if ('expand' in first) return first.parallel.title;
+    return first.title;
+  }
+  return undefined;
 }
 
 function truncatePreview(value: string, max: number): string {
@@ -353,6 +386,7 @@ async function runChain(
           modelOverride,
           thinkingOverride,
           runtimeOverride,
+          title: req.title,
         }
       ),
   });
@@ -381,84 +415,145 @@ async function runParallel(
       isError: true,
     };
 
-  const allResults: SingleResult[] = new Array(tasks.length);
-  for (let i = 0; i < tasks.length; i++) {
-    allResults[i] = {
-      agent: tasks[i].agent,
-      agentSource: 'unknown',
-      task: tasks[i].task,
-      exitCode: -1,
-      messages: [],
-      stderr: '',
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        cost: 0,
-        contextTokens: 0,
-        turns: 0,
-      },
-    };
-  }
+  const allResults: SingleResult[] = tasks.map((t) => ({
+    agent: t.agent,
+    agentSource: 'unknown' as const,
+    task: t.task,
+    title: t.title,
+    exitCode: -1,
+    status: 'queued' as const,
+    messages: [],
+    stderr: '',
+    usage: emptyUsage(),
+  }));
 
   const emitParallelUpdate = () => {
     if (onUpdate) {
-      const running = allResults.filter((r) => r.exitCode === -1).length;
-      const done = allResults.filter((r) => r.exitCode !== -1).length;
+      const snapshot = cloneResults(allResults);
+      const running = snapshot.filter((r) => resolveExecutionStatus(r) === 'running').length;
+      const done = snapshot.filter((r) => {
+        const s = resolveExecutionStatus(r);
+        return s === 'completed' || s === 'failed' || s === 'cancelled';
+      }).length;
       onUpdate({
         content: [
           {
             type: 'text',
-            text: `Parallel: ${done}/${allResults.length} done, ${running} running...`,
+            text: `Parallel: ${done}/${snapshot.length} done, ${running} running...`,
           },
         ],
-        details: makeDetails('parallel')([...allResults]),
+        details: makeDetails('parallel')(snapshot),
       });
     }
   };
 
-  const results = await mapWithConcurrencyLimit(tasks, MAX_CONCURRENCY, async (t, index) => {
-    const result = await runStepWithContext(
-      ctx,
-      agents,
-      t.agent,
-      t.task,
-      t.cwd,
-      t.isolation,
-      index,
-      undefined,
-      signal,
-      (partial) => {
-        if (partial.details?.results[0]) {
-          allResults[index] = partial.details.results[0];
+  emitParallelUpdate();
+
+  const makeCancelledSlot = (t: (typeof tasks)[number], index: number): SingleResult => {
+    const existing = allResults[index];
+    const cancelled: SingleResult = {
+      ...existing,
+      agent: t.agent,
+      task: t.task,
+      exitCode: 1,
+      status: 'cancelled',
+      stopReason: 'aborted',
+      errorMessage: existing.errorMessage || ABORT_MESSAGE,
+    };
+    return cancelled;
+  };
+
+  const results = await mapWithConcurrencyLimit(
+    tasks,
+    MAX_CONCURRENCY,
+    async (t, index) => {
+      allResults[index] = {
+        ...allResults[index],
+        status: 'running',
+        exitCode: -1,
+      };
+      emitParallelUpdate();
+
+      try {
+        const result = await runStepWithContext(
+          ctx,
+          agents,
+          t.agent,
+          t.task,
+          t.cwd,
+          t.isolation,
+          index,
+          undefined,
+          signal,
+          (partial) => {
+            if (partial.details?.results[0]) {
+              const partialResult = partial.details.results[0];
+              partialResult.status = partialResult.status ?? 'running';
+              allResults[index] = partialResult;
+              emitParallelUpdate();
+            }
+          },
+          makeDetails('parallel'),
+          { modelOverride, thinkingOverride, runtimeOverride, title: t.title }
+        );
+        if (!result.status || result.status === 'running') applyTerminalStatus(result);
+        allResults[index] = result;
+        emitParallelUpdate();
+        return result;
+      } catch (err) {
+        if (isAbortError(err)) {
+          const fromErr = getAbortResult(err);
+          const cancelled = fromErr
+            ? {
+                ...fromErr,
+                status: 'cancelled' as const,
+                stopReason: fromErr.stopReason ?? 'aborted',
+              }
+            : makeCancelledSlot(t, index);
+          if (cancelled.exitCode === 0 || cancelled.exitCode === -1) cancelled.exitCode = 1;
+          allResults[index] = cancelled;
           emitParallelUpdate();
+          return cancelled;
         }
+        throw err;
+      }
+    },
+    {
+      signal,
+      onUnstarted: (t, index) => {
+        const cancelled = makeCancelledSlot(t, index);
+        allResults[index] = cancelled;
+        return cancelled;
       },
-      makeDetails('parallel'),
-      { modelOverride, thinkingOverride, runtimeOverride }
-    );
-    allResults[index] = result;
-    emitParallelUpdate();
-    return result;
-  });
+    }
+  );
+
+  emitParallelUpdate();
 
   const successCount = results.filter((r) => !isFailedResult(r)).length;
+  const cancelledCount = results.filter((r) => resolveExecutionStatus(r) === 'cancelled').length;
   const summaries = results.map((r) => {
     const output = truncateParallelOutput(getResultOutput(r));
-    const status = isFailedResult(r)
-      ? `failed${r.stopReason && r.stopReason !== 'end' ? ` (${r.stopReason})` : ''}`
-      : 'completed';
+    const status =
+      resolveExecutionStatus(r) === 'cancelled'
+        ? 'cancelled'
+        : isFailedResult(r)
+          ? `failed${r.stopReason && r.stopReason !== 'end' ? ` (${r.stopReason})` : ''}`
+          : 'completed';
     return `### [${r.agent}] ${status}\n\n${output}`;
   });
   return {
     content: [
       {
         type: 'text',
-        text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join('\n\n---\n\n')}`,
+        text:
+          cancelledCount > 0
+            ? `Parallel cancelled: ${successCount}/${results.length} succeeded\n\n${summaries.join('\n\n---\n\n')}`
+            : `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join('\n\n---\n\n')}`,
       },
     ],
-    details: makeDetails('parallel')(results),
+    details: makeDetails('parallel')(cloneResults(results)),
+    ...(cancelledCount > 0 || successCount < results.length ? { isError: true } : {}),
   };
 }
 
@@ -474,34 +569,66 @@ async function runSingle(
   makeDetails: DetailsFactory,
   modelOverride?: string,
   thinkingOverride?: string,
-  runtimeOverride?: Runtime
+  runtimeOverride?: Runtime,
+  title?: string
 ): Promise<AgentResult> {
-  const result = await runStepWithContext(
-    ctx,
-    agents,
-    agentName,
-    task,
-    cwd,
-    isolation,
-    0,
-    undefined,
-    signal,
-    onUpdate,
-    makeDetails('single'),
-    { modelOverride, thinkingOverride, runtimeOverride }
-  );
-  if (isFailedResult(result)) {
-    const errorMsg = getResultOutput(result);
+  try {
+    const result = await runStepWithContext(
+      ctx,
+      agents,
+      agentName,
+      task,
+      cwd,
+      isolation,
+      0,
+      undefined,
+      signal,
+      onUpdate,
+      makeDetails('single'),
+      { modelOverride, thinkingOverride, runtimeOverride, title }
+    );
+    if (isFailedResult(result) || resolveExecutionStatus(result) === 'cancelled') {
+      const errorMsg = getResultOutput(result);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Agent ${result.stopReason || resolveExecutionStatus(result)}: ${errorMsg}`,
+          },
+        ],
+        details: makeDetails('single')([cloneSingleResult(result)]),
+        isError: true,
+      };
+    }
     return {
-      content: [{ type: 'text', text: `Agent ${result.stopReason || 'failed'}: ${errorMsg}` }],
-      details: makeDetails('single')([result]),
-      isError: true,
+      content: [{ type: 'text', text: getFinalOutput(result.messages) || '(no output)' }],
+      details: makeDetails('single')([cloneSingleResult(result)]),
     };
+  } catch (err) {
+    if (isAbortError(err)) {
+      const result =
+        getAbortResult(err) ??
+        ({
+          agent: agentName,
+          agentSource: 'unknown' as const,
+          task,
+          title,
+          exitCode: 1,
+          status: 'cancelled' as const,
+          messages: [],
+          stderr: ABORT_MESSAGE,
+          usage: emptyUsage(),
+          stopReason: 'aborted',
+          errorMessage: ABORT_MESSAGE,
+        } satisfies SingleResult);
+      return {
+        content: [{ type: 'text', text: `Agent cancelled: ${getResultOutput(result)}` }],
+        details: makeDetails('single')([cloneSingleResult(result)]),
+        isError: true,
+      };
+    }
+    throw err;
   }
-  return {
-    content: [{ type: 'text', text: getFinalOutput(result.messages) || '(no output)' }],
-    details: makeDetails('single')([result]),
-  };
 }
 
 function resolveIsolation(
@@ -528,6 +655,7 @@ async function runStepWithContext(
     modelOverride?: string;
     thinkingOverride?: string;
     runtimeOverride?: Runtime;
+    title?: string;
   } = {}
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
@@ -546,6 +674,7 @@ async function runStepWithContext(
         modelOverride: options.modelOverride,
         thinkingOverride: options.thinkingOverride,
         runtimeOverride: options.runtimeOverride,
+        title: options.title,
       }
     );
   }
@@ -579,7 +708,8 @@ async function runStepWithContext(
         task,
         step,
         'skill_error',
-        `Cannot resolve skill name(s): ${missing.join(', ')}. Available skills: ${availableText}.`
+        `Cannot resolve skill name(s): ${missing.join(', ')}. Available skills: ${availableText}.`,
+        options.title
       );
     }
     resolvedSkillPaths = resolved;
@@ -604,7 +734,7 @@ async function runStepWithContext(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return synthesizeFailure(agentName, agent, task, step, 'context_error', message);
+    return synthesizeFailure(agentName, agent, task, step, 'context_error', message, options.title);
   }
 
   const isolation = resolveIsolation(agent, taskIsolation);
@@ -620,7 +750,8 @@ async function runStepWithContext(
         task,
         step,
         'isolation_error',
-        'Worktree isolation requires a git repository.'
+        'Worktree isolation requires a git repository.',
+        options.title
       );
     }
     try {
@@ -629,11 +760,26 @@ async function runStepWithContext(
     } catch (err) {
       await agentContext.cleanup();
       const message = err instanceof Error ? err.message : String(err);
-      return synthesizeFailure(agentName, agent, task, step, 'isolation_error', message);
+      return synthesizeFailure(
+        agentName,
+        agent,
+        task,
+        step,
+        'isolation_error',
+        message,
+        options.title
+      );
     }
 
     if (agent.worktreeSetupHook) {
-      const failure = runHookOrSynthesizeFailure(agentName, agent, task, step, worktree);
+      const failure = runHookOrSynthesizeFailure(
+        agentName,
+        agent,
+        task,
+        step,
+        worktree,
+        options.title
+      );
       if (failure) {
         await agentContext.cleanup();
         return failure;
@@ -658,6 +804,7 @@ async function runStepWithContext(
         modelOverride: options.modelOverride,
         thinkingOverride: options.thinkingOverride,
         runtimeOverride: options.runtimeOverride,
+        title: options.title,
       }
     );
     if (worktree) {
@@ -688,7 +835,8 @@ export function runHookOrSynthesizeFailure(
   agent: AgentConfig,
   task: string,
   step: number | undefined,
-  worktree: AgentWorktree
+  worktree: AgentWorktree,
+  title?: string
 ): SingleResult | undefined {
   const hook = agent.worktreeSetupHook;
   if (!hook) return undefined;
@@ -705,7 +853,8 @@ export function runHookOrSynthesizeFailure(
     task,
     step,
     'worktree_setup_error',
-    `worktreeSetupHook "${hook}" failed (${errSummary})${detail}`
+    `worktreeSetupHook "${hook}" failed (${errSummary})${detail}`,
+    title
   );
   failure.worktreeSetupError = failure.errorMessage;
   const cleanupStatus = getWorktreeDirtyStatus(worktree.path);
@@ -747,18 +896,5 @@ export function finalizeWorktree(worktree: AgentWorktree, result: SingleResult):
     result.worktreeDirty = false;
     result.stderr += result.stderr ? '\n' : '';
     result.stderr += `Worktree cleanup failed: ${removal.error ?? 'unknown'}. Retaining ${worktree.path}.`;
-  }
-}
-
-function enforceCompletionCheck(agent: AgentConfig, result: SingleResult): void {
-  if (isFailedResult(result)) return;
-  const finalOutput = getFinalOutput(result.messages);
-  const validation = validateCompletionOutput(agent, finalOutput);
-  if (validation.ok) return;
-  const missing = validation.missing.join(', ');
-  result.stopReason = 'completion_check';
-  result.errorMessage = `Completion check failed: missing ${missing}`;
-  if (result.exitCode === 0) {
-    result.exitCode = 1;
   }
 }

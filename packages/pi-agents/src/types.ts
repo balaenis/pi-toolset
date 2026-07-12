@@ -8,6 +8,15 @@ export type SystemPromptMode = 'append' | 'replace';
 export type DefaultContext = 'fresh' | 'fork';
 export type IsolationMode = 'none' | 'worktree';
 
+/** Authoritative execution-unit status for rendering and progress counts. */
+export type ExecutionStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped';
+
 export interface UsageStats {
   input: number;
   output: number;
@@ -18,11 +27,25 @@ export interface UsageStats {
   turns: number;
 }
 
+/** Fanout item identity on a SingleResult execution unit. */
+export interface FanoutIdentity {
+  /** Zero-based index among actually executed items. */
+  index: number;
+  /** Number of items that actually ran (not skipped by maxItems). */
+  count: number;
+  /** Rendered task text for this item. */
+  itemTask?: string;
+}
+
 export interface SingleResult {
   agent: string;
   agentSource: AgentSource | 'unknown';
   task: string;
+  /** Short collapsed-summary label; clamp to 30 terminal columns when rendering. */
+  title?: string;
   exitCode: number;
+  /** Explicit status; older sessions may omit this and renderers fall back. */
+  status?: ExecutionStatus;
   messages: Message[];
   stderr: string;
   usage: UsageStats;
@@ -31,6 +54,8 @@ export interface SingleResult {
   stopReason?: string;
   errorMessage?: string;
   step?: number;
+  /** Present when this result is a fanout execution unit. */
+  fanout?: FanoutIdentity;
   worktreePath?: string;
   worktreeDirty?: boolean;
   worktreeDiffStat?: string;
@@ -48,6 +73,51 @@ export interface ChainOutputEntry {
   step: number;
 }
 
+/** Sequential logical step in a Chain workflow. */
+export interface ChainSequentialStep {
+  kind: 'sequential';
+  step: number;
+  agent: string;
+  task: string;
+  /** Short collapsed-summary label from the step `title` parameter. */
+  title?: string;
+  status: ExecutionStatus;
+}
+
+/** Fanout logical step - one Chain step regardless of item count. */
+export interface ChainFanoutStep {
+  kind: 'fanout';
+  step: number;
+  agent: string;
+  taskTemplate: string;
+  /** Short collapsed-summary label from `parallel.title`. */
+  title?: string;
+  status: ExecutionStatus;
+  sourceOutput?: string;
+  sourcePath?: string;
+  collectName: string;
+  concurrency?: number;
+  executedCount: number;
+  completedCount: number;
+  failedCount: number;
+  runningCount: number;
+  queuedCount: number;
+  skippedCount: number;
+  /** Zero-based index of the fanout item that last produced activity. */
+  latestIndex?: number;
+}
+
+export type ChainLogicalStep = ChainSequentialStep | ChainFanoutStep;
+
+/**
+ * Logical Chain progress. Fanout produces many results but counts as one step.
+ * `results` remain ordered execution-unit snapshots; do not derive step count from results.length.
+ */
+export interface ChainExecutionDetails {
+  totalSteps: number;
+  steps: ChainLogicalStep[];
+}
+
 export type BackgroundJobStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface BackgroundLaunchDetails {
@@ -56,6 +126,8 @@ export interface BackgroundLaunchDetails {
   status: BackgroundJobStatus;
   agentScope: AgentScope;
   description: string;
+  /** Short label for the launch summary; falls back to `taskPreview` when blank. */
+  title?: string;
   startedAt: number;
   taskPreview: string;
 }
@@ -77,11 +149,48 @@ export interface SubagentDetails {
   agentScope: AgentScope;
   projectAgentsDir: string | null;
   builtinAgentsDir: string;
+  /** Ordered execution-unit snapshots (Single, Parallel tasks, or Chain units including fanout items). */
   results: SingleResult[];
   outputs?: Record<string, ChainOutputEntry>;
+  /** Logical Chain workflow state; additive for older sessions without it. */
+  chain?: ChainExecutionDetails;
   background?: BackgroundLaunchDetails[];
 }
 
 export type DisplayItem =
   | { type: 'text'; text: string }
   | { type: 'toolCall'; name: string; args: Record<string, unknown> };
+
+export function emptyUsage(): UsageStats {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    contextTokens: 0,
+    turns: 0,
+  };
+}
+
+/**
+ * Deep-clone a result for delivery snapshots.
+ * Parsers mutate messages/content/tool arguments/usage in place; consumers must not share those refs.
+ */
+export function cloneSingleResult(result: SingleResult): SingleResult {
+  return {
+    ...result,
+    messages: result.messages.map((message) => structuredClone(message)),
+    usage: { ...result.usage },
+    fanout: result.fanout ? { ...result.fanout } : undefined,
+    worktreeChangedFiles: result.worktreeChangedFiles
+      ? [...result.worktreeChangedFiles]
+      : undefined,
+    structuredOutput:
+      result.structuredOutput !== undefined ? structuredClone(result.structuredOutput) : undefined,
+  };
+}
+
+export function cloneResults(results: SingleResult[]): SingleResult[] {
+  return results.map(cloneSingleResult);
+}

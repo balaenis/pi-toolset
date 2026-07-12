@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
 import type { AgentConfig } from '../src/agents.ts';
 import type { SpawnFn, SpawnedChild } from '../src/execution.ts';
-import { runSingleAgent } from '../src/execution.ts';
+import { AgentAbortError, mapWithConcurrencyLimit, runSingleAgent } from '../src/execution.ts';
 import type { SingleResult, SubagentDetails } from '../src/types.ts';
 
 class FakeChild extends EventEmitter {
@@ -1110,5 +1110,190 @@ describe('runSingleAgentGrokAcp', () => {
     expect(result.exitCode).toBe(1);
     expect(result.stopReason).toBe('error');
     expect(result.errorMessage).toMatch(/ENOENT|failed/i);
+  });
+});
+
+describe('runSingleAgent execution status', () => {
+  it('emits running status on partials and completed on success', async () => {
+    const fake = new FakeChild();
+    const statuses: Array<string | undefined> = [];
+    const promise = runSingleAgent(
+      process.cwd(),
+      [makeAgent()],
+      'maxie',
+      'do work',
+      undefined,
+      undefined,
+      undefined,
+      (partial) => {
+        statuses.push(partial.details?.results[0]?.status);
+      },
+      makeDetails,
+      { spawnFn: (() => fake as unknown as SpawnedChild) as SpawnFn }
+    );
+
+    setImmediate(() => {
+      fake.emitAssistant('turn');
+      setImmediate(() => {
+        fake.stdout.push(null);
+        fake.stderr.push(null);
+        fake.emit('close', 0);
+      });
+    });
+
+    const result = await promise;
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(statuses.every((s) => s === 'running')).toBe(true);
+    expect(result.status).toBe('completed');
+  });
+
+  it('finalizes as failed for unknown agents', async () => {
+    const result = await runSingleAgent(
+      process.cwd(),
+      [],
+      'missing',
+      'task',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails
+    );
+    expect(result.status).toBe('failed');
+    expect(result.exitCode).toBe(1);
+  });
+
+  it('finalizes as failed when maxTurns is exceeded', async () => {
+    const fake = new FakeChild();
+    const promise = runSingleAgent(
+      process.cwd(),
+      [makeAgent({ maxTurns: 1 })],
+      'maxie',
+      'do work',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      { spawnFn: (() => fake as unknown as SpawnedChild) as SpawnFn }
+    );
+
+    setImmediate(() => {
+      fake.emitAssistant('first turn');
+      setImmediate(() => fake.emitAssistant('second turn'));
+    });
+
+    const result = await promise;
+    expect(result.stopReason).toBe('max_turns');
+    expect(result.status).toBe('failed');
+  });
+
+  it('emits a terminal cancelled snapshot before abort throw', async () => {
+    const fake = new FakeChild();
+    const controller = new AbortController();
+    const updates: Array<string | undefined> = [];
+    const promise = runSingleAgent(
+      process.cwd(),
+      [makeAgent()],
+      'maxie',
+      'do work',
+      undefined,
+      undefined,
+      controller.signal,
+      (partial) => {
+        updates.push(partial.details?.results[0]?.status);
+      },
+      makeDetails,
+      { spawnFn: (() => fake as unknown as SpawnedChild) as SpawnFn }
+    );
+
+    setImmediate(() => {
+      fake.emitAssistant('partial text');
+      setImmediate(() => controller.abort());
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(AgentAbortError);
+    expect(updates).toContain('cancelled');
+    expect(updates[updates.length - 1]).toBe('cancelled');
+  });
+});
+
+describe('mapWithConcurrencyLimit cancel-safe scheduling', () => {
+  it('stops scheduling, waits for started workers, and fills unstarted slots', async () => {
+    const controller = new AbortController();
+    const started: number[] = [];
+    const finished: number[] = [];
+    const resolvers: Array<() => void> = [];
+    const gates = [0, 1, 2, 3].map(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+
+    let resolveTwoStarted!: () => void;
+    const twoStarted = new Promise<void>((resolve) => {
+      resolveTwoStarted = resolve;
+    });
+
+    const run = mapWithConcurrencyLimit(
+      [0, 1, 2, 3],
+      2,
+      async (item) => {
+        started.push(item);
+        if (started.length === 2) resolveTwoStarted();
+        await gates[item];
+        finished.push(item);
+        return item * 10;
+      },
+      {
+        signal: controller.signal,
+        onUnstarted: (item) => -(item + 1),
+      }
+    );
+
+    await twoStarted;
+    controller.abort();
+    // Let the scheduler observe abort before releasing in-flight work.
+    await new Promise((r) => setTimeout(r, 10));
+    resolvers[0]();
+    resolvers[1]();
+    // Unstarted gates should never be awaited.
+    resolvers[2]();
+    resolvers[3]();
+
+    const results = await run;
+    expect(started.sort()).toEqual([0, 1]);
+    expect(finished.sort()).toEqual([0, 1]);
+    expect(results[0]).toBe(0);
+    expect(results[1]).toBe(10);
+    expect(results[2]).toBe(-3);
+    expect(results[3]).toBe(-4);
+  });
+
+  it('does not fail-fast: waits for in-flight work after a worker error', async () => {
+    const finished: number[] = [];
+    const resolvers: Array<() => void> = [];
+    const gates = [0, 1].map(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+
+    const run = mapWithConcurrencyLimit([0, 1], 2, async (item) => {
+      await gates[item];
+      finished.push(item);
+      if (item === 0) throw new Error('boom');
+      return item;
+    });
+
+    // Complete the non-erroring worker first, then the erroring one.
+    resolvers[1]();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(finished).toEqual([1]);
+    resolvers[0]();
+    await expect(run).rejects.toThrow('boom');
+    expect(finished.sort()).toEqual([0, 1]);
   });
 });

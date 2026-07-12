@@ -24,9 +24,9 @@ import {
 import { buildGrokArgs, getGrokInvocation } from './grok-invocation.ts';
 import { createGrokParserState, parseGrokEvent } from './grok-parser.ts';
 import { buildPiArgs, getPiInvocation, writePromptToTempFile } from './invocation.ts';
-import { getFinalOutput } from './output.ts';
+import { applyTerminalStatus, getFinalOutput } from './output.ts';
 import { buildChildAgentEnv, isAgentDelegationAllowed } from './security.ts';
-import type { SingleResult, SubagentDetails } from './types.ts';
+import { cloneSingleResult, emptyUsage, type SingleResult, type SubagentDetails } from './types.ts';
 
 export interface SpawnedChild extends ChildProcess {
   stdout: Readable;
@@ -42,29 +42,154 @@ export interface RunSingleAgentOptions {
   modelOverride?: string;
   thinkingOverride?: string;
   runtimeOverride?: Runtime;
+  /** Short collapsed-summary label stamped onto every emitted result snapshot. */
+  title?: string;
 }
 
+export const ABORT_MESSAGE = 'Subagent was aborted';
+
+/** Abort error that carries a deep-cloned terminal SingleResult snapshot. */
+export class AgentAbortError extends Error {
+  readonly result: SingleResult;
+
+  constructor(result: SingleResult) {
+    super(ABORT_MESSAGE);
+    this.name = 'AgentAbortError';
+    this.result = cloneSingleResult(result);
+  }
+}
+
+export function isAbortError(err: unknown): boolean {
+  return err instanceof AgentAbortError || (err instanceof Error && err.message === ABORT_MESSAGE);
+}
+
+export function getAbortResult(err: unknown): SingleResult | undefined {
+  if (err instanceof AgentAbortError) return err.result;
+  if (err && typeof err === 'object' && 'result' in err) {
+    const result = (err as { result?: SingleResult }).result;
+    if (result && typeof result === 'object' && 'agent' in result) return result;
+  }
+  return undefined;
+}
+
+export interface MapConcurrencyOptions<TIn, TOut> {
+  signal?: AbortSignal;
+  /** Fill slots that never started after scheduling stopped (abort / worker error). */
+  onUnstarted?: (item: TIn, index: number) => TOut;
+}
+
+/**
+ * Bounded concurrency map that never Promise.all fail-fasts.
+ * On abort or worker error: stops claiming new items, waits for in-flight workers,
+ * fills unstarted slots via onUnstarted, then rethrows the first error if any.
+ */
 export async function mapWithConcurrencyLimit<TIn, TOut>(
   items: TIn[],
   concurrency: number,
-  fn: (item: TIn, index: number) => Promise<TOut>
+  fn: (item: TIn, index: number) => Promise<TOut>,
+  options: MapConcurrencyOptions<TIn, TOut> = {}
 ): Promise<TOut[]> {
   if (items.length === 0) return [];
   const limit = Math.max(1, Math.min(concurrency, items.length));
   const results: TOut[] = new Array(items.length);
+  const started = new Array<boolean>(items.length).fill(false);
   let nextIndex = 0;
-  const workers = new Array(limit).fill(null).map(async () => {
+  let stopScheduling = false;
+  let firstError: unknown;
+
+  const claim = (): number | null => {
+    if (stopScheduling || options.signal?.aborted) {
+      stopScheduling = true;
+      return null;
+    }
+    const current = nextIndex++;
+    if (current >= items.length) return null;
+    started[current] = true;
+    return current;
+  };
+
+  const workers = Array.from({ length: limit }, async () => {
     while (true) {
-      const current = nextIndex++;
-      if (current >= items.length) return;
-      results[current] = await fn(items[current], current);
+      const current = claim();
+      if (current === null) return;
+      try {
+        results[current] = await fn(items[current], current);
+      } catch (err) {
+        if (firstError === undefined) firstError = err;
+        stopScheduling = true;
+      }
     }
   });
+
   await Promise.all(workers);
+
+  if (options.onUnstarted) {
+    for (let i = 0; i < items.length; i++) {
+      if (!started[i] || results[i] === undefined) {
+        if (results[i] === undefined) {
+          results[i] = options.onUnstarted(items[i], i);
+        }
+      }
+    }
+  }
+
+  if (firstError !== undefined) throw firstError;
   return results;
 }
 
 export type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+
+function emitRunningSnapshot(
+  onUpdate: OnUpdateCallback | undefined,
+  currentResult: SingleResult,
+  makeDetails: (results: SingleResult[]) => SubagentDetails
+): void {
+  if (!onUpdate) return;
+  const snapshot = cloneSingleResult(currentResult);
+  snapshot.status = 'running';
+  onUpdate({
+    content: [
+      {
+        type: 'text',
+        text: getFinalOutput(snapshot.messages) || '(running...)',
+      },
+    ],
+    details: makeDetails([snapshot]),
+  });
+}
+
+function emitTerminalSnapshot(
+  onUpdate: OnUpdateCallback | undefined,
+  currentResult: SingleResult,
+  makeDetails: (results: SingleResult[]) => SubagentDetails
+): void {
+  if (!onUpdate) return;
+  const snapshot = cloneSingleResult(currentResult);
+  onUpdate({
+    content: [
+      {
+        type: 'text',
+        text:
+          getFinalOutput(snapshot.messages) ||
+          snapshot.errorMessage ||
+          snapshot.stderr ||
+          (snapshot.status === 'cancelled' ? '(cancelled)' : '(done)'),
+      },
+    ],
+    details: makeDetails([snapshot]),
+  });
+}
+
+function finalizeCancelled(currentResult: SingleResult): void {
+  currentResult.stopReason = currentResult.stopReason ?? 'aborted';
+  currentResult.status = 'cancelled';
+  if (currentResult.exitCode === 0 || currentResult.exitCode === -1) {
+    currentResult.exitCode = 1;
+  }
+  if (!currentResult.errorMessage) {
+    currentResult.errorMessage = ABORT_MESSAGE;
+  }
+}
 
 export async function runSingleAgent(
   defaultCwd: string,
@@ -86,19 +211,15 @@ export async function runSingleAgent(
       agent: agentName,
       agentSource: 'unknown',
       task,
+      title: options.title,
       exitCode: 1,
+      status: 'failed',
       messages: [],
       stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        cost: 0,
-        contextTokens: 0,
-        turns: 0,
-      },
+      usage: emptyUsage(),
       step,
+      errorMessage: `Unknown agent: "${agentName}". Available agents: ${available}.`,
+      stopReason: 'error',
     };
   }
 
@@ -149,31 +270,18 @@ export async function runSingleAgent(
     agent: agentName,
     agentSource: agent.source,
     task,
+    title: options.title,
     exitCode: 0,
+    status: 'running',
     messages: [],
     stderr: '',
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
+    usage: emptyUsage(),
     model: effectiveModel,
     thinking: effectiveThinking,
     step,
   };
 
-  const emitUpdate = () => {
-    if (onUpdate) {
-      onUpdate({
-        content: [{ type: 'text', text: getFinalOutput(currentResult.messages) || '(running...)' }],
-        details: makeDetails([currentResult]),
-      });
-    }
-  };
+  const emitUpdate = () => emitRunningSnapshot(onUpdate, currentResult, makeDetails);
 
   try {
     if (agent.systemPrompt.trim()) {
@@ -332,7 +440,12 @@ export async function runSingleAgent(
     } else {
       currentResult.exitCode = exitCode;
     }
-    if (wasAborted) throw new Error('Subagent was aborted');
+    if (wasAborted) {
+      finalizeCancelled(currentResult);
+      emitTerminalSnapshot(onUpdate, currentResult, makeDetails);
+      throw new AgentAbortError(currentResult);
+    }
+    applyTerminalStatus(currentResult);
     return currentResult;
   } finally {
     if (tmpPromptPath)
@@ -378,31 +491,18 @@ async function runSingleAgentGrok(
     agent: agentName,
     agentSource: agent.source,
     task,
+    title: options.title,
     exitCode: 0,
+    status: 'running',
     messages: [],
     stderr: '',
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
+    usage: emptyUsage(),
     model: effectiveModel,
     thinking: effectiveThinking,
     step,
   };
 
-  const emitUpdate = () => {
-    if (onUpdate) {
-      onUpdate({
-        content: [{ type: 'text', text: getFinalOutput(currentResult.messages) || '(running...)' }],
-        details: makeDetails([currentResult]),
-      });
-    }
-  };
+  const emitUpdate = () => emitRunningSnapshot(onUpdate, currentResult, makeDetails);
 
   const childEnv = buildChildAgentEnv(process.env, { agent: effectiveAgent });
   const args = buildGrokArgs(effectiveAgent, task, {
@@ -484,7 +584,12 @@ async function runSingleAgentGrok(
       ? `Agent exceeded maxTurns=${agent.maxTurns}`
       : 'Agent exceeded max turns';
   }
-  if (wasAborted) throw new Error('Subagent was aborted');
+  if (wasAborted) {
+    finalizeCancelled(currentResult);
+    emitTerminalSnapshot(onUpdate, currentResult, makeDetails);
+    throw new AgentAbortError(currentResult);
+  }
+  applyTerminalStatus(currentResult);
   return currentResult;
 }
 
@@ -516,31 +621,18 @@ async function runSingleAgentGrokAcp(
     agent: agentName,
     agentSource: agent.source,
     task,
+    title: options.title,
     exitCode: 0,
+    status: 'running',
     messages: [],
     stderr: '',
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
+    usage: emptyUsage(),
     model: effectiveModel,
     thinking: effectiveThinking,
     step,
   };
 
-  const emitUpdate = () => {
-    if (onUpdate) {
-      onUpdate({
-        content: [{ type: 'text', text: getFinalOutput(currentResult.messages) || '(running...)' }],
-        details: makeDetails([currentResult]),
-      });
-    }
-  };
+  const emitUpdate = () => emitRunningSnapshot(onUpdate, currentResult, makeDetails);
 
   const parserState = createGrokAcpParserState(effectiveModel);
   const workCwd = cwd ?? defaultCwd;
@@ -582,12 +674,21 @@ async function runSingleAgentGrokAcp(
       currentResult.exitCode = acpResult.exitCode;
     }
 
-    if (acpResult.wasAborted) throw new Error('Subagent was aborted');
+    if (acpResult.wasAborted) {
+      finalizeCancelled(currentResult);
+      emitTerminalSnapshot(onUpdate, currentResult, makeDetails);
+      throw new AgentAbortError(currentResult);
+    }
+    applyTerminalStatus(currentResult);
     return currentResult;
   } catch (err) {
-    if (err instanceof Error && err.message === 'Subagent was aborted') throw err;
-    if (err instanceof GrokAcpClientError && err.message === 'Subagent was aborted') {
-      throw new Error('Subagent was aborted', { cause: err });
+    if (isAbortError(err)) {
+      if (!(err instanceof AgentAbortError)) {
+        finalizeCancelled(currentResult);
+        emitTerminalSnapshot(onUpdate, currentResult, makeDetails);
+        throw new AgentAbortError(currentResult);
+      }
+      throw err;
     }
 
     const message = err instanceof Error ? err.message : String(err);
@@ -602,7 +703,8 @@ async function runSingleAgentGrokAcp(
     } else if (!currentResult.stderr) {
       currentResult.stderr = message;
     }
-    emitUpdate();
+    applyTerminalStatus(currentResult);
+    emitTerminalSnapshot(onUpdate, currentResult, makeDetails);
     return currentResult;
   }
 }

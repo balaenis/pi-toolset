@@ -47,14 +47,14 @@ function fakeWorkflow(text: string): NonNullable<ExecuteAgentToolOptions['runWor
 
 function fakeManager(): {
   manager: BackgroundManager;
-  launches: Array<{ description: string; mode: string }>;
+  launches: Array<{ description: string; mode: string; title?: string }>;
   runs: Array<Promise<AgentResult>>;
 } {
-  const launches: Array<{ description: string; mode: string }> = [];
+  const launches: Array<{ description: string; mode: string; title?: string }> = [];
   const runs: Array<Promise<AgentResult>> = [];
   const manager: BackgroundManager = {
     launch(request) {
-      launches.push({ description: request.description, mode: request.mode });
+      launches.push({ description: request.description, mode: request.mode, title: request.title });
       runs.push(request.run(new AbortController().signal) as Promise<AgentResult>);
       return {
         content: [{ type: 'text', text: `⧗ launched ${request.mode}` }],
@@ -73,6 +73,7 @@ function fakeManager(): {
               description: request.description,
               startedAt: 0,
               taskPreview: request.taskPreview,
+              title: request.title,
             },
           ],
         },
@@ -229,6 +230,88 @@ describe('normalizeAgentArgs', () => {
     const { normalizeAgentArgs } = await import('../src/index.ts');
     const input = { agent: 'noop', task: 'go' };
     expect(normalizeAgentArgs(input)).toBe(input);
+  });
+});
+
+describe('agent tool title parameter', () => {
+  it('enforces title maxLength 30 on single, task, chain, and fanout schemas', async () => {
+    const { SubagentParams, TaskItem, SequentialChainItem, FanoutChainItem } =
+      await import('../src/schema.ts');
+    const { Value } = await import('typebox/value');
+    const validTitle = 'a'.repeat(30);
+    const invalidTitle = 'a'.repeat(31);
+    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y', title: validTitle })).toBe(true);
+    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y', title: invalidTitle })).toBe(false);
+    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y' })).toBe(true);
+    expect(Value.Check(TaskItem, { agent: 'x', task: 'y', title: validTitle })).toBe(true);
+    expect(Value.Check(TaskItem, { agent: 'x', task: 'y', title: invalidTitle })).toBe(false);
+    expect(Value.Check(SequentialChainItem, { agent: 'x', task: 'y', title: validTitle })).toBe(
+      true
+    );
+    expect(Value.Check(SequentialChainItem, { agent: 'x', task: 'y', title: invalidTitle })).toBe(
+      false
+    );
+    const fanout = {
+      expand: { from: { output: 'o', path: '/p' } },
+      parallel: { agent: 'x', task: 'y', title: validTitle },
+      collect: { name: 'r' },
+    };
+    expect(Value.Check(FanoutChainItem, fanout)).toBe(true);
+    const fanoutBad = {
+      expand: { from: { output: 'o', path: '/p' } },
+      parallel: { agent: 'x', task: 'y', title: invalidTitle },
+      collect: { name: 'r' },
+    };
+    expect(Value.Check(FanoutChainItem, fanoutBad)).toBe(false);
+  });
+
+  it('passes the single title through to the workflow runner', async () => {
+    let observed: { title?: string } | undefined;
+    await executeAgentTool(
+      { agent: 'noop', task: 'do it', title: '干活' },
+      undefined,
+      undefined,
+      makeCtx(),
+      {
+        runWorkflow: async (params) => {
+          observed = params as { title?: string };
+          return okResult('done');
+        },
+      }
+    );
+    expect(observed?.title).toBe('干活');
+  });
+
+  it('passes the first title to the background launch request', async () => {
+    const { manager, launches } = fakeManager();
+    await executeAgentTool(
+      { agent: 'noop', task: 'do it later', title: '后台活', runInBackground: true },
+      undefined,
+      undefined,
+      makeCtx(),
+      { backgroundManager: manager, runWorkflow: fakeWorkflow('bg done') }
+    );
+    expect(launches.length).toBe(1);
+    expect(launches[0].title).toBe('后台活');
+  });
+
+  it('uses the first chain step title for a background launch', async () => {
+    const { manager, launches } = fakeManager();
+    await executeAgentTool(
+      {
+        chain: [
+          { agent: 'a', task: 'first', title: '首步' },
+          { agent: 'b', task: 'second' },
+        ],
+        runInBackground: true,
+      },
+      undefined,
+      undefined,
+      makeCtx(),
+      { backgroundManager: manager, runWorkflow: fakeWorkflow('bg done') }
+    );
+    expect(launches.length).toBe(1);
+    expect(launches[0].title).toBe('首步');
   });
 });
 

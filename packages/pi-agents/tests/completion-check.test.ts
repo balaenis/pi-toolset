@@ -3,7 +3,8 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { AgentConfig } from '../src/agents.ts';
-import { validateCompletionOutput } from '../src/completion-check.ts';
+import { enforceCompletionCheck, validateCompletionOutput } from '../src/completion-check.ts';
+import { emptyUsage, type SingleResult } from '../src/types.ts';
 
 function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -85,5 +86,58 @@ describe('validateCompletionOutput', () => {
     expect(validateCompletionOutput(worker, looser).missing).toContain('## Completed');
     const deeper = `### Completed\n## Files Changed\n## Validation`;
     expect(validateCompletionOutput(worker, deeper).missing).toContain('## Completed');
+  });
+});
+
+describe('enforceCompletionCheck', () => {
+  function completedResult(text: string): SingleResult {
+    return {
+      agent: 'guardy',
+      agentSource: 'builtin',
+      task: 'do work',
+      exitCode: 0,
+      status: 'completed',
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text }],
+        } as SingleResult['messages'][number],
+      ],
+      stderr: '',
+      usage: emptyUsage(),
+    };
+  }
+
+  it('sets explicit status failed when required headings are missing', () => {
+    const agent = makeAgent({
+      completionCheck: ['## Completed', '## Validation'],
+    });
+    const result = completedResult('no headings here');
+    enforceCompletionCheck(agent, result);
+    expect(result.status).toBe('failed');
+    expect(result.stopReason).toBe('completion_check');
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain('## Completed');
+  });
+
+  it('leaves successful results with matching headings unchanged', () => {
+    const agent = makeAgent({ completionCheck: ['## Completed'] });
+    const result = completedResult('## Completed\n\nok');
+    enforceCompletionCheck(agent, result);
+    expect(result.status).toBe('completed');
+    expect(result.exitCode).toBe(0);
+    expect(result.stopReason).toBeUndefined();
+  });
+
+  it('does not override an already-failed result', () => {
+    const agent = makeAgent({ completionCheck: ['## Completed'] });
+    const result = completedResult('nope');
+    result.status = 'failed';
+    result.exitCode = 1;
+    result.stopReason = 'error';
+    result.errorMessage = 'prior';
+    enforceCompletionCheck(agent, result);
+    expect(result.stopReason).toBe('error');
+    expect(result.errorMessage).toBe('prior');
   });
 });

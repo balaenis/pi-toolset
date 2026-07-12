@@ -2,6 +2,8 @@
 // ABOUTME: Enforces frontmatter-configured heading checks against final assistant messages.
 
 import type { AgentConfig } from './agents.ts';
+import { getFinalOutput, isFailedResult } from './output.ts';
+import type { SingleResult } from './types.ts';
 
 export interface CompletionValidation {
   ok: boolean;
@@ -25,4 +27,22 @@ export function validateCompletionOutput(agent: AgentConfig, output: string): Co
   }
   const missing = requiredHeadings.filter((h) => !hasHeading(output, h));
   return { ok: missing.length === 0, missing };
+}
+
+/**
+ * Apply completion-check failure fields, including explicit status: failed.
+ * No-op when the result already failed or headings are present.
+ */
+export function enforceCompletionCheck(agent: AgentConfig, result: SingleResult): void {
+  if (isFailedResult(result)) return;
+  const finalOutput = result.finalOutput ?? getFinalOutput(result.messages);
+  const validation = validateCompletionOutput(agent, finalOutput);
+  if (validation.ok) return;
+  const missing = validation.missing.join(', ');
+  result.stopReason = 'completion_check';
+  result.errorMessage = `Completion check failed: missing ${missing}`;
+  result.status = 'failed';
+  if (result.exitCode === 0) {
+    result.exitCode = 1;
+  }
 }

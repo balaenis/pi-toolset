@@ -131,7 +131,7 @@
 - [ ] In `renderResult()`, add a `details.mode === "background"` branch that renders `⧗ background <jobId>` plus the description and “you will be notified when it completes”.
 - [ ] Export `renderBackgroundMessage(message, options, theme)` from `background.ts` or a small render helper.
 - [ ] In `index.ts`, call `pi.registerMessageRenderer(BACKGROUND_MESSAGE_TYPE, renderBackgroundMessage)`.
-- [ ] For completed notifications, render `✓ background <jobId>` and show the result summary in collapsed view.
+- [ ] For completed notifications, render `✔ background <jobId>` and show the result summary in collapsed view.
 - [ ] For failed notifications, render `✗ background <jobId>` and show the error text in collapsed view.
 - [ ] In expanded notification view, show description, status, duration, and the full final result or error.
 - [ ] Add a `background.test.ts` assertion that completion notification details include enough data for the renderer: job id, mode, status, description, timestamps, and result/error.

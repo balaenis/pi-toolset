@@ -38,15 +38,21 @@ Pi calls the `agent` tool, which spawns an isolated `pi` subprocess with the
 
 ## 3. Read the output
 
-While the agent runs, the collapsed view shows a live status icon, the agent
-name, and the last few tool calls.
+While the agent runs, the collapsed view is a compact live summary: status
+glyph, agent name, truncated task preview (or a short `title`), usage, and at
+most one latest activity line. Pass an optional `title` (max 30 characters) on
+a single call, parallel task, chain step, or fanout step to label it in the
+collapsed summary; see
+[How-to: collapse titles](./how-to.md#give-a-step-a-short-collapse-title).
 
-- **Collapsed view** (default): status icon (✓/✗/⧗), agent name, last 5-10
-  items, and usage stats. Fields appear as they become known (for `grok-acp`,
-  ctx can stream mid-turn; the full `turns ↑input ↓output cache ctx model` line
-  appears at turn end).
-- **Expanded view** (Ctrl+O): full task text, every tool call with formatted
-  arguments, and the final output rendered as Markdown.
+- **Collapsed view** (default): one status line (`✔`/`✗`/`⧗`/`⊘`/`·`), agent,
+  truncated task or a short `title`, usage (fields appear as they become known -
+  for `grok-acp`, ctx can stream mid-turn), and a single latest tool/text line
+  while running. Completed runs hide activity and final output until you
+  expand.
+- **Expanded view** (Ctrl+O): full task text, complete tool/transcript output,
+  final response once, error/worktree/structured-output details when present,
+  and usage.
 
 When the agent finishes, its final output is returned to the parent model so it
 can act on the findings.
@@ -59,9 +65,10 @@ Give Pi several independent tasks at once:
 Run 2 explores in parallel: one to find models, one to find providers
 ```
 
-The parallel view shows every task with live status (⧗ running, ✓ done, ✗
-failed) and a "2/3 done, 1 running" summary. Each completed task's final output
-is returned to the parent, capped at 50 KB per task.
+The parallel collapsed view shows one summary line per task (latest activity
+only under running tasks) and a `Total: n/m completed` footer with aggregate
+usage. Expand with Ctrl+O for full per-task transcripts. Each completed task's
+final output is returned to the parent, capped at 50 KB per task.
 
 ## 5. Chain agents together
 

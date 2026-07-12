@@ -5,11 +5,43 @@ import { describe, expect, it } from 'bun:test';
 import type { Message } from '@earendil-works/pi-ai';
 import { PER_TASK_OUTPUT_CAP } from '../src/constants.ts';
 import {
+  formatAggregateUsageStats,
   formatTokens,
   formatUsageStats,
   getFinalOutput,
+  getLatestActivity,
+  getTranscriptAndFinal,
+  resolveExecutionStatus,
   truncateParallelOutput,
 } from '../src/output.ts';
+import type { SingleResult } from '../src/types.ts';
+
+function assistantText(text: string): Message {
+  return {
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+  } as unknown as Message;
+}
+
+function assistantTool(name: string, args: Record<string, unknown> = {}): Message {
+  return {
+    role: 'assistant',
+    content: [{ type: 'toolCall', name, arguments: args }],
+  } as unknown as Message;
+}
+
+function assistantMixed(
+  parts: Array<{ type: 'text'; text: string } | { type: 'toolCall'; name: string; args?: object }>
+): Message {
+  return {
+    role: 'assistant',
+    content: parts.map((p) =>
+      p.type === 'text'
+        ? { type: 'text', text: p.text }
+        : { type: 'toolCall', name: p.name, arguments: p.args ?? {} }
+    ),
+  } as unknown as Message;
+}
 
 describe('formatTokens', () => {
   it('returns plain digits below 1k', () => {
@@ -29,21 +61,15 @@ describe('formatTokens', () => {
 describe('getFinalOutput', () => {
   it('returns the first text part from the latest assistant message', () => {
     const messages: Message[] = [
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'first' }],
-      } as unknown as Message,
+      assistantText('first'),
       {
         role: 'user',
         content: [{ type: 'text', text: 'noise' }],
       } as unknown as Message,
-      {
-        role: 'assistant',
-        content: [
-          { type: 'text', text: 'older' },
-          { type: 'text', text: 'final' },
-        ],
-      } as unknown as Message,
+      assistantMixed([
+        { type: 'text', text: 'older' },
+        { type: 'text', text: 'final' },
+      ]),
     ];
     expect(getFinalOutput(messages)).toBe('older');
   });
@@ -57,6 +83,127 @@ describe('getFinalOutput', () => {
     ];
     expect(getFinalOutput(messages)).toBe('');
     expect(getFinalOutput([])).toBe('');
+  });
+});
+
+describe('getLatestActivity', () => {
+  it('returns undefined for empty messages', () => {
+    expect(getLatestActivity([])).toBeUndefined();
+  });
+
+  it('returns the last tool call', () => {
+    const messages = [
+      assistantTool('read', { path: 'a.ts' }),
+      assistantTool('bash', { command: 'ls' }),
+    ];
+    expect(getLatestActivity(messages)).toEqual({
+      type: 'toolCall',
+      name: 'bash',
+      args: { command: 'ls' },
+    });
+  });
+
+  it('returns the last assistant text', () => {
+    const messages = [assistantText('hello'), assistantText('world')];
+    expect(getLatestActivity(messages)).toEqual({ type: 'text', text: 'world' });
+  });
+
+  it('follows interleaved tool and text order', () => {
+    const messages = [
+      assistantTool('read', { path: 'a' }),
+      assistantText('mid'),
+      assistantTool('grep', { pattern: 'x' }),
+    ];
+    const latest = getLatestActivity(messages);
+    expect(latest?.type).toBe('toolCall');
+    if (latest?.type === 'toolCall') expect(latest.name).toBe('grep');
+  });
+
+  it('selects the last content part within the last assistant message', () => {
+    const messages = [
+      assistantMixed([
+        { type: 'text', text: 'earlier' },
+        { type: 'toolCall', name: 'bash', args: { command: 'echo' } },
+      ]),
+    ];
+    const latest = getLatestActivity(messages);
+    expect(latest).toEqual({
+      type: 'toolCall',
+      name: 'bash',
+      args: { command: 'echo' },
+    });
+  });
+});
+
+describe('getTranscriptAndFinal', () => {
+  it('returns empty transcript and final for empty messages', () => {
+    expect(getTranscriptAndFinal([])).toEqual({ transcript: [], finalOutput: '' });
+  });
+
+  it('excludes the final assistant text from the transcript', () => {
+    const messages = [
+      assistantTool('read', { path: 'a.ts' }),
+      assistantText('thinking aloud'),
+      assistantMixed([
+        { type: 'toolCall', name: 'bash', args: { command: 'ls' } },
+        { type: 'text', text: 'done' },
+      ]),
+    ];
+    const { transcript, finalOutput } = getTranscriptAndFinal(messages);
+    expect(finalOutput).toBe('done');
+    expect(transcript).toEqual([
+      { type: 'toolCall', name: 'read', args: { path: 'a.ts' } },
+      { type: 'text', text: 'thinking aloud' },
+      { type: 'toolCall', name: 'bash', args: { command: 'ls' } },
+    ]);
+    // Final text appears exactly once overall (as finalOutput, not in transcript)
+    const textParts = transcript.filter((i) => i.type === 'text');
+    expect(textParts.some((t) => t.type === 'text' && t.text === 'done')).toBe(false);
+  });
+
+  it('preserves earlier assistant text blocks', () => {
+    const messages = [
+      assistantText('turn 1 notes'),
+      assistantText('turn 2 notes'),
+      assistantText('final answer'),
+    ];
+    const { transcript, finalOutput } = getTranscriptAndFinal(messages);
+    expect(finalOutput).toBe('final answer');
+    expect(transcript).toEqual([
+      { type: 'text', text: 'turn 1 notes' },
+      { type: 'text', text: 'turn 2 notes' },
+    ]);
+  });
+
+  it('keeps all items when there is no final text', () => {
+    const messages = [assistantTool('read', { path: 'x' })];
+    const { transcript, finalOutput } = getTranscriptAndFinal(messages);
+    expect(finalOutput).toBe('');
+    expect(transcript).toHaveLength(1);
+  });
+
+  it('does not duplicate final text when a trailing assistant message is tool-only', () => {
+    const messages = [assistantText('final answer'), assistantTool('read', { path: 'late.ts' })];
+    const { transcript, finalOutput } = getTranscriptAndFinal(messages);
+    expect(finalOutput).toBe('final answer');
+    expect(transcript).toEqual([{ type: 'toolCall', name: 'read', args: { path: 'late.ts' } }]);
+    expect(transcript.some((i) => i.type === 'text' && i.text === 'final answer')).toBe(false);
+  });
+});
+
+describe('resolveExecutionStatus', () => {
+  it('prefers explicit status', () => {
+    const r = { status: 'running', exitCode: 0 } as SingleResult;
+    expect(resolveExecutionStatus(r)).toBe('running');
+  });
+
+  it('falls back from exitCode for older sessions', () => {
+    expect(resolveExecutionStatus({ exitCode: -1 } as SingleResult)).toBe('running');
+    expect(resolveExecutionStatus({ exitCode: 0 } as SingleResult)).toBe('completed');
+    expect(resolveExecutionStatus({ exitCode: 1 } as SingleResult)).toBe('failed');
+    expect(resolveExecutionStatus({ exitCode: 1, stopReason: 'aborted' } as SingleResult)).toBe(
+      'cancelled'
+    );
   });
 });
 
@@ -125,6 +272,22 @@ describe('formatUsageStats', () => {
   });
 });
 
+describe('formatAggregateUsageStats', () => {
+  it('formats max context and omits model/thinking', () => {
+    expect(
+      formatAggregateUsageStats({
+        input: 20,
+        output: 3,
+        cacheRead: 40,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 12000,
+        turns: 9,
+      })
+    ).toBe('9 turns ↑20 ↓3 R40 ctx:max 12k');
+  });
+});
+
 describe('truncateParallelOutput', () => {
   it('preserves strings under the cap', () => {
     const small = 'hello world';
@@ -137,8 +300,42 @@ describe('truncateParallelOutput', () => {
     const noticeIdx = result.indexOf('\n\n[Output truncated:');
     expect(noticeIdx).toBeGreaterThan(-1);
     const preNotice = result.slice(0, noticeIdx);
-    // Pre-notice body must fit the cap; the appended notice intentionally pushes the total over.
     expect(Buffer.byteLength(preNotice, 'utf8')).toBeLessThanOrEqual(PER_TASK_OUTPUT_CAP);
     expect(result).toContain('[Output truncated:');
+  });
+});
+
+describe('cloneSingleResult deep snapshot', () => {
+  it('isolates message content and tool arguments from later mutation', async () => {
+    const { cloneSingleResult, emptyUsage } = await import('../src/types.ts');
+    const args = { path: 'original.ts' };
+    const result: SingleResult = {
+      agent: 'explore',
+      agentSource: 'user',
+      task: 't',
+      exitCode: -1,
+      status: 'running',
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'toolCall', name: 'read', arguments: args }],
+        } as unknown as SingleResult['messages'][number],
+      ],
+      stderr: '',
+      usage: { ...emptyUsage(), input: 1 },
+    };
+    const snap = cloneSingleResult(result);
+    // Mutate live result the way a streaming parser would.
+    args.path = 'mutated.ts';
+    result.usage.input = 999;
+    const livePart = result.messages[0].content[0] as unknown as {
+      arguments: { path: string };
+    };
+    livePart.arguments.path = 'mutated.ts';
+    const snapPart = snap.messages[0].content[0] as unknown as {
+      arguments: { path: string };
+    };
+    expect(snapPart.arguments.path).toBe('original.ts');
+    expect(snap.usage.input).toBe(1);
   });
 });

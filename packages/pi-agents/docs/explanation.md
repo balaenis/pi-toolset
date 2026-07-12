@@ -234,15 +234,23 @@ Zero/unknown fields are never printed as misleading zeros.
 
 ## Output display
 
-The collapsed view is a live snapshot: status icon (⧗ while streaming, ✓/✗ when
-finished), agent name, the last 5-10 items, and usage stats as fields arrive.
-The expanded view (Ctrl+O) adds the full task text, every tool call with
-formatted arguments, and the final output rendered as Markdown. Tool-call
-formatting mimics Pi's built-in tools (`$ command` for bash, `read ~/path:1-10`
-for read, `grep /pattern/ in ~/path` for grep, etc.).
+Collapsed output is intentionally a compact live summary: status glyph
+(⧗ running, ✔ completed, ✗ failed, ⊘ cancelled, · queued), agent name,
+truncated task preview, usage, and at most one latest activity line while
+running. Completed Single results hide activity and final output until
+expanded. Use Ctrl+O for the full task, ordered transcript, final output
+(once), and error/worktree/structured-output details. Tool-call formatting
+mimics Pi's built-in tools (`$ command` for bash, `read ~/path:1-10` for read,
+`grep /pattern/ in ~/path` for grep, etc.).
 
-Parallel mode shows all tasks with live status and a "n/m done, k running"
-summary, per-task progressive usage when available, and a running total.
-It returns each completed task's final output (capped at 50 KB per task) and
-failure diagnostics from stderr/error messages when a child exits before
-producing output.
+Parallel mode shows one summary line per task in input order, latest activity
+only under running tasks, and a `Total: n/m completed` footer. Aggregate usage
+sums token/turn fields, uses the maximum execution-unit context as `ctx:max N`,
+and never includes model or thinking (those stay per execution unit).
+
+Chain mode tracks logical steps separately from execution units. Sequential
+steps appear as numbered summaries; a fanout is one logical step with real
+done/running/queued/failed counts and a single latest activity prefixed
+`[item/total]`. Collect names are fanout metadata, not extra Chain steps.
+The footer reports current step, completed logical-step count, and aggregate
+usage.

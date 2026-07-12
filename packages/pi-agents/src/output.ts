@@ -3,7 +3,7 @@
 
 import type { Message } from '@earendil-works/pi-ai';
 import { PER_TASK_OUTPUT_CAP } from './constants.ts';
-import type { DisplayItem, SingleResult } from './types.ts';
+import type { DisplayItem, ExecutionStatus, SingleResult } from './types.ts';
 
 export function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
@@ -39,6 +39,28 @@ export function formatUsageStats(
   return parts.join(' ');
 }
 
+/** Aggregate usage: sum token/turn fields; max context as `ctx:max N`; no model/thinking. */
+export function formatAggregateUsageStats(usage: {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  contextTokens?: number;
+  turns?: number;
+}): string {
+  const parts: string[] = [];
+  if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? 's' : ''}`);
+  if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
+  if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
+  if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
+  if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
+  if (usage.contextTokens && usage.contextTokens > 0) {
+    parts.push(`ctx:max ${formatTokens(usage.contextTokens)}`);
+  }
+  return parts.join(' ');
+}
+
 export function getFinalOutput(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -67,6 +89,26 @@ const FAILURE_STOP_REASONS = new Set([
 export function isFailedResult(result: SingleResult): boolean {
   if (result.exitCode !== 0) return true;
   return result.stopReason !== undefined && FAILURE_STOP_REASONS.has(result.stopReason);
+}
+
+/** Resolve authoritative status with conservative fallback for older sessions. */
+export function resolveExecutionStatus(result: SingleResult): ExecutionStatus {
+  if (result.status) return result.status;
+  if (result.exitCode === -1) return 'running';
+  if (result.stopReason === 'aborted') return 'cancelled';
+  if (isFailedResult(result)) return 'failed';
+  return 'completed';
+}
+
+/** Set terminal status from stop reason and exit code after a run finishes. */
+export function applyTerminalStatus(result: SingleResult): void {
+  if (result.stopReason === 'aborted') {
+    result.status = 'cancelled';
+  } else if (isFailedResult(result)) {
+    result.status = 'failed';
+  } else {
+    result.status = 'completed';
+  }
 }
 
 export function getResultOutput(result: SingleResult): string {
@@ -99,4 +141,67 @@ export function getDisplayItems(messages: Message[]): DisplayItem[] {
     }
   }
   return items;
+}
+
+/** Last displayable tool call or assistant text item, or undefined when empty. */
+export function getLatestActivity(messages: Message[]): DisplayItem | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant') continue;
+    for (let j = msg.content.length - 1; j >= 0; j--) {
+      const part = msg.content[j];
+      if (part.type === 'text') return { type: 'text', text: part.text };
+      if (part.type === 'toolCall')
+        return { type: 'toolCall', name: part.name, args: part.arguments };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Ordered transcript (tool calls + earlier assistant text) plus separately identified final output.
+ * The assistant text selected as final output is excluded from the transcript so Expanded renders it once.
+ * Trailing tool-only assistant messages do not steal final-output identity from earlier text.
+ */
+export function getTranscriptAndFinal(messages: Message[]): {
+  transcript: DisplayItem[];
+  finalOutput: string;
+} {
+  let finalMsgIdx = -1;
+  let finalPartIdx = -1;
+  let finalOutput = '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant') continue;
+    for (let j = 0; j < msg.content.length; j++) {
+      const part = msg.content[j];
+      if (part.type === 'text') {
+        finalMsgIdx = i;
+        finalPartIdx = j;
+        finalOutput = part.text;
+        break;
+      }
+    }
+    if (finalMsgIdx >= 0) break;
+  }
+
+  if (!finalOutput) {
+    return { transcript: getDisplayItems(messages), finalOutput: '' };
+  }
+
+  const transcript: DisplayItem[] = [];
+  for (let mi = 0; mi < messages.length; mi++) {
+    const msg = messages[mi];
+    if (msg.role !== 'assistant') continue;
+    for (let pi = 0; pi < msg.content.length; pi++) {
+      const part = msg.content[pi];
+      if (part.type === 'text') {
+        if (mi === finalMsgIdx && pi === finalPartIdx) continue;
+        transcript.push({ type: 'text', text: part.text });
+      } else if (part.type === 'toolCall') {
+        transcript.push({ type: 'toolCall', name: part.name, args: part.arguments });
+      }
+    }
+  }
+  return { transcript, finalOutput };
 }

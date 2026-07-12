@@ -62,6 +62,24 @@ dropped with the same rules as frontmatter parsing.
 
 Any mode can be wrapped with `runInBackground: true` to run asynchronously.
 
+### Collapse titles
+
+Every mode accepts an optional `title` (max 30 characters) that replaces the
+task preview in the collapsed summary. Provide it on the top-level single
+call, on each parallel `tasks[]` item, on each sequential chain step, and on
+`parallel` inside a fanout step. Generate the title before the call and keep
+it concise (for example `探索结构`, `fix lint`). When omitted or blank, the
+task preview is used. The shown width is clamped to 30 terminal columns, so
+CJK and emoji titles never overflow the summary line.
+
+```json
+{ "agent": "explore", "task": "Find all authentication code.", "title": "查认证" }
+```
+
+Background launches use the first item's `title` as the launch summary,
+falling back to a 30-column task preview when no title is set. Expanded view
+(Ctrl+O) always shows the complete task regardless of `title`.
+
 ## Per-invocation overrides
 
 Optional top-level `model`, `thinking`, and `runtime` parameters override each
@@ -184,7 +202,8 @@ time; run `pi reload` (or restart) after adding/removing agent files.
 
 ## Limitations
 
-- Collapsed view shows the last 10 items (expand to see all).
+- Collapsed view shows a compact status summary with at most one latest activity
+  per running unit; expand (Ctrl+O) for the full transcript.
 - Parallel model-visible output is capped at 50 KB per task; full results stay
   in tool details.
 - Agents are discovered fresh on each invocation (editable mid-session).

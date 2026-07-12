@@ -4,7 +4,6 @@
 export const MAX_PARALLEL_TASKS = 8;
 export const MAX_FANOUT_ITEMS = MAX_PARALLEL_TASKS;
 export const MAX_CONCURRENCY = 4;
-export const COLLAPSED_ITEM_COUNT = 10;
 export const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
 export const PI_AGENT_CHILD = 'PI_AGENT_CHILD';

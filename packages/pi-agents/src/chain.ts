@@ -5,9 +5,21 @@ import type { Static } from '@earendil-works/pi-ai';
 import type { AgentToolResult, AgentToolUpdateCallback } from '@earendil-works/pi-coding-agent';
 import type { AgentConfig, AgentSource } from './agents.ts';
 import { MAX_CONCURRENCY, MAX_FANOUT_ITEMS } from './constants.ts';
-import { mapWithConcurrencyLimit, type OnUpdateCallback } from './execution.ts';
+import {
+  ABORT_MESSAGE,
+  getAbortResult,
+  isAbortError,
+  mapWithConcurrencyLimit,
+  type OnUpdateCallback,
+} from './execution.ts';
 import { readJsonPointer } from './json-pointer.ts';
-import { getFinalOutput, getResultOutput, isFailedResult } from './output.ts';
+import {
+  applyTerminalStatus,
+  getFinalOutput,
+  getResultOutput,
+  isFailedResult,
+  resolveExecutionStatus,
+} from './output.ts';
 import type { ChainItem } from './schema.ts';
 import {
   buildStructuredOutputInstruction,
@@ -17,7 +29,18 @@ import {
   type JsonValue,
 } from './structured-output.ts';
 import { renderTaskTemplate } from './template.ts';
-import type { ChainOutputEntry, IsolationMode, SingleResult, SubagentDetails } from './types.ts';
+import {
+  cloneResults,
+  emptyUsage,
+  type ChainExecutionDetails,
+  type ChainFanoutStep,
+  type ChainLogicalStep,
+  type ChainOutputEntry,
+  type ChainSequentialStep,
+  type IsolationMode,
+  type SingleResult,
+  type SubagentDetails,
+} from './types.ts';
 
 export type ChainItemInput = Static<typeof ChainItem>;
 
@@ -32,6 +55,8 @@ export type DetailsFactory = (
 export interface ChainStepRequest {
   agent: string;
   task: string;
+  /** Short collapsed-summary label for this step. */
+  title?: string;
   cwd: string | undefined;
   isolation: IsolationMode | undefined;
   taskIndex: number;
@@ -59,28 +84,80 @@ export function synthesizeFailure(
   task: string,
   step: number | undefined,
   stopReason: string,
-  message: string
+  message: string,
+  title?: string
 ): SingleResult {
   return {
     agent: agentName,
     agentSource: (agent?.source ?? 'unknown') as AgentSource | 'unknown',
     task,
+    title,
     exitCode: 1,
+    status: 'failed',
     messages: [],
     stderr: message,
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
+    usage: emptyUsage(),
     stopReason,
     errorMessage: message,
     step,
   };
+}
+
+function initLogicalSteps(chain: ChainItemInput[]): ChainLogicalStep[] {
+  return chain.map((step, i) => {
+    const stepNumber = i + 1;
+    if (isFanoutChainStep(step)) {
+      const fanout: ChainFanoutStep = {
+        kind: 'fanout',
+        step: stepNumber,
+        agent: step.parallel.agent,
+        taskTemplate: step.parallel.task,
+        title: step.parallel.title,
+        status: 'queued',
+        sourceOutput: step.expand.from.output,
+        sourcePath: step.expand.from.path,
+        collectName: step.collect.name,
+        concurrency:
+          typeof step.concurrency === 'number' ? Math.floor(step.concurrency) : undefined,
+        executedCount: 0,
+        completedCount: 0,
+        failedCount: 0,
+        runningCount: 0,
+        queuedCount: 0,
+        skippedCount: 0,
+      };
+      return fanout;
+    }
+    const sequential = step as SequentialStep;
+    const seq: ChainSequentialStep = {
+      kind: 'sequential',
+      step: stepNumber,
+      agent: sequential.agent,
+      task: sequential.task,
+      title: sequential.title,
+      status: 'queued',
+    };
+    return seq;
+  });
+}
+
+function markLaterSkipped(logicalSteps: ChainLogicalStep[], fromIndex: number): void {
+  for (let j = fromIndex; j < logicalSteps.length; j++) {
+    if (logicalSteps[j].status === 'queued' || logicalSteps[j].status === 'running') {
+      if (logicalSteps[j].status === 'queued') logicalSteps[j].status = 'skipped';
+    }
+  }
+}
+
+function upsertSequentialResult(results: SingleResult[], result: SingleResult): void {
+  const step = result.step;
+  const idx = results.findIndex((r) => r.step === step && r.fanout === undefined);
+  if (idx >= 0) results[idx] = result;
+  else results.push(result);
+}
+
+function cloneLogicalSteps(steps: ChainLogicalStep[]): ChainLogicalStep[] {
+  return steps.map((s) => ({ ...s }));
 }
 
 export async function runChainWorkflow(options: RunChainWorkflowOptions): Promise<ChainResult> {
@@ -88,17 +165,91 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
   const results: SingleResult[] = [];
   let previousOutput = '';
   const outputs = new Map<string, ChainOutputEntry>();
+  const logicalSteps = initLogicalSteps(chain);
 
   const outputsRecord = (): Record<string, ChainOutputEntry> => Object.fromEntries(outputs);
 
-  for (let i = 0; i < chain.length; i++) {
-    const step = chain[i];
-    const stepNumber = i + 1;
+  const buildDetails = (): SubagentDetails => {
+    const base = makeDetails(cloneResults(results), outputsRecord());
+    const chainDetails: ChainExecutionDetails = {
+      totalSteps: chain.length,
+      steps: cloneLogicalSteps(logicalSteps),
+    };
+    return { ...base, chain: chainDetails };
+  };
 
-    if (isFanoutChainStep(step)) {
-      const fanout = await runFanoutStep({
-        step,
+  const emit = (content: string) => {
+    if (onUpdate) {
+      onUpdate({
+        content: [{ type: 'text', text: content }],
+        details: buildDetails(),
+      });
+    }
+  };
+
+  try {
+    for (let i = 0; i < chain.length; i++) {
+      if (signal?.aborted) {
+        logicalSteps[i].status = 'cancelled';
+        markLaterSkipped(logicalSteps, i + 1);
+        return {
+          content: [{ type: 'text', text: `Chain cancelled at step ${i + 1}` }],
+          details: buildDetails(),
+          isError: true,
+        };
+      }
+
+      const step = chain[i];
+      const stepNumber = i + 1;
+
+      if (isFanoutChainStep(step)) {
+        const fanout = await runFanoutStep({
+          step,
+          stepNumber,
+          stepIndex: i,
+          results,
+          outputs,
+          previousOutput,
+          signal,
+          onUpdate,
+          makeDetails,
+          outputsRecord,
+          runStep,
+          logicalSteps,
+          buildDetails,
+          emit,
+        });
+        if (fanout.done) return fanout.result;
+        previousOutput = fanout.previousOutput;
+        continue;
+      }
+
+      if (isAmbiguousChainStep(step)) {
+        logicalSteps[i].status = 'failed';
+        const failure = synthesizeFailure(
+          'unknown',
+          undefined,
+          '',
+          stepNumber,
+          'fanout_error',
+          'Chain step must be sequential (agent/task) or fanout (expand/parallel/collect), not both.'
+        );
+        upsertSequentialResult(results, failure);
+        markLaterSkipped(logicalSteps, i + 1);
+        return {
+          content: [
+            { type: 'text', text: `Chain stopped at step ${stepNumber}: ${failure.errorMessage}` },
+          ],
+          details: buildDetails(),
+          isError: true,
+        };
+      }
+
+      const sequential = await runSequentialStep({
+        step: step as SequentialStep,
         stepNumber,
+        stepIndex: i,
+        taskIndex: i,
         results,
         outputs,
         previousOutput,
@@ -107,58 +258,54 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
         makeDetails,
         outputsRecord,
         runStep,
+        logicalSteps,
+        buildDetails,
+        emit,
       });
-      if (fanout.done) return fanout.result;
-      previousOutput = fanout.previousOutput;
-      continue;
+      if (sequential.done) return sequential.result;
+      previousOutput = sequential.previousOutput;
     }
 
-    if (isAmbiguousChainStep(step)) {
-      const failure = synthesizeFailure(
-        'unknown',
-        undefined,
-        '',
-        stepNumber,
-        'fanout_error',
-        'Chain step must be sequential (agent/task) or fanout (expand/parallel/collect), not both.'
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            previousOutput ||
+            getFinalOutput(results[results.length - 1]?.messages ?? []) ||
+            '(no output)',
+        },
+      ],
+      details: buildDetails(),
+    };
+  } catch (err) {
+    if (isAbortError(err)) {
+      const runningIdx = logicalSteps.findIndex(
+        (s) => s.status === 'running' || s.status === 'queued'
       );
-      results.push(failure);
+      const idx = runningIdx >= 0 ? runningIdx : logicalSteps.length - 1;
+      if (idx >= 0 && logicalSteps[idx]) {
+        if (logicalSteps[idx].status === 'running' || logicalSteps[idx].status === 'queued') {
+          logicalSteps[idx].status = 'cancelled';
+        }
+        markLaterSkipped(logicalSteps, idx + 1);
+      }
+      // Mark any in-flight sequential result cancelled
+      for (const r of results) {
+        if (resolveExecutionStatus(r) === 'running') {
+          r.status = 'cancelled';
+          r.stopReason = r.stopReason ?? 'aborted';
+          if (r.exitCode === 0 || r.exitCode === -1) r.exitCode = 1;
+        }
+      }
       return {
-        content: [
-          { type: 'text', text: `Chain stopped at step ${stepNumber}: ${failure.errorMessage}` },
-        ],
-        details: makeDetails(results, outputsRecord()),
+        content: [{ type: 'text', text: 'Chain cancelled' }],
+        details: buildDetails(),
         isError: true,
       };
     }
-
-    const sequential = await runSequentialStep({
-      step: step as SequentialStep,
-      stepNumber,
-      taskIndex: i,
-      results,
-      outputs,
-      previousOutput,
-      signal,
-      onUpdate,
-      makeDetails,
-      outputsRecord,
-      runStep,
-    });
-    if (sequential.done) return sequential.result;
-    previousOutput = sequential.previousOutput;
+    throw err;
   }
-
-  return {
-    content: [
-      {
-        type: 'text',
-        text:
-          previousOutput || getFinalOutput(results[results.length - 1].messages) || '(no output)',
-      },
-    ],
-    details: makeDetails(results, outputsRecord()),
-  };
 }
 
 export function isFanoutChainStep(step: ChainItemInput): step is FanoutStep {
@@ -173,7 +320,8 @@ function parseOutputSchema(
   rawSchema: unknown,
   agent: string,
   task: string,
-  stepNumber: number
+  stepNumber: number,
+  title?: string
 ): { ok: true; schema: JsonSchemaSubset | undefined } | { ok: false; failure: SingleResult } {
   if (rawSchema === undefined || rawSchema === null) return { ok: true, schema: undefined };
   if (typeof rawSchema === 'object' && !Array.isArray(rawSchema)) {
@@ -187,7 +335,8 @@ function parseOutputSchema(
       task,
       stepNumber,
       'structured_output_error',
-      `Invalid outputSchema: expected object, got ${Array.isArray(rawSchema) ? 'array' : typeof rawSchema}`
+      `Invalid outputSchema: expected object, got ${Array.isArray(rawSchema) ? 'array' : typeof rawSchema}`,
+      title
     ),
   };
 }
@@ -224,13 +373,35 @@ interface StepShared {
   makeDetails: DetailsFactory;
   outputsRecord: () => Record<string, ChainOutputEntry>;
   runStep: ChainRunStep;
+  logicalSteps: ChainLogicalStep[];
+  buildDetails: () => SubagentDetails;
+  emit: (content: string) => void;
 }
 
 async function runSequentialStep(
-  opts: StepShared & { step: SequentialStep; stepNumber: number; taskIndex: number }
+  opts: StepShared & {
+    step: SequentialStep;
+    stepNumber: number;
+    stepIndex: number;
+    taskIndex: number;
+  }
 ): Promise<{ done: false; previousOutput: string } | { done: true; result: ChainResult }> {
-  const { step, stepNumber, results, outputs, previousOutput, signal, onUpdate, makeDetails } =
-    opts;
+  const {
+    step,
+    stepNumber,
+    stepIndex,
+    results,
+    outputs,
+    previousOutput,
+    signal,
+    logicalSteps,
+    buildDetails,
+    emit,
+  } = opts;
+
+  logicalSteps[stepIndex].status = 'running';
+  emit(`Chain step ${stepNumber}/${logicalSteps.length} running...`);
+
   const rendered = renderTaskTemplate(step.task, { previous: previousOutput, outputs });
   if (!rendered.ok) {
     const failure = synthesizeFailure(
@@ -239,9 +410,12 @@ async function runSequentialStep(
       step.task,
       stepNumber,
       'template_error',
-      `Unknown chain output: ${rendered.unknown}`
+      `Unknown chain output: ${rendered.unknown}`,
+      step.title
     );
-    results.push(failure);
+    upsertSequentialResult(results, failure);
+    logicalSteps[stepIndex].status = 'failed';
+    markLaterSkipped(logicalSteps, stepIndex + 1);
     return {
       done: true,
       result: {
@@ -251,15 +425,23 @@ async function runSequentialStep(
             text: `Chain stopped at step ${stepNumber} (${step.agent}): Unknown chain output: ${rendered.unknown}`,
           },
         ],
-        details: makeDetails(results, opts.outputsRecord()),
+        details: buildDetails(),
         isError: true,
       },
     };
   }
 
-  const parsedSchema = parseOutputSchema(step.outputSchema, step.agent, step.task, stepNumber);
+  const parsedSchema = parseOutputSchema(
+    step.outputSchema,
+    step.agent,
+    step.task,
+    stepNumber,
+    step.title
+  );
   if (!parsedSchema.ok) {
-    results.push(parsedSchema.failure);
+    upsertSequentialResult(results, parsedSchema.failure);
+    logicalSteps[stepIndex].status = 'failed';
+    markLaterSkipped(logicalSteps, stepIndex + 1);
     return {
       done: true,
       result: {
@@ -269,7 +451,7 @@ async function runSequentialStep(
             text: `Chain stopped at step ${stepNumber} (${step.agent}): ${parsedSchema.failure.errorMessage}`,
           },
         ],
-        details: makeDetails(results, opts.outputsRecord()),
+        details: buildDetails(),
         isError: true,
       },
     };
@@ -280,23 +462,62 @@ async function runSequentialStep(
     ? `${rendered.text}\n\n${buildStructuredOutputInstruction(outputSchema)}`
     : rendered.text;
 
-  const chainUpdate = makeChainUpdate(results, onUpdate, makeDetails, opts.outputsRecord);
-  const result = await opts.runStep({
-    agent: step.agent,
-    task: taskWithContext,
-    cwd: step.cwd,
-    isolation: step.isolation,
-    taskIndex: opts.taskIndex,
-    step: stepNumber,
-    signal,
-    onUpdate: chainUpdate,
-    skipCompletionCheck: outputSchema !== undefined,
-  });
+  const chainUpdate = makeSequentialUpdate(results, stepNumber, opts.onUpdate, buildDetails);
+
+  let result: SingleResult;
+  try {
+    result = await opts.runStep({
+      agent: step.agent,
+      task: taskWithContext,
+      title: step.title,
+      cwd: step.cwd,
+      isolation: step.isolation,
+      taskIndex: opts.taskIndex,
+      step: stepNumber,
+      signal,
+      onUpdate: chainUpdate,
+      skipCompletionCheck: outputSchema !== undefined,
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      const cancelled: SingleResult = {
+        agent: step.agent,
+        agentSource: 'unknown',
+        task: taskWithContext,
+        title: step.title,
+        exitCode: 1,
+        status: 'cancelled',
+        messages: [],
+        stderr: ABORT_MESSAGE,
+        usage: emptyUsage(),
+        stopReason: 'aborted',
+        errorMessage: ABORT_MESSAGE,
+        step: stepNumber,
+      };
+      // Prefer any partial that was upserted
+      const existing = results.find((r) => r.step === stepNumber && r.fanout === undefined);
+      if (existing) {
+        existing.status = 'cancelled';
+        existing.stopReason = existing.stopReason ?? 'aborted';
+        if (existing.exitCode === 0 || existing.exitCode === -1) existing.exitCode = 1;
+      } else {
+        upsertSequentialResult(results, cancelled);
+      }
+      logicalSteps[stepIndex].status = 'cancelled';
+      markLaterSkipped(logicalSteps, stepIndex + 1);
+      throw err;
+    }
+    throw err;
+  }
 
   applyStructuredOutputValidation(result, outputSchema, stepNumber);
-  results.push(result);
+  if (!result.status || result.status === 'running') applyTerminalStatus(result);
+  result.step = stepNumber;
+  upsertSequentialResult(results, result);
 
-  if (isFailedResult(result)) {
+  if (isFailedResult(result) || resolveExecutionStatus(result) === 'failed') {
+    logicalSteps[stepIndex].status = 'failed';
+    markLaterSkipped(logicalSteps, stepIndex + 1);
     const errorMsg = getResultOutput(result);
     return {
       done: true,
@@ -307,12 +528,31 @@ async function runSequentialStep(
             text: `Chain stopped at step ${stepNumber} (${step.agent}): ${errorMsg}`,
           },
         ],
-        details: makeDetails(results, opts.outputsRecord()),
+        details: buildDetails(),
         isError: true,
       },
     };
   }
 
+  if (resolveExecutionStatus(result) === 'cancelled') {
+    logicalSteps[stepIndex].status = 'cancelled';
+    markLaterSkipped(logicalSteps, stepIndex + 1);
+    return {
+      done: true,
+      result: {
+        content: [
+          {
+            type: 'text',
+            text: `Chain cancelled at step ${stepNumber} (${step.agent})`,
+          },
+        ],
+        details: buildDetails(),
+        isError: true,
+      },
+    };
+  }
+
+  logicalSteps[stepIndex].status = 'completed';
   const nextPreviousOutput = result.finalOutput ?? getFinalOutput(result.messages);
   if (step.name) {
     outputs.set(step.name, {
@@ -326,10 +566,26 @@ async function runSequentialStep(
 }
 
 async function runFanoutStep(
-  opts: StepShared & { step: FanoutStep; stepNumber: number }
+  opts: StepShared & { step: FanoutStep; stepNumber: number; stepIndex: number }
 ): Promise<{ done: false; previousOutput: string } | { done: true; result: ChainResult }> {
-  const { step, stepNumber, results, outputs, previousOutput, signal, onUpdate, makeDetails } =
-    opts;
+  const {
+    step,
+    stepNumber,
+    stepIndex,
+    results,
+    outputs,
+    previousOutput,
+    signal,
+    onUpdate,
+    logicalSteps,
+    buildDetails,
+    emit,
+  } = opts;
+
+  const fanoutMeta = logicalSteps[stepIndex] as ChainFanoutStep;
+  fanoutMeta.status = 'running';
+  emit(`Chain step ${stepNumber}/${logicalSteps.length} fanout running...`);
+
   const outputName = step.expand.from.output;
   const outputEntry = outputs.get(outputName);
   if (!outputEntry || outputEntry.structured === undefined) {
@@ -352,15 +608,18 @@ async function runFanoutStep(
     step.parallel.outputSchema,
     step.parallel.agent,
     step.parallel.task,
-    stepNumber
+    stepNumber,
+    step.parallel.title
   );
   if (!parsedSchema.ok) {
-    results.push(parsedSchema.failure);
+    upsertSequentialResult(results, parsedSchema.failure);
+    fanoutMeta.status = 'failed';
+    markLaterSkipped(logicalSteps, stepIndex + 1);
     return {
       done: true,
       result: {
         content: [{ type: 'text', text: `Fanout failed: ${parsedSchema.failure.errorMessage}` }],
-        details: makeDetails(results, opts.outputsRecord()),
+        details: buildDetails(),
         isError: true,
       },
     };
@@ -378,10 +637,31 @@ async function runFanoutStep(
   }
   const requestedMax = typeof rawMaxItems === 'number' ? Math.floor(rawMaxItems) : MAX_FANOUT_ITEMS;
   const maxItems = Math.min(requestedMax, MAX_FANOUT_ITEMS);
-  const items = pointer.value.slice(0, maxItems);
-  const skipped = pointer.value.length - items.length;
-  const renderedTasks: string[] = [];
+  const allSourceItems = pointer.value;
+  const items = allSourceItems.slice(0, maxItems);
+  const skipped = allSourceItems.length - items.length;
+  fanoutMeta.skippedCount = skipped;
 
+  // Empty source: successful 0/0 fanout
+  if (items.length === 0) {
+    fanoutMeta.executedCount = 0;
+    fanoutMeta.completedCount = 0;
+    fanoutMeta.failedCount = 0;
+    fanoutMeta.runningCount = 0;
+    fanoutMeta.queuedCount = 0;
+    fanoutMeta.status = 'completed';
+    const text = '[]';
+    outputs.set(step.collect.name, {
+      text,
+      structured: [],
+      agent: step.parallel.agent,
+      step: stepNumber,
+    });
+    emit(`Fanout: 0/0 done`);
+    return { done: false, previousOutput: text };
+  }
+
+  const renderedTasks: string[] = [];
   for (const item of items) {
     const rendered = renderTaskTemplate(step.parallel.task, {
       previous: previousOutput,
@@ -405,53 +685,229 @@ async function runFanoutStep(
       MAX_CONCURRENCY
     )
   );
-  const fanoutResults = await mapWithConcurrencyLimit(
-    renderedTasks,
-    concurrency,
-    async (task, index) => {
-      const result = await opts.runStep({
-        agent: step.parallel.agent,
-        task,
-        cwd: step.parallel.cwd,
-        isolation: step.parallel.isolation,
-        taskIndex: stepNumber * (MAX_FANOUT_ITEMS + 1) + index,
-        step: stepNumber,
-        signal,
-        onUpdate: undefined,
-        skipCompletionCheck: outputSchema !== undefined,
-      });
-      applyStructuredOutputValidation(result, outputSchema, stepNumber);
-      if (onUpdate) {
-        onUpdate({
-          content: [
-            { type: 'text', text: `Fanout: ${index + 1}/${renderedTasks.length} completed...` },
-          ],
-          details: makeDetails([...results, result], opts.outputsRecord()),
-        });
-      }
-      return result;
-    }
-  );
+  fanoutMeta.concurrency = concurrency;
 
-  results.push(...fanoutResults);
-  const successCount = fanoutResults.filter((r) => !isFailedResult(r)).length;
-  if (successCount !== fanoutResults.length) {
+  // Ordered slots for every item that will actually run
+  const slots: SingleResult[] = renderedTasks.map((task, index) => ({
+    agent: step.parallel.agent,
+    agentSource: 'unknown' as const,
+    task,
+    title: step.parallel.title,
+    exitCode: -1,
+    status: 'queued' as const,
+    messages: [],
+    stderr: '',
+    usage: emptyUsage(),
+    step: stepNumber,
+    fanout: { index, count: renderedTasks.length, itemTask: task },
+  }));
+
+  const baseLength = results.length;
+  results.push(...slots);
+
+  const recount = () => {
+    fanoutMeta.executedCount = slots.length;
+    fanoutMeta.completedCount = slots.filter(
+      (s) => resolveExecutionStatus(s) === 'completed'
+    ).length;
+    fanoutMeta.failedCount = slots.filter((s) => resolveExecutionStatus(s) === 'failed').length;
+    fanoutMeta.runningCount = slots.filter((s) => resolveExecutionStatus(s) === 'running').length;
+    fanoutMeta.queuedCount = slots.filter((s) => resolveExecutionStatus(s) === 'queued').length;
+    fanoutMeta.skippedCount = skipped;
+  };
+
+  const syncSlotsToResults = () => {
+    for (let i = 0; i < slots.length; i++) {
+      results[baseLength + i] = slots[i];
+    }
+  };
+
+  const emitFanout = () => {
+    recount();
+    syncSlotsToResults();
+    if (onUpdate) {
+      const done = fanoutMeta.completedCount + fanoutMeta.failedCount;
+      onUpdate({
+        content: [
+          {
+            type: 'text',
+            text: `Fanout: ${done}/${slots.length} done, ${fanoutMeta.runningCount} running, ${fanoutMeta.queuedCount} queued...`,
+          },
+        ],
+        details: buildDetails(),
+      });
+    }
+  };
+
+  recount();
+  emitFanout();
+
+  /** After terminal, ignore late worker onUpdate callbacks. */
+  let fanoutTerminal = false;
+
+  const markSlotCancelled = (index: number, fromErr?: unknown): SingleResult => {
+    const fromAbort = fromErr ? getAbortResult(fromErr) : undefined;
+    const existing = fromAbort ?? slots[index];
+    existing.status = 'cancelled';
+    existing.stopReason = existing.stopReason ?? 'aborted';
+    if (existing.exitCode === 0 || existing.exitCode === -1) existing.exitCode = 1;
+    if (!existing.errorMessage) existing.errorMessage = ABORT_MESSAGE;
+    existing.step = stepNumber;
+    existing.fanout = {
+      index,
+      count: renderedTasks.length,
+      itemTask: renderedTasks[index],
+    };
+    slots[index] = existing;
+    fanoutMeta.latestIndex = index;
+    return existing;
+  };
+
+  try {
+    await mapWithConcurrencyLimit(
+      renderedTasks,
+      concurrency,
+      async (task, index) => {
+        slots[index] = {
+          ...slots[index],
+          status: 'running',
+          exitCode: -1,
+        };
+        fanoutMeta.latestIndex = index;
+        if (!fanoutTerminal) emitFanout();
+
+        const itemUpdate: OnUpdateCallback | undefined = onUpdate
+          ? (partial) => {
+              // After terminal (or once abort is known), ignore late worker updates.
+              if (fanoutTerminal || signal?.aborted) return;
+              const current = partial.details?.results[0];
+              if (!current) return;
+              current.status = current.status ?? 'running';
+              current.step = stepNumber;
+              current.fanout = {
+                index,
+                count: renderedTasks.length,
+                itemTask: task,
+              };
+              slots[index] = current;
+              fanoutMeta.latestIndex = index;
+              emitFanout();
+            }
+          : undefined;
+
+        try {
+          const result = await opts.runStep({
+            agent: step.parallel.agent,
+            task,
+            title: step.parallel.title,
+            cwd: step.parallel.cwd,
+            isolation: step.parallel.isolation,
+            taskIndex: stepNumber * (MAX_FANOUT_ITEMS + 1) + index,
+            step: stepNumber,
+            signal,
+            onUpdate: itemUpdate,
+            skipCompletionCheck: outputSchema !== undefined,
+          });
+          if (fanoutTerminal || signal?.aborted) {
+            // Worker finished after cancel: keep cancelled if we already marked it.
+            if (resolveExecutionStatus(slots[index]) === 'cancelled') return slots[index];
+          }
+          applyStructuredOutputValidation(result, outputSchema, stepNumber);
+          if (!result.status || result.status === 'running') applyTerminalStatus(result);
+          result.step = stepNumber;
+          result.fanout = {
+            index,
+            count: renderedTasks.length,
+            itemTask: task,
+          };
+          slots[index] = result;
+          fanoutMeta.latestIndex = index;
+          if (!fanoutTerminal && !signal?.aborted) emitFanout();
+          return result;
+        } catch (err) {
+          if (isAbortError(err)) {
+            markSlotCancelled(index, err);
+            // Do not rethrow — let other in-flight workers settle.
+            return slots[index];
+          }
+          throw err;
+        }
+      },
+      {
+        signal,
+        onUnstarted: (_task, index) => {
+          const skipped = slots[index];
+          skipped.status = 'skipped';
+          skipped.exitCode = 1;
+          skipped.stopReason = skipped.stopReason ?? 'aborted';
+          slots[index] = skipped;
+          return skipped;
+        },
+      }
+    );
+  } catch (err) {
+    // Non-abort worker failures still settle via mapWithConcurrencyLimit; rethrow if unexpected.
+    if (!isAbortError(err)) throw err;
+  }
+
+  recount();
+  syncSlotsToResults();
+
+  const successCount = slots.filter((r) => resolveExecutionStatus(r) === 'completed').length;
+  const cancelledCount = slots.filter((r) => resolveExecutionStatus(r) === 'cancelled').length;
+  const skippedCount = slots.filter((r) => resolveExecutionStatus(r) === 'skipped').length;
+  const abortedFanout = signal?.aborted || cancelledCount > 0 || skippedCount > 0;
+
+  if (abortedFanout && successCount !== slots.length) {
+    for (const slot of slots) {
+      const st = resolveExecutionStatus(slot);
+      if (st === 'queued' || st === 'running') {
+        slot.status = st === 'running' ? 'cancelled' : 'skipped';
+        if (slot.status === 'cancelled') {
+          slot.stopReason = slot.stopReason ?? 'aborted';
+          if (slot.exitCode === 0 || slot.exitCode === -1) slot.exitCode = 1;
+        }
+      }
+    }
+    fanoutMeta.status = 'cancelled';
+    fanoutTerminal = true;
+    recount();
+    syncSlotsToResults();
+    markLaterSkipped(logicalSteps, stepIndex + 1);
+    // Single terminal snapshot for cancel; subsequent worker onUpdate is ignored.
+    emit(`Chain cancelled at step ${stepNumber} (fanout)`);
+    return {
+      done: true,
+      result: {
+        content: [{ type: 'text', text: `Chain cancelled at step ${stepNumber} (fanout)` }],
+        details: buildDetails(),
+        isError: true,
+      },
+    };
+  }
+
+  fanoutTerminal = true;
+
+  if (successCount !== slots.length) {
+    fanoutMeta.status = 'failed';
+    markLaterSkipped(logicalSteps, stepIndex + 1);
     return {
       done: true,
       result: {
         content: [
           {
             type: 'text',
-            text: `Fanout failed: ${successCount}/${fanoutResults.length} succeeded`,
+            text: `Fanout failed: ${successCount}/${slots.length} succeeded`,
           },
         ],
-        details: makeDetails(results, opts.outputsRecord()),
+        details: buildDetails(),
         isError: true,
       },
     };
   }
 
-  const collected = fanoutResults.map(
+  fanoutMeta.status = 'completed';
+  const collected = slots.map(
     (result) =>
       (result.structuredOutput ??
         result.finalOutput ??
@@ -472,7 +928,7 @@ async function runFanoutStep(
 }
 
 function fanoutFailure(
-  opts: StepShared & { step: FanoutStep; stepNumber: number },
+  opts: StepShared & { step: FanoutStep; stepNumber: number; stepIndex: number },
   message: string
 ): { done: true; result: ChainResult } {
   const failure = synthesizeFailure(
@@ -481,32 +937,39 @@ function fanoutFailure(
     opts.step.parallel.task,
     opts.stepNumber,
     'fanout_error',
-    message
+    message,
+    opts.step.parallel.title
   );
   opts.results.push(failure);
+  const fanoutMeta = opts.logicalSteps[opts.stepIndex] as ChainFanoutStep;
+  fanoutMeta.status = 'failed';
+  markLaterSkipped(opts.logicalSteps, opts.stepIndex + 1);
   return {
     done: true,
     result: {
       content: [{ type: 'text', text: `Fanout failed: ${message}` }],
-      details: opts.makeDetails(opts.results, opts.outputsRecord()),
+      details: opts.buildDetails(),
       isError: true,
     },
   };
 }
 
-function makeChainUpdate(
+function makeSequentialUpdate(
   results: SingleResult[],
+  stepNumber: number,
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
-  makeDetails: DetailsFactory,
-  outputsRecord: () => Record<string, ChainOutputEntry>
+  buildDetails: () => SubagentDetails
 ): OnUpdateCallback | undefined {
   return onUpdate
     ? (partial) => {
         const currentResult = partial.details?.results[0];
         if (currentResult) {
+          currentResult.status = currentResult.status ?? 'running';
+          currentResult.step = stepNumber;
+          upsertSequentialResult(results, currentResult);
           onUpdate({
             content: partial.content,
-            details: makeDetails([...results, currentResult], outputsRecord()),
+            details: buildDetails(),
           });
         }
       }
@@ -518,5 +981,6 @@ function markStructuredFailure(result: SingleResult, message: string, step: numb
   result.stopReason = 'structured_output_error';
   result.structuredOutputError = message;
   result.errorMessage = `Structured output error: ${message}`;
+  result.status = 'failed';
   if (typeof result.step !== 'number') result.step = step;
 }

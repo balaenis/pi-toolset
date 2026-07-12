@@ -8,6 +8,12 @@ export const IsolationSchema = StringEnum(['none', 'worktree'] as const, {
     'Per-task isolation. "worktree" runs the child in a fresh git worktree under .worktrees/.',
 });
 
+export const TitleSchema = Type.String({
+  maxLength: 30,
+  description:
+    'Short label (max 30 characters) shown in the collapsed summary instead of the task preview. Generate it before the call and keep it concise (e.g. "探索结构", "fix lint"). When omitted or blank, the task preview is used.',
+});
+
 export const RuntimeSchema = StringEnum(['pi', 'grok', 'grok-acp'] as const, {
   description:
     "Temporarily override the agent config `runtime` for every agent invoked in this call (single/parallel/chain/fanout). `pi` (default) spawns the pi CLI; `grok` spawns Grok streaming-json; `grok-acp` spawns Grok ACP over stdio. Defaults to each agent's configured runtime.",
@@ -16,6 +22,7 @@ export const RuntimeSchema = StringEnum(['pi', 'grok', 'grok-acp'] as const, {
 export const TaskItem = Type.Object({
   agent: Type.String({ description: 'Name of the agent to invoke' }),
   task: Type.String({ description: 'Task to delegate to the agent' }),
+  title: Type.Optional(TitleSchema),
   cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
   isolation: Type.Optional(IsolationSchema),
 });
@@ -26,6 +33,7 @@ export const SequentialChainItem = Type.Object({
     description:
       'Task with optional {previous} or {outputs.<name>} placeholders that reference earlier chain outputs',
   }),
+  title: Type.Optional(TitleSchema),
   cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
   isolation: Type.Optional(IsolationSchema),
   name: Type.Optional(
@@ -53,6 +61,7 @@ export const FanoutChainItem = Type.Object({
   parallel: Type.Object({
     agent: Type.String({ description: 'Name of the agent to invoke for every item' }),
     task: Type.String({ description: 'Task template with optional {item} placeholder' }),
+    title: Type.Optional(TitleSchema),
     cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
     isolation: Type.Optional(IsolationSchema),
     outputSchema: Type.Optional(
@@ -80,6 +89,7 @@ export const SubagentParams = Type.Object({
     Type.String({ description: 'Name of the agent to invoke (for single mode)' })
   ),
   task: Type.Optional(Type.String({ description: 'Task to delegate (for single mode)' })),
+  title: Type.Optional(TitleSchema),
   tasks: Type.Optional(
     Type.Array(TaskItem, { description: 'Array of {agent, task} for parallel execution' })
   ),

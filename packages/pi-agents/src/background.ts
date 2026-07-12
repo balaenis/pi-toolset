@@ -27,6 +27,8 @@ export interface BackgroundLaunchRequest {
   agentScope: AgentScope;
   description: string;
   taskPreview: string;
+  /** Short launch-summary label; falls back to `taskPreview` when blank. */
+  title?: string;
   projectAgentsDir: string | null;
   run: (signal: AbortSignal) => Promise<AgentToolResult<SubagentDetails> & { isError?: boolean }>;
 }
@@ -121,6 +123,7 @@ export function createBackgroundManager(
       description: request.description,
       startedAt,
       taskPreview: request.taskPreview,
+      ...(request.title ? { title: request.title } : {}),
     };
     const controller = new AbortController();
     let settled = false;
@@ -299,7 +302,7 @@ export function renderBackgroundMessage(
   const statusIcon = (() => {
     switch (details.status) {
       case 'completed':
-        return theme.fg('success', '✓');
+        return theme.fg('success', '✔');
       case 'failed':
         return theme.fg('error', '✗');
       case 'cancelled':

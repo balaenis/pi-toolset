@@ -14,8 +14,10 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 - **Slash-command invocation** - `/agent:<name> <task>` runs a discovered agent directly; `/agent list` enumerates them
 - **Worktree isolation + setup hook** - run agents in a throw-away git worktree with an optional shell `worktreeSetupHook` and per-run diff metadata
 - **Completion check** - require final-message headings via frontmatter
-- **Markdown rendering** - final output is rendered with proper formatting in the expanded view
-- **Usage tracking** - turns, tokens, and context shown per agent (partial stats stream live for `grok-acp`)
+- **Compact live rendering** - collapsed view is a status summary (glyph, agent, truncated task or a short `title`, usage, at most one latest activity); Ctrl+O expands full task/transcript/final output
+- **Short collapse titles** - optional `title` (max 30 characters) on single, parallel tasks, chain steps, and fanout steps replaces the task preview in the collapsed summary; generate it before the call
+- **Parallel & Chain progress** - ordered per-task summaries; Chain fanout is one logical step with real item counts and collect metadata
+- **Usage tracking** - turns, tokens, and context per execution unit; aggregates sum tokens/turns and use `ctx:max` (no aggregate model/thinking); partial stats stream live for `grok-acp`
 - **Abort support** - Ctrl+C propagates and kills active subprocesses
 
 ## Local development

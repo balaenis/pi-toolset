@@ -44,6 +44,40 @@ Pass multiple `{ agent, task }` items under `tasks`:
 Up to 8 tasks run concurrently, 4 at a time. Each task's final output returns to
 the parent model, capped at 50 KB.
 
+## Give a step a short collapse title
+
+Add a `title` (max 30 characters) to any single call, parallel task, chain
+step, or fanout `parallel` block. The collapsed summary shows the title
+instead of the task preview, clamped to 30 terminal columns; the expanded
+view still shows the complete task.
+
+```json
+{
+  "tasks": [
+    { "agent": "explore", "task": "Find all model definitions.", "title": "models" },
+    { "agent": "explore", "task": "Find all provider implementations.", "title": "providers" }
+  ]
+}
+```
+
+```json
+{
+  "chain": [
+    { "agent": "explore", "name": "context", "task": "Find auth code.", "title": "查认证" },
+    { "agent": "planner", "name": "plan", "task": "Plan changes for {previous}.", "title": "计划" },
+    {
+      "expand": { "from": { "output": "plan", "path": "/items" } },
+      "parallel": { "agent": "worker", "task": "Process {item}", "title": "处理项" },
+      "collect": { "name": "results" }
+    }
+  ]
+}
+```
+
+Generate the title before the call and keep it concise. When omitted or blank,
+the task preview is used. Background launches use the first item's title as
+the launch summary.
+
 ## Chain agents with template placeholders
 
 ```json
