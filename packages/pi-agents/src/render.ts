@@ -3,7 +3,12 @@
 
 import * as os from 'node:os';
 import type { Static } from '@earendil-works/pi-ai';
-import { getMarkdownTheme, type Theme, type ThemeColor } from '@earendil-works/pi-coding-agent';
+import {
+  getMarkdownTheme,
+  type Theme,
+  type ThemeColor,
+  type ToolDefinition,
+} from '@earendil-works/pi-coding-agent';
 import { type Component, Container, Markdown, Spacer, Text } from '@earendil-works/pi-tui';
 import { COLLAPSED_ITEM_COUNT } from './constants.ts';
 import { formatUsageStats, getDisplayItems, getFinalOutput, isFailedResult } from './output.ts';
@@ -11,6 +16,68 @@ import type { SubagentParams } from './schema.ts';
 import type { DisplayItem, SingleResult, SubagentDetails } from './types.ts';
 
 type ThemeFg = (color: ThemeColor, text: string) => string;
+
+/** Braille spinner frames (same set as pi-tui Loader). */
+export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
+/** Frame step used when deriving the glyph from elapsed time between host re-renders. */
+export const SPINNER_INTERVAL_MS = 80;
+
+/**
+ * Row-local renderer state for `registerTool<..., AgentRenderState>`.
+ * No timers: pi's ToolExecutionComponent has no dispose hook, so intervals that
+ * call invalidate() would leak across chat clear/compaction/session teardown.
+ */
+export interface AgentRenderState {
+  /** Wall-clock start of the current running phase; cleared when not running. */
+  spinnerStartedAt?: number;
+}
+
+/**
+ * Official tool-renderer context for this tool, recovered from ToolDefinition
+ * (ToolRenderContext is not re-exported from the package entrypoint).
+ */
+export type AgentToolRenderContext = Parameters<
+  NonNullable<
+    ToolDefinition<typeof SubagentParams, SubagentDetails, AgentRenderState>['renderResult']
+  >
+>[3];
+
+/** Minimal context surface used by render helpers (state only). */
+export type AgentRenderContext = Pick<AgentToolRenderContext, 'state'>;
+
+/** Clear spinner bookkeeping. Safe on missing/partial state. */
+export function clearSpinnerState(state: AgentRenderState | undefined): void {
+  if (!state) return;
+  state.spinnerStartedAt = undefined;
+}
+
+export const stopSpinner = clearSpinnerState;
+
+/**
+ * Running-status glyph driven by host re-renders (tool onUpdate / isPartial
+ * flips), not by setInterval. Frame index is elapsed-time based so successive
+ * partial renders animate without retaining TUI/component references.
+ * Without context, falls back to a static hourglass for non-TUI callers.
+ */
+export function runningStatusGlyph(
+  isRunning: boolean,
+  context: AgentRenderContext | undefined,
+  now: () => number = Date.now
+): string {
+  if (!isRunning) {
+    clearSpinnerState(context?.state);
+    return '⏳';
+  }
+  if (!context) return '⏳';
+
+  const state = context.state;
+  if (typeof state.spinnerStartedAt !== 'number') {
+    state.spinnerStartedAt = now();
+  }
+  const elapsed = Math.max(0, now() - state.spinnerStartedAt);
+  const frame = Math.floor(elapsed / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length;
+  return SPINNER_FRAMES[frame]!;
+}
 
 export function formatToolCall(
   toolName: string,
@@ -188,13 +255,16 @@ function appendUsageLine(
 export function renderResult(
   result: RenderResultInput,
   { expanded, isPartial = false }: RenderResultOptions,
-  theme: Theme
+  theme: Theme,
+  context?: AgentRenderContext | AgentToolRenderContext
 ): Component {
   const details = result.details;
   const mdTheme = getMarkdownTheme();
   const themeFg: ThemeFg = theme.fg.bind(theme);
 
   if (details && details.mode === 'background') {
+    // Background is a one-shot launch notice — keep the static hourglass, no spinner.
+    clearSpinnerState(context?.state);
     const launches = details.background ?? [];
     if (launches.length > 0) {
       const launch = launches[0];
@@ -210,6 +280,7 @@ export function renderResult(
   }
 
   if (!details || details.results.length === 0) {
+    clearSpinnerState(context?.state);
     const text = result.content[0];
     return new Text(text?.type === 'text' ? (text.text ?? '(no output)') : '(no output)', 0, 0);
   }
@@ -233,11 +304,16 @@ export function renderResult(
   if (details.mode === 'single' && details.results.length === 1) {
     const r = details.results[0];
     const isError = isFailedResult(r);
-    const icon = isError
-      ? theme.fg('error', '✗')
-      : isPartial
-        ? theme.fg('warning', '⏳')
-        : theme.fg('success', '✓');
+    let icon: string;
+    if (isError) {
+      clearSpinnerState(context?.state);
+      icon = theme.fg('error', '✗');
+    } else if (isPartial) {
+      icon = theme.fg('warning', runningStatusGlyph(true, context));
+    } else {
+      clearSpinnerState(context?.state);
+      icon = theme.fg('success', '✓');
+    }
     const displayItems = getDisplayItems(r.messages);
     const finalOutput = getFinalOutput(r.messages);
 
@@ -296,6 +372,7 @@ export function renderResult(
   }
 
   if (details.mode === 'chain') {
+    clearSpinnerState(context?.state);
     const successCount = details.results.filter((r) => r.exitCode === 0).length;
     const icon =
       successCount === details.results.length ? theme.fg('success', '✓') : theme.fg('error', '✗');
@@ -382,8 +459,9 @@ export function renderResult(
     ).length;
     const failCount = details.results.filter((r) => r.exitCode !== -1 && isFailedResult(r)).length;
     const isRunning = running > 0;
+    const runningGlyph = runningStatusGlyph(isRunning, context);
     const icon = isRunning
-      ? theme.fg('warning', '⏳')
+      ? theme.fg('warning', runningGlyph)
       : failCount > 0
         ? theme.fg('warning', '◐')
         : theme.fg('success', '✓');
@@ -445,7 +523,7 @@ export function renderResult(
     for (const r of details.results) {
       const rIcon =
         r.exitCode === -1
-          ? theme.fg('warning', '⏳')
+          ? theme.fg('warning', runningGlyph)
           : isFailedResult(r)
             ? theme.fg('error', '✗')
             : theme.fg('success', '✓');
@@ -462,6 +540,7 @@ export function renderResult(
     return new Text(text, 0, 0);
   }
 
+  clearSpinnerState(context?.state);
   const text = result.content[0];
   return new Text(text?.type === 'text' ? (text.text ?? '(no output)') : '(no output)', 0, 0);
 }

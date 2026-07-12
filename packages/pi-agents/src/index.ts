@@ -11,10 +11,11 @@ import {
 } from './background.ts';
 import { renderAgentCatalogue, shouldInjectAgentCatalogue } from './catalogue.ts';
 import { registerAgentCommand } from './command.ts';
-import { renderCall, renderResult } from './render.ts';
+import { type AgentRenderState, renderCall, renderResult } from './render.ts';
 import { SubagentParams } from './schema.ts';
 import { setDiscoveredSkillsFromOptions } from './skills.ts';
 import { executeAgentTool } from './tool.ts';
+import type { SubagentDetails } from './types.ts';
 
 type RawArgs = Record<string, unknown> & { run_in_background?: unknown };
 
@@ -49,7 +50,7 @@ export default function (pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
   });
 
-  pi.registerTool({
+  pi.registerTool<typeof SubagentParams, SubagentDetails, AgentRenderState>({
     name: 'agent',
     label: 'Agent',
     description: `Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it.
