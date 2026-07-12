@@ -323,6 +323,12 @@ function clampTitle(title: string | undefined, maxColumns: number): string | und
   return clamped || undefined;
 }
 
+/** Capitalize the first character of an agent name for display. */
+function displayAgentName(name: string): string {
+  if (!name) return name;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
 function statusGlyph(status: ExecutionStatus, theme: Theme, context?: AgentRenderContext): string {
   switch (status) {
     case 'queued':
@@ -461,7 +467,8 @@ function resultSummaryParts(
   }
 ): SummaryParts {
   const status = resolveExecutionStatus(r);
-  const agentLabel = (options?.labelPrefix ?? '') + r.agent + (options?.agentSuffix ?? '');
+  const agentLabel =
+    (options?.labelPrefix ?? '') + displayAgentName(r.agent) + (options?.agentSuffix ?? '');
   return {
     glyph: statusGlyph(status, theme, options?.animateContext),
     label: theme.fg('accent', agentLabel),
@@ -561,7 +568,7 @@ function appendExpandedResultSections(
     container.addChild(new Spacer(1));
     container.addChild(
       new Text(
-        `${statusGlyph(status, theme)} ${theme.fg('accent', r.agent)} ${theme.fg('dim', usageStr)}`,
+        `${statusGlyph(status, theme)} ${theme.fg('accent', displayAgentName(r.agent))} ${theme.fg('dim', usageStr)}`,
         0,
         0
       )
@@ -789,7 +796,7 @@ function renderChainCollapsed(
         const usage = aggregateUsage(items.length > 0 ? items : []);
         const parts: SummaryParts = {
           glyph: statusGlyph(step.status, theme, context),
-          label: theme.fg('accent', `${step.step}. ${step.agent} fanout`),
+          label: theme.fg('accent', `${step.step}. ${displayAgentName(step.agent)} fanout`),
           task: step.taskTemplate,
           titlePreview: clampTitle(step.title, TITLE_MAX_COLUMNS),
           progress: fanoutProgressText(step),

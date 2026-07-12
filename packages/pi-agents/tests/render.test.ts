@@ -288,7 +288,7 @@ describe('renderResult single', () => {
     );
     expect(startsWithSpinnerFrame(text)).toBe(true);
     expect(text).not.toContain(RUNNING_STATUS_GLYPH);
-    expect(text).toContain('explore');
+    expect(text).toContain('Explore');
     expect(text).toContain('9 turns');
     expect(text).toContain('grok-4.5');
     expect(text).toContain('└');
@@ -425,7 +425,7 @@ describe('renderResult single', () => {
       ),
       50
     );
-    expect(text).toContain('explore');
+    expect(text).toContain('Explore');
     expect(text).toContain('9 turns');
     expect(text).toMatch(/\.\.\./);
   });
@@ -451,7 +451,7 @@ describe('renderResult single', () => {
     );
     const firstLine = text.split('\n')[0] ?? '';
     expect(visibleWidth(firstLine)).toBeLessThanOrEqual(width);
-    expect(firstLine).toContain('explore');
+    expect(firstLine).toContain('Explore');
     expect(startsWithSpinnerFrame(firstLine)).toBe(true);
   });
 });
@@ -491,9 +491,9 @@ describe('renderResult parallel', () => {
         context
       )
     );
-    expect(text).toContain('explore');
-    expect(text).toContain('reviewer');
-    expect(text).toContain('worker');
+    expect(text).toContain('Explore');
+    expect(text).toContain('Reviewer');
+    expect(text).toContain('Worker');
     expect(text).toContain('└');
     expect(text).toContain('read');
     expect(text).toContain('Total:');
@@ -565,8 +565,8 @@ describe('renderResult parallel', () => {
     );
     expect(text.trimStart().startsWith('─── Task ───')).toBe(true);
     expect(text).not.toMatch(/^parallel /i);
-    expect(text).toContain('✔ a');
-    expect(text).toContain('⧗ b');
+    expect(text).toContain('✔ A');
+    expect(text).toContain('⧗ B');
     expect(text).toContain('─── Task ───');
     expect(text).toContain('t1');
     expect(text).toContain('t2');
@@ -612,9 +612,9 @@ describe('renderResult chain', () => {
         context
       )
     );
-    expect(text).toContain('1. explore');
-    expect(text).toContain('2. planner');
-    expect(text).not.toContain('3. worker'); // queued omitted
+    expect(text).toContain('1. Explore');
+    expect(text).toContain('2. Planner');
+    expect(text).not.toContain('3. Worker'); // queued omitted
     expect(text).toContain('└');
     expect(text).toContain('read');
     expect(text).toContain('Chain: step 2/3');
@@ -686,8 +686,8 @@ describe('renderResult chain', () => {
         context
       )
     );
-    expect(text).toContain('1. planner');
-    expect(text).toContain('2. reviewer fanout');
+    expect(text).toContain('1. Planner');
+    expect(text).toContain('2. Reviewer fanout');
     expect(text).toContain('2/3 done');
     expect(text).toContain('[3/3]');
     expect(text).toContain('read');
@@ -751,7 +751,7 @@ describe('renderResult chain', () => {
     );
     expect(text.trimStart().startsWith('─── Fanout step 1 ───')).toBe(true);
     expect(text).not.toMatch(/^chain /i);
-    expect(text).toContain('✔ reviewer');
+    expect(text).toContain('✔ Reviewer');
     expect(text).toContain('Fanout');
     expect(text).toContain('expand: plan/items');
     expect(text).toContain('collect: reviews');
@@ -781,8 +781,8 @@ describe('renderResult chain', () => {
         context
       )
     );
-    expect(text).toContain('1. a');
-    expect(text).toContain('2. b');
+    expect(text).toContain('1. A');
+    expect(text).toContain('2. B');
     expect(text).toContain('Chain:');
   });
 });
@@ -847,7 +847,7 @@ describe('renderResult misc', () => {
         renderResult(partial, { expanded: false, isPartial: true }, theme, context)
       );
       expect(first.startsWith(SPINNER_FRAMES[0]!)).toBe(true);
-      expect(first).toContain('explore');
+      expect(first).toContain('Explore');
       expect(state.spinnerStartedAt).toBe(10_000);
       expect(activeSpinnerCount()).toBe(1);
       expect(isSharedSpinnerTickerActive()).toBe(true);
