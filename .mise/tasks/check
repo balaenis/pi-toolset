@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
-#MISE description="Run hk check"
+#MISE description="Run repository checks"
+
+if rg -n '"workspace:' --glob package.json .; then
+  echo 'workspace: dependency specs break Pi git-package installation with npm' >&2
+  exit 1
+fi
 
 hk check
