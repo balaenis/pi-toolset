@@ -142,6 +142,7 @@ describe('getDetectedRecipeServers', () => {
     makeExecutable(dir, 'vscode-css-language-server');
     makeExecutable(dir, 'vue-language-server');
     makeExecutable(dir, 'vscode-eslint-language-server');
+    makeExecutable(dir, 'tailwindcss-language-server');
     const detected = getDetectedRecipeServers(dir);
     const names = Object.keys(detected).sort();
     expect(names).toEqual([
@@ -155,6 +156,7 @@ describe('getDetectedRecipeServers', () => {
       'kotlin',
       'lua',
       'python',
+      'tailwindcss',
       'typescript',
       'vue',
       'yaml',
@@ -169,6 +171,13 @@ describe('getDetectedRecipeServers', () => {
     expect(eslintSettings.packageManager).toBe('npm');
     expect(eslintSettings.useFlatConfig).toBe(true);
     expect(eslintSettings.workingDirectory).toEqual({ mode: 'location' });
+    expect(detected.tailwindcss!.command).toBe('tailwindcss-language-server');
+    expect(detected.tailwindcss!.args).toEqual(['--stdio']);
+    expect(detected.tailwindcss!.role).toBe('companion');
+    expect(detected.tailwindcss!.startupMode).toBe('manual');
+    expect(detected.tailwindcss!.conflictGroup).toBeUndefined();
+    expect(detected.tailwindcss!.extensionToLanguage['.tsx']).toBe('typescriptreact');
+    expect(detected.tailwindcss!.extensionToLanguage['.svelte']).toBe('svelte');
     expect(detected.typescript!.role).toBe('primary');
     expect(detected.typescript!.conflictGroup).toBe('typescript');
     expect(detected.python!.extensionToLanguage['.py']).toBe('python');
@@ -218,6 +227,9 @@ describe('recipe hint helpers', () => {
     expect(recipeCoversExtension('.css')).toBe(true);
     expect(recipeCoversExtension('.vue')).toBe(true);
     expect(recipeCoversExtension('.mjs')).toBe(true);
+    expect(recipeCoversExtension('.svelte')).toBe(true);
+    expect(recipeCoversExtension('.astro')).toBe(true);
+    expect(recipeCoversExtension('.mdx')).toBe(true);
     expect(recipeCoversExtension('.foo')).toBe(false);
   });
 });

@@ -98,34 +98,35 @@ Using the recipe name `eslint` inherits the built-in ESLint defaults
 required for pull diagnostics. With a different server name, supply your own
 `settings` block.
 
-## Enable a manual server (Tailwind)
+## Enable the built-in Tailwind CSS server
 
-Manual servers stay dormant until you enable them for the current session - the
-recommended default for broad companions like Tailwind CSS:
+Install the server and ensure its command is on `PATH`:
+
+```sh
+npm install -g @tailwindcss/language-server
+```
+
+The built-in `tailwindcss` recipe is autodetected as a manual companion. Enable
+it for the current session via `/lsp start` (an interactive panel; space to
+toggle, esc to close). Manual servers are only enrolled into routing after you
+start them. Use `/lsp status` to see its `startup` mode and `manual active` flag.
+Requires TUI mode.
+
+To start Tailwind CSS automatically in a project, override only the recipe's
+startup mode in `<project>/.pi/@balaenis/pi-lsp/config.json`:
 
 ```jsonc
 {
   "servers": {
     "tailwindcss": {
-      "command": "tailwindcss-language-server",
-      "args": ["--stdio"],
-      "extensionToLanguage": {
-        ".js": "javascript",
-        ".jsx": "javascriptreact",
-        ".ts": "typescript",
-        ".tsx": "typescriptreact",
-      },
-      "role": "companion",
-      "startupMode": "manual",
+      "startupMode": "auto",
     },
   },
 }
 ```
 
-Then enable it for the session via `/lsp start` (an interactive panel; space to
-toggle, esc to close). Manual servers are only enrolled into routing after you
-start them. Use `/lsp status` to see each server's `startup` mode and
-`manual active` flag. Requires TUI mode.
+Using the built-in recipe name inherits its command, arguments, extension map,
+and companion role.
 
 ## Inspect diagnostics
 

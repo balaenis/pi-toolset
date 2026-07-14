@@ -6,9 +6,9 @@ Language Server Protocol support for [Pi](https://github.com/earendil-works/pi)'
 
 - Nine `lsp` tool operations (definition, references, hover, symbols, call hierarchy, implementation)
 - Passive diagnostics from every active server covering a file (primary + companions), push and pull
-- Zero-config autodetection for 14 common language servers
+- Zero-config autodetection for 15 common language servers
 - Multi-server routing: one primary for navigation, zero or more companions for diagnostics
-- Manual (`startupMode: "manual"`) opt-in for broad companions like Tailwind CSS
+- Built-in Tailwind CSS companion with manual (`startupMode: "manual"`) opt-in
 - Restart-on-crash with bounded retryable startup attempts
 - Statusline health indicator and `/lsp status|diagnostics|start` commands
 - Per-project JSONC config with field-level recipe merging

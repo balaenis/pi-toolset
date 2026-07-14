@@ -76,6 +76,16 @@ describe('zero-config: PATH detection drives the server set', () => {
     expect(servers.typescript!.extensionToLanguage['.tsx']).toBe('typescriptreact');
   });
 
+  it('returns the Tailwind CSS recipe as a manual companion when detected', async () => {
+    makeExecutable(pathDir, 'tailwindcss-language-server');
+    const { servers } = await getAllLspServers(cwdDir);
+    expect(Object.keys(servers)).toEqual(['tailwindcss']);
+    expect(servers.tailwindcss!.command).toBe('tailwindcss-language-server');
+    expect(servers.tailwindcss!.role).toBe('companion');
+    expect(servers.tailwindcss!.startupMode).toBe('manual');
+    expect(servers.tailwindcss!.extensionToLanguage['.astro']).toBe('astro');
+  });
+
   it('returns multiple recipes when multiple binaries exist', async () => {
     makeExecutable(pathDir, 'typescript-language-server');
     makeExecutable(pathDir, 'pyright-langserver');
