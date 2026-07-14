@@ -64,10 +64,12 @@ export async function executeJobTool(
   }
 
   if (params.action === 'get') {
+    if (!params.runId) return errorResult('runId is required for get action');
     return getRun(runStore, params.runId);
   }
 
   if (params.action === 'resume') {
+    if (!params.runId) return errorResult('runId is required for resume action');
     return resumeRun(
       runStore,
       runCoordinator,

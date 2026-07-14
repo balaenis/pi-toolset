@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { JobParams } from '../src/job-schema.ts';
 import { executeJobTool } from '../src/job-tool.ts';
 import { createRunStore } from '../src/run-store.ts';
 import { createRunCoordinator, agentFingerprint } from '../src/run-coordinator.ts';
@@ -66,6 +67,16 @@ async function createTestRun(
   });
   return created.runId;
 }
+
+describe('JobParams', () => {
+  it('uses an OpenAI-compatible top-level object schema', () => {
+    expect(JobParams.type).toBe('object');
+    expect(JobParams.required).toEqual(['action']);
+    expect(JobParams.properties.action).toBeDefined();
+    expect(JobParams.properties.runId).toBeDefined();
+    expect('anyOf' in JobParams).toBe(false);
+  });
+});
 
 describe('executeJobTool', () => {
   let tmpRoot: string;
@@ -132,6 +143,34 @@ describe('executeJobTool', () => {
       { runStore: store, runCoordinator: coordinator, agents: [] }
     );
     expect(result.isError).toBe(true);
+  });
+
+  it('rejects get without a run id', async () => {
+    const store = createRunStore({ rootDir: tmpRoot });
+    const coordinator = createRunCoordinator({ store });
+
+    const result = await executeJobTool(
+      { action: 'get' },
+      { runStore: store, runCoordinator: coordinator, agents: [] }
+    );
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain(
+      'runId is required for get action'
+    );
+  });
+
+  it('rejects resume without a run id', async () => {
+    const store = createRunStore({ rootDir: tmpRoot });
+    const coordinator = createRunCoordinator({ store });
+
+    const result = await executeJobTool(
+      { action: 'resume' },
+      { runStore: store, runCoordinator: coordinator, agents: [] }
+    );
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain(
+      'runId is required for resume action'
+    );
   });
 
   it('inspects resume eligibility for an interrupted run', async () => {

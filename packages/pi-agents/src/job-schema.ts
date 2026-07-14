@@ -23,40 +23,25 @@ export const StatusFilterSchema = StringEnum(
   }
 );
 
-export const JobParams = Type.Union([
-  Type.Object({
-    action: StringEnum(['list'] as const, {
-      description: 'List recent runs with status, unit counts, and capability.',
-    }),
-    status: Type.Optional(StatusFilterSchema),
-    limit: Type.Optional(
-      Type.Integer({
-        minimum: 1,
-        maximum: 100,
-        description: 'Maximum number of runs to list (default 20, max 100).',
-      })
-    ),
-  }),
-  Type.Object({
-    action: StringEnum(['get'] as const, {
-      description: 'Get detailed status for a specific run.',
-    }),
-    runId: Type.String({
-      description: 'Run ID (required).',
-    }),
-  }),
-  Type.Object({
-    action: StringEnum(['resume'] as const, {
-      description: 'Resume an interrupted run.',
-    }),
-    runId: Type.String({
-      description: 'Run ID (required).',
-    }),
-    allowReplay: Type.Optional(
-      Type.Boolean({
-        description:
-          'Allow replay-capable units to re-run from the beginning. Only set after accepting duplicate-side-effect risk.',
-      })
-    ),
-  }),
-]);
+export const JobParams = Type.Object({
+  action: JobActionSchema,
+  runId: Type.Optional(
+    Type.String({
+      description: 'Run ID. Required when action is get or resume.',
+    })
+  ),
+  status: Type.Optional(StatusFilterSchema),
+  limit: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: 100,
+      description: 'Maximum number of runs to list (default 20, max 100).',
+    })
+  ),
+  allowReplay: Type.Optional(
+    Type.Boolean({
+      description:
+        'For resume only: allow replay-capable units to re-run from the beginning. Only set after accepting duplicate-side-effect risk.',
+    })
+  ),
+});
