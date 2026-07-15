@@ -634,14 +634,9 @@ export class AgentDetailPanel implements Component, Focusable {
         ? 'session'
         : 'no-session';
     const status =
-      this.statusMessage ||
-      (this.isRunningInputBlocked()
-        ? 'Grok ACP input is unavailable while running; wait or press Ctrl+X to cancel.'
-        : snap
-          ? `queues ${snap.queueCount} · ${sessionLabel}`
-          : '');
+      this.statusMessage || (snap ? `queues ${snap.queueCount} · ${sessionLabel}` : '');
     const statusLine = this.opts.theme.fg(
-      this.statusMessage || this.isRunningInputBlocked() ? 'warning' : 'dim',
+      this.statusMessage ? 'warning' : 'dim',
       truncateToWidth(status, width)
     );
     // Collapsed: hint expand-all; expanded: hint fold back to last-N preview.
