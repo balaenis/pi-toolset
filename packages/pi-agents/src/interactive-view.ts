@@ -409,9 +409,7 @@ export class AgentDetailPanel implements Component, Focusable {
       ensureTranscript?: (
         key: string
       ) =>
-        | Promise<InteractiveEndpointSnapshot | undefined>
-        | InteractiveEndpointSnapshot
-        | undefined;
+        Promise<InteractiveEndpointSnapshot | undefined> | InteractiveEndpointSnapshot | undefined;
     };
     if (typeof reg.ensureTranscript !== 'function') return;
     try {

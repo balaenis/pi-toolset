@@ -11,13 +11,7 @@ export type IsolationMode = 'none' | 'worktree';
 
 /** Authoritative execution-unit status for rendering and progress counts. */
 export type ExecutionStatus =
-  | 'queued'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'skipped'
-  | 'interrupted';
+  'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped' | 'interrupted';
 
 export interface UsageStats {
   input: number;

@@ -38,12 +38,7 @@ export type GrokAcpSpawnFn = (
 ) => GrokAcpSpawnedChild;
 
 export type GrokAcpLifecycleStage =
-  | 'spawn'
-  | 'initialize'
-  | 'authenticate'
-  | 'session'
-  | 'prompt'
-  | 'shutdown';
+  'spawn' | 'initialize' | 'authenticate' | 'session' | 'prompt' | 'shutdown';
 
 const DEFAULT_STAGE_TIMEOUT_MS = 60_000;
 const DEFAULT_PROMPT_TIMEOUT_MS = 60 * 60 * 1000;

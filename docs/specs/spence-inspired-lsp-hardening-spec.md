@@ -156,11 +156,7 @@ export interface ProjectBinarySubject {
 export interface TrustDecision {
   allowed: boolean;
   reason:
-    | 'trusted'
-    | 'allowed-by-policy'
-    | 'denied-by-policy'
-    | 'user-denied'
-    | 'prompt-unavailable';
+    'trusted' | 'allowed-by-policy' | 'denied-by-policy' | 'user-denied' | 'prompt-unavailable';
 }
 
 export async function resolveProjectBinaryTrust(

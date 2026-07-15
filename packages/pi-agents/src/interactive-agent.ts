@@ -33,13 +33,7 @@ export const INTERACTIVE_LINK_TYPE = 'pi-agents-interactive-link';
 export const MAX_IDLE_TRANSPORTS = 4;
 
 export type InteractiveEndpointStatus =
-  | 'registered'
-  | 'starting'
-  | 'running'
-  | 'idle'
-  | 'detached'
-  | 'error'
-  | 'unavailable';
+  'registered' | 'starting' | 'running' | 'idle' | 'detached' | 'error' | 'unavailable';
 
 export type InteractiveOutboundMode = 'prompt' | 'steer' | 'follow_up';
 

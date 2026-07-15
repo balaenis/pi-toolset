@@ -133,13 +133,7 @@ A fresh session path returned by `SessionManager.create()` is a valid planned pa
 
 ```ts
 type InteractiveEndpointStatus =
-  | 'registered'
-  | 'starting'
-  | 'running'
-  | 'idle'
-  | 'detached'
-  | 'error'
-  | 'unavailable';
+  'registered' | 'starting' | 'running' | 'idle' | 'detached' | 'error' | 'unavailable';
 
 interface InteractiveAgentEndpoint {
   key: `${string}:${string}`;

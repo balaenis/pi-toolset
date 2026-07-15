@@ -794,9 +794,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   }
 
   type PublishResult =
-    | { ok: true }
-    | { ok: false; retry: true }
-    | { ok: false; error: RunStoreError };
+    { ok: true } | { ok: false; retry: true } | { ok: false; error: RunStoreError };
 
   function publishStagedOwner(
     runId: string,

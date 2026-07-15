@@ -2,12 +2,7 @@
 // ABOUTME: Used by chain steps and fanout sub-tasks to enforce machine-readable final outputs without new deps.
 
 export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 export interface JsonObject {
   [key: string]: JsonValue;

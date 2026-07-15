@@ -217,11 +217,7 @@ export type RunLifecycleEvent =
 
 /** Error codes returned by the run store. */
 export type RunStoreErrorCode =
-  | 'corrupt_run'
-  | 'run_not_found'
-  | 'run_active'
-  | 'claim_corrupt'
-  | 'run_store_error';
+  'corrupt_run' | 'run_not_found' | 'run_active' | 'claim_corrupt' | 'run_store_error';
 
 export interface RunStoreError {
   code: RunStoreErrorCode;
@@ -247,5 +243,4 @@ export type ListRunsResult = Array<LoadedRun | CorruptRunEntry>;
 
 /** Result of an acquire attempt against a run's ticket lock. */
 export type ClaimResult =
-  | { ok: true; claimId: string; ticket: number }
-  | { ok: false; error: RunStoreError };
+  { ok: true; claimId: string; ticket: number } | { ok: false; error: RunStoreError };

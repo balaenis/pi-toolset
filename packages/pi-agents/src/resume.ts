@@ -273,8 +273,7 @@ export function inspectResume(
 }
 
 export type ResumeRunResult =
-  | { ok: true; runId: string }
-  | { ok: false; runId: string; reason: string };
+  { ok: true; runId: string } | { ok: false; runId: string; reason: string };
 
 export interface ResumeRunOptions {
   store: RunStore;
