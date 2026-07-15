@@ -2551,6 +2551,16 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
     return restored;
   }
 
+  /**
+   * User/session cancel settle: leave a durable list signal for glyphs.
+   * After activation is cleared, UI classifies interrupted via usage.stopReason.
+   */
+  function markCancelledUsage(ep: InteractiveAgentEndpoint): void {
+    if (ep.usage) {
+      ep.usage.stopReason = 'aborted';
+    }
+  }
+
   function settleActivationError(
     ep: InteractiveAgentEndpoint,
     message: string,
@@ -2564,6 +2574,9 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
     ep.activation.settled = true;
     ep.activation.error = message;
     ep.activation.terminalOverride = terminal;
+    if (terminal === 'cancelled') {
+      markCancelledUsage(ep);
+    }
     const activationId = ep.activation.id;
     publish(ep, 'full');
     emit({
@@ -2776,6 +2789,8 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
           // Honour terminal override from abort/max_turns (cancelled stays cancelled).
           if (ep.activation.terminalOverride === 'cancelled') {
             ep.status = 'idle';
+            // Persist formal abort reason: list/widget glyphs need it after activation clears.
+            markCancelledUsage(ep);
           } else if (ep.activation.terminalOverride === 'error') {
             ep.status = 'error';
           } else {
@@ -3494,6 +3509,11 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
         // New activation resets outbound poison so a prior failed prompt cannot
         // block a fresh turn after reopen/retry.
         outboundPoisonByKey.delete(key);
+        // Drop prior-run terminal stopReason (e.g. aborted) so list/widget glyphs
+        // do not keep interrupted ⊘ when this turn settles without a new reason.
+        if (ep.usage?.stopReason !== undefined) {
+          delete ep.usage.stopReason;
+        }
       } else if (policy?.maxTurns && !ep.activation.policy?.maxTurns) {
         ep.activation.policy = { ...ep.activation.policy, ...policy };
       }
@@ -3721,8 +3741,11 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
                   ? (err as { code: string }).code
                   : undefined;
             current.errorCode = structured ?? 'transport_error';
-          } else if (current.status === 'starting') {
-            current.status = 'detached';
+          } else {
+            markCancelledUsage(current);
+            if (current.status === 'starting') {
+              current.status = 'detached';
+            }
           }
           const settledId = current.activation.id;
           publish(current);

@@ -82,24 +82,6 @@ export function createInteractiveViewController(options: InteractiveViewControll
     const ui = options.getUi();
     if (!ui) return;
 
-    const renderLines = (): string[] => {
-      // Metadata only — never materialize message history for the navigator chrome.
-      const endpoints = registry.listVisibleMeta();
-      // Show only while some visible endpoint is starting/running (status-only; not hasActivation).
-      // When shown, list every visible endpoint (idle rows stay in the chrome).
-      if (!endpoints.some((ep) => ep.status === 'starting' || ep.status === 'running')) {
-        return [];
-      }
-      const names = endpoints.map((ep) => endpointLabel(ep, endpoints));
-      const nameCol = maxVisibleWidth(names);
-      const lines: string[] = ['● main'];
-      for (let i = 0; i < endpoints.length; i++) {
-        lines.push(formatEndpointListLabel(names[i]!, statusText(endpoints[i]!), nameCol));
-      }
-      lines.push('/agent view or Ctrl+Alt+Down');
-      return lines;
-    };
-
     const refresh = () => {
       // Whole custom nav (list + detail) owns the editor surface — hide chrome entirely.
       if (viewOpen) {
@@ -109,13 +91,45 @@ export function createInteractiveViewController(options: InteractiveViewControll
         }
         return;
       }
-      const lines = renderLines();
-      if (lines.length === 0) {
+      // Metadata only — never materialize message history for the navigator chrome.
+      const all = registry.listVisibleMeta();
+      // Show only while some visible endpoint is starting/running (status-only; not hasActivation).
+      // Rows: only those running endpoints (idle/error/detached remain reachable via /agent view).
+      const active = all.filter((ep) => isEndpointRunning(ep.status));
+      if (active.length === 0) {
         ui.setWidget(WIDGET_KEY, undefined);
         widgetInstalled = false;
         return;
       }
-      ui.setWidget(WIDGET_KEY, lines, { placement: 'belowEditor' });
+      // Labels use full visible set for collision suffixes so they match Agent Nav.
+      const names = active.map((ep) => endpointLabel(ep, all));
+      const nameCol = maxVisibleWidth(names);
+      // Component factory so status glyphs pick up theme colors (warning/success/error).
+      // Capture the snapshot at refresh time; host invokes the factory immediately.
+      ui.setWidget(
+        WIDGET_KEY,
+        (_tui: TUI, theme: Theme) => {
+          const themeFg: ThemeFg = (color, text) => theme.fg(color, text);
+          const lines: string[] = ['● main'];
+          for (let i = 0; i < active.length; i++) {
+            lines.push(
+              formatEndpointListLabel(
+                active[i]!,
+                names[i]!,
+                statusText(active[i]!),
+                nameCol,
+                themeFg
+              )
+            );
+          }
+          lines.push('/agent view or Ctrl+Alt+Down');
+          return {
+            render: () => lines,
+            invalidate: () => undefined,
+          };
+        },
+        { placement: 'belowEditor' }
+      );
       widgetInstalled = true;
     };
 
@@ -262,16 +276,23 @@ export class AgentNavigatorPanel implements Component, Focusable {
 
   private buildItems(): SelectItem[] {
     const endpoints = this.opts.registry.listVisibleMeta();
-    // SelectList supplies → / two-space prefix; labels carry ●/○ for chrome parity.
+    // SelectList supplies → / two-space prefix; labels carry status glyphs for chrome parity.
     // Status lives in the primary label so narrow terminals still show it (description is dropped ≤40 cols).
     // Pad names to a shared column so trailing status (e.g. detached) lines up across rows.
     const names = endpoints.map((ep) => this.opts.endpointLabel(ep, endpoints));
     const nameCol = maxVisibleWidth(names);
+    const themeFg: ThemeFg = (color, text) => this.opts.theme.fg(color, text);
     const items: SelectItem[] = [{ value: 'main', label: '● main' }];
     for (let i = 0; i < endpoints.length; i++) {
       items.push({
         value: endpoints[i]!.key,
-        label: formatEndpointListLabel(names[i]!, this.opts.statusText(endpoints[i]!), nameCol),
+        label: formatEndpointListLabel(
+          endpoints[i]!,
+          names[i]!,
+          this.opts.statusText(endpoints[i]!),
+          nameCol,
+          themeFg
+        ),
       });
     }
     return items;
@@ -762,12 +783,80 @@ function padEndVisible(text: string, width: number): string {
   return text + ' '.repeat(width - w);
 }
 
+/** Theme color applicator; optional so pure helpers stay usable without a Theme. */
+type ThemeFg = (color: Parameters<Theme['fg']>[0], text: string) => string;
+
+/** Whether an endpoint counts as "running" for the below-editor widget. */
+function isEndpointRunning(status: InteractiveEndpointListItem['status']): boolean {
+  return status === 'starting' || status === 'running';
+}
+
 /**
- * Navigator/widget row: `○ <name>` padded so status starts at a shared column.
+ * Classify list/widget glyph kind from endpoint status + durable stopReason.
+ * - running: starting | running
+ * - error: error | unavailable
+ * - interrupted: settled with stopReason aborted (user cancel) or interrupted (session/process)
+ * - completed: idle | detached | registered (and other settled non-error)
+ *
+ * Cancel settle paths in the registry write usage.stopReason = 'aborted' so this
+ * survives after activation is cleared (do not rely on transient terminalOverride).
+ */
+function endpointStatusKind(
+  snap: Pick<InteractiveEndpointListItem, 'status' | 'usage'>
+): 'running' | 'completed' | 'interrupted' | 'error' {
+  if (isEndpointRunning(snap.status)) return 'running';
+  if (snap.status === 'error' || snap.status === 'unavailable') return 'error';
+  const stop = snap.usage?.stopReason;
+  if (stop === 'aborted' || stop === 'interrupted') return 'interrupted';
+  return 'completed';
+}
+
+/**
+ * Leading status glyph for agent list rows (widget + Agent Nav).
+ * running: warning ◐ · completed: success ● · interrupted: warning ⊘ · error: error ●
+ */
+function formatEndpointStatusGlyph(
+  snap: Pick<InteractiveEndpointListItem, 'status' | 'usage'>,
+  themeFg?: ThemeFg
+): string {
+  const kind = endpointStatusKind(snap);
+  let char: string;
+  let color: Parameters<Theme['fg']>[0];
+  switch (kind) {
+    case 'running':
+      char = '◐';
+      color = 'warning';
+      break;
+    case 'interrupted':
+      char = '⊘';
+      color = 'warning';
+      break;
+    case 'error':
+      char = '●';
+      color = 'error';
+      break;
+    case 'completed':
+    default:
+      char = '●';
+      color = 'success';
+      break;
+  }
+  return themeFg ? themeFg(color, char) : char;
+}
+
+/**
+ * Navigator/widget row: `{glyph} <name>` padded so status starts at a shared column.
  * `nameColumnWidth` is the max visible width of bare names in the current list.
  */
-function formatEndpointListLabel(name: string, status: string, nameColumnWidth: number): string {
-  return `○ ${padEndVisible(name, nameColumnWidth)} ${status}`;
+function formatEndpointListLabel(
+  snap: Pick<InteractiveEndpointListItem, 'status' | 'usage'>,
+  name: string,
+  status: string,
+  nameColumnWidth: number,
+  themeFg?: ThemeFg
+): string {
+  const glyph = formatEndpointStatusGlyph(snap, themeFg);
+  return `${glyph} ${padEndVisible(name, nameColumnWidth)} ${status}`;
 }
 
 /**
@@ -1038,6 +1127,9 @@ export const __test = {
   maxVisibleWidth,
   padEndVisible,
   formatEndpointListLabel,
+  formatEndpointStatusGlyph,
+  endpointStatusKind,
+  isEndpointRunning,
   endpointOrdering: (snaps: InteractiveEndpointSnapshot[]) =>
     [...snaps].sort((a, b) => a.linkCreatedAt - b.linkCreatedAt),
   /**

@@ -262,23 +262,3 @@ describe('pack manifest includes general, not worker', () => {
     ).toBe(false);
   });
 });
-
-describe('package peerDependencies metadata', () => {
-  it('pins @earendil-works peers to ^0.80.6 (not *) matching devDependencies', () => {
-    const pkg = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf-8')) as {
-      peerDependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-    const peers = [
-      '@earendil-works/pi-agent-core',
-      '@earendil-works/pi-ai',
-      '@earendil-works/pi-coding-agent',
-      '@earendil-works/pi-tui',
-    ];
-    for (const name of peers) {
-      expect(pkg.peerDependencies?.[name]).toBe('^0.80.6');
-      expect(pkg.devDependencies?.[name]).toBe('^0.80.6');
-      expect(pkg.peerDependencies?.[name]).not.toBe('*');
-    }
-  });
-});

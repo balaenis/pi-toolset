@@ -1361,6 +1361,10 @@ describe('InteractiveAgentRegistry reviewer fixes', () => {
     await expect(activateP).rejects.toMatchObject({ code: 'rejected' });
     expect(promptCalls).toBe(0);
     expect(settled.length).toBeGreaterThanOrEqual(1);
+    // List/widget interrupted glyph depends on durable stopReason after activation clears.
+    const after = registry.get(snap.key);
+    expect(after?.activation).toBeUndefined();
+    expect(after?.usage?.stopReason).toBe('aborted');
 
     await registry.shutdown();
     fs.rmSync(root, { recursive: true, force: true });
@@ -3000,6 +3004,73 @@ describe('InteractiveAgentRegistry streaming snapshot cost', () => {
     eventListener?.({ type: 'agent_settled' });
     await new Promise((r) => setImmediate(r));
     expect(registry.get(snap.key)?.activation).toBeUndefined();
+    expect(registry.get(snap.key)?.status).toBe('idle');
+    // After activation clears, list glyphs still classify interrupted via stopReason.
+    expect(registry.get(snap.key)?.usage?.stopReason).toBe('aborted');
+
+    await registry.shutdown();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('clears prior aborted stopReason on new activation so success settle is not stale interrupted', async () => {
+    const { root, store, coordinator } = makeTempStore();
+    const agent = makeAgent();
+    const eventListenerRef: { current?: (e: unknown) => void } = {};
+    const { registry, key } = await registerWithFakeTransport({
+      root,
+      store,
+      coordinator,
+      agent,
+      eventListenerRef,
+    });
+
+    const settled: string[] = [];
+    registry.subscribe((e) => {
+      if (e.type === 'activation_settled') settled.push(e.activationId);
+    });
+
+    // Turn 1: run then abort → durable stopReason aborted (interrupted glyph).
+    const act1 = await registry.activate(key, 'Task: abort-me', 'prompt', undefined, 'tool_call');
+    await new Promise((r) => setImmediate(r));
+    eventListenerRef.current?.({ type: 'agent_start' });
+    await registry.abort(key);
+    expect(registry.get(key)?.activation?.terminalOverride).toBe('cancelled');
+    eventListenerRef.current?.({ type: 'agent_end', messages: [], willRetry: false });
+    eventListenerRef.current?.({ type: 'agent_settled' });
+    await new Promise((r) => setImmediate(r));
+    expect(settled).toContain(act1.activationId);
+    expect(registry.get(key)?.activation).toBeUndefined();
+    expect(registry.get(key)?.status).toBe('idle');
+    expect(registry.get(key)?.usage?.stopReason).toBe('aborted');
+
+    // Turn 2: new activation must drop prior aborted immediately (no stale ⊘).
+    const act2 = await registry.activate(key, 'Task: retry-ok', 'prompt', undefined, 'view');
+    expect(act2.activationId).not.toBe(act1.activationId);
+    expect(registry.get(key)?.usage?.stopReason).toBeUndefined();
+
+    // Success settle without a new stopReason must not revive interrupted classification.
+    await new Promise((r) => setImmediate(r));
+    eventListenerRef.current?.({ type: 'agent_start' });
+    eventListenerRef.current?.({ type: 'agent_end', messages: [], willRetry: false });
+    eventListenerRef.current?.({ type: 'agent_settled' });
+    await new Promise((r) => setImmediate(r));
+    expect(settled).toContain(act2.activationId);
+    expect(registry.get(key)?.activation).toBeUndefined();
+    expect(registry.get(key)?.status).toBe('idle');
+    expect(registry.get(key)?.usage?.stopReason).toBeUndefined();
+    expect(registry.get(key)?.usage?.stopReason).not.toBe('aborted');
+
+    // Turn 3: abort again still leaves interrupted signal for glyphs.
+    const act3 = await registry.activate(key, 'Task: abort-again', 'prompt', undefined, 'view');
+    await new Promise((r) => setImmediate(r));
+    eventListenerRef.current?.({ type: 'agent_start' });
+    await registry.abort(key);
+    eventListenerRef.current?.({ type: 'agent_end', messages: [], willRetry: false });
+    eventListenerRef.current?.({ type: 'agent_settled' });
+    await new Promise((r) => setImmediate(r));
+    expect(settled).toContain(act3.activationId);
+    expect(registry.get(key)?.status).toBe('idle');
+    expect(registry.get(key)?.usage?.stopReason).toBe('aborted');
 
     await registry.shutdown();
     fs.rmSync(root, { recursive: true, force: true });
@@ -3965,6 +4036,7 @@ describe('InteractiveAgentRegistry adversarial review fixes', () => {
     expect(abortResolved).toBe(false);
     expect(registry.get(snap.key)?.activation).toBeUndefined();
     expect(registry.get(snap.key)?.status).toBe('idle');
+    expect(registry.get(snap.key)?.usage?.stopReason).toBe('aborted');
 
     await registry.shutdown();
     fs.rmSync(root, { recursive: true, force: true });

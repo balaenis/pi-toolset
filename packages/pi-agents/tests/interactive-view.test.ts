@@ -49,6 +49,37 @@ function fakeTheme() {
   };
 }
 
+/** Resolve setWidget content (string[] or theme factory) to plain lines for assertions. */
+function resolveWidgetLines(
+  content:
+    | string[]
+    | ((tui: unknown, theme: ReturnType<typeof fakeTheme>) => { render: () => string[] })
+    | undefined
+): string[] | undefined {
+  if (content === undefined) return undefined;
+  if (Array.isArray(content)) return content;
+  return content({}, fakeTheme()).render();
+}
+
+/** setWidget mock that materializes factory content into lastWidget lines. */
+function widgetCapture() {
+  let lastWidget: string[] | undefined;
+  return {
+    get last() {
+      return lastWidget;
+    },
+    setWidget: (
+      _key: string,
+      content:
+        | string[]
+        | ((tui: unknown, theme: ReturnType<typeof fakeTheme>) => { render: () => string[] })
+        | undefined
+    ) => {
+      lastWidget = resolveWidgetLines(content);
+    },
+  };
+}
+
 describe('interactive-view helpers', () => {
   it('orders endpoints by link creation time', () => {
     const ordered = __test.endpointOrdering([
@@ -402,7 +433,7 @@ describe('interactive-view helpers', () => {
     nav.dispose();
   });
 
-  it('AgentNavigatorPanel rows use ● main / ○ agent [- title] statusText via SelectList', () => {
+  it('AgentNavigatorPanel rows use status glyphs + agent [- title] statusText via SelectList', () => {
     const endpoints = [
       {
         key: 'run:explore',
@@ -535,16 +566,16 @@ describe('interactive-view helpers', () => {
     const nameCol = __test.maxVisibleWidth(names);
     for (let i = 0; i < names.length; i++) {
       expect(items[i + 1]?.label).toBe(
-        __test.formatEndpointListLabel(names[i]!, statuses[i]!, nameCol)
+        __test.formatEndpointListLabel(endpoints[i]!, names[i]!, statuses[i]!, nameCol)
       );
     }
-    // Explicit fixtures (CJK-aware padding).
-    expect(items[1]?.label).toBe('○ explore - 调查 agent nav       detached');
-    expect(items[2]?.label).toBe('○ plan - 规划输入框导航          detached');
-    expect(items[3]?.label).toBe('○ general - 确认 Pi nav 挂载能力 running');
+    // Explicit fixtures (CJK-aware padding). Completed/detached → ●; running → ◐.
+    expect(items[1]?.label).toBe('● explore - 调查 agent nav       detached');
+    expect(items[2]?.label).toBe('● plan - 规划输入框导航          detached');
+    expect(items[3]?.label).toBe('◐ general - 确认 Pi nav 挂载能力 running');
     // No title / title === agent: no duplicated name, no stray " - ".
-    expect(items[4]?.label).toBe('○ worker                         idle');
-    expect(items[5]?.label).toBe('○ review                         detached · 2 queued');
+    expect(items[4]?.label).toBe('● worker                         idle');
+    expect(items[5]?.label).toBe('● review                         detached · 2 queued');
     expect(items[4]?.label).not.toContain(' - ');
     expect(items[5]?.label).not.toContain(' - ');
 
@@ -571,7 +602,8 @@ describe('interactive-view helpers', () => {
       'worker - 确认 Pi nav 挂载能力',
     ];
     const nameCol = __test.maxVisibleWidth(names);
-    const labels = names.map((n) => __test.formatEndpointListLabel(n, 'detached', nameCol));
+    const snap = { status: 'detached' as const };
+    const labels = names.map((n) => __test.formatEndpointListLabel(snap, n, 'detached', nameCol));
     const startCols = labels.map((label) => {
       expect(label.endsWith('detached')).toBe(true);
       return visibleWidth(label.slice(0, label.length - 'detached'.length));
@@ -579,8 +611,8 @@ describe('interactive-view helpers', () => {
     expect(new Set(startCols).size).toBe(1);
     // At least one row needs padding (names are not equal width).
     expect(labels.some((l) => l.includes('  detached'))).toBe(true);
-    expect(labels[0]).toBe(__test.formatEndpointListLabel(names[0]!, 'detached', nameCol));
-    expect(labels[2]).toMatch(/^○ worker - 确认 Pi nav 挂载能力 +detached$/);
+    expect(labels[0]).toBe(__test.formatEndpointListLabel(snap, names[0]!, 'detached', nameCol));
+    expect(labels[2]).toMatch(/^● worker - 确认 Pi nav 挂载能力 +detached$/);
   });
 });
 
@@ -731,7 +763,7 @@ describe('interactive-view openView lifecycle', () => {
         hasActivation: true,
       },
     ];
-    let lastWidget: string[] | undefined;
+    const capture = widgetCapture();
     let resolveCustom: ((value: null) => void) | undefined;
 
     const registry = {
@@ -742,9 +774,7 @@ describe('interactive-view openView lifecycle', () => {
       },
     };
     const ui = {
-      setWidget: (_key: string, lines: string[] | undefined) => {
-        lastWidget = lines;
-      },
+      setWidget: capture.setWidget,
       custom: async () =>
         new Promise<null>((resolve) => {
           resolveCustom = resolve;
@@ -757,28 +787,28 @@ describe('interactive-view openView lifecycle', () => {
       getUi: () => ui,
     });
     view.installWidget();
-    expect(lastWidget).toBeDefined();
-    expect(lastWidget!.some((l) => l.includes('/agent view'))).toBe(true);
+    expect(capture.last).toBeDefined();
+    expect(capture.last!.some((l) => l.includes('/agent view'))).toBe(true);
 
     const openPromise = view.openView();
     await Promise.resolve();
     expect(view.isViewOpen()).toBe(true);
     // Entire widget including the open hint is hidden while nav is open.
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
 
     // Registry updates during open must not re-show the widget.
     for (const l of listeners) {
       l({ type: 'endpoints_changed', keys: rows.map((r) => r.key) });
     }
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
 
     resolveCustom?.(null);
     await openPromise;
     expect(view.isViewOpen()).toBe(false);
     // Active agent still present → restore chrome including open hint.
-    expect(lastWidget).toBeDefined();
-    expect(lastWidget!.some((l) => l.includes('● main'))).toBe(true);
-    expect(lastWidget!.some((l) => l.includes('/agent view'))).toBe(true);
+    expect(capture.last).toBeDefined();
+    expect(capture.last!.some((l) => l.includes('● main'))).toBe(true);
+    expect(capture.last!.some((l) => l.includes('/agent view'))).toBe(true);
 
     view.clearWidget();
   });
@@ -822,7 +852,7 @@ describe('interactive-view openView lifecycle', () => {
         hasActivation: true,
       },
     ];
-    let lastWidget: string[] | undefined;
+    const capture = widgetCapture();
     let resolveCustom: ((value: null) => void) | undefined;
 
     const registry = {
@@ -833,9 +863,7 @@ describe('interactive-view openView lifecycle', () => {
       },
     };
     const ui = {
-      setWidget: (_key: string, lines: string[] | undefined) => {
-        lastWidget = lines;
-      },
+      setWidget: capture.setWidget,
       custom: async () =>
         new Promise<null>((resolve) => {
           resolveCustom = resolve;
@@ -848,11 +876,11 @@ describe('interactive-view openView lifecycle', () => {
       getUi: () => ui,
     });
     view.installWidget();
-    expect(lastWidget).toBeDefined();
+    expect(capture.last).toBeDefined();
 
     const openPromise = view.openView();
     await Promise.resolve();
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
 
     // Agent finishes while navigator is still open.
     rows = [{ ...rows[0]!, status: 'idle', hasActivation: true }];
@@ -864,18 +892,18 @@ describe('interactive-view openView lifecycle', () => {
         snapshot: snap({ key: 'run:u', linkCreatedAt: 1, status: 'idle' }),
       });
     }
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
 
     resolveCustom?.(null);
     await openPromise;
     // No starting/running endpoints → stay hidden.
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
 
     view.clearWidget();
   });
 
   it('keeps widget hidden for the whole custom session (list and detail share one open)', async () => {
-    let lastWidget: string[] | undefined;
+    const capture = widgetCapture();
     let resolveCustom: ((value: null) => void) | undefined;
     let panel: AgentNavigatorPanel | undefined;
 
@@ -901,9 +929,7 @@ describe('interactive-view openView lifecycle', () => {
     ];
 
     const ui = {
-      setWidget: (_key: string, lines: string[] | undefined) => {
-        lastWidget = lines;
-      },
+      setWidget: capture.setWidget,
       custom: async (
         factory: (
           tui: unknown,
@@ -939,12 +965,12 @@ describe('interactive-view openView lifecycle', () => {
       getUi: () => ui,
     });
     view.installWidget();
-    expect(lastWidget).toBeDefined();
+    expect(capture.last).toBeDefined();
 
     const openPromise = view.openView();
     await Promise.resolve();
     expect(view.isViewOpen()).toBe(true);
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
     expect(panel).toBeDefined();
 
     // Switch list → detail inside the same custom session; widget must stay hidden.
@@ -957,13 +983,13 @@ describe('interactive-view openView lifecycle', () => {
       panel as unknown as { handleListSelect: (item: { value: string; label: string }) => void }
     ).handleListSelect(child!);
     expect(view.isViewOpen()).toBe(true);
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
     expect((panel as unknown as { mode: string }).mode).toBe('detail');
 
     resolveCustom?.(null);
     await openPromise;
     expect(view.isViewOpen()).toBe(false);
-    expect(lastWidget).toBeDefined();
+    expect(capture.last).toBeDefined();
 
     panel?.dispose();
     view.clearWidget();
@@ -1022,6 +1048,7 @@ describe('interactive-view widget metadata refresh', () => {
       status: InteractiveEndpointSnapshot['status'];
       hasActivation: boolean;
       linkCreatedAt: number;
+      usage: InteractiveEndpointSnapshot['usage'];
     }> = {}
   ) {
     return {
@@ -1102,7 +1129,7 @@ describe('interactive-view widget metadata refresh', () => {
     expect(setWidgetCalls).toBe(widgetCallsBefore);
     expect(listVisibleCalls).toBe(0);
 
-    // Meta update should refresh once.
+    // Meta update should refresh once (listVisibleMeta once in refresh gate; factory not auto-invoked here).
     for (const l of listeners) {
       l({
         type: 'endpoint_updated',
@@ -1113,6 +1140,7 @@ describe('interactive-view widget metadata refresh', () => {
     }
     expect(listVisibleMetaCalls).toBe(metaCallsBefore + 1);
     expect(setWidgetCalls).toBe(widgetCallsBefore + 1);
+    expect(listVisibleCalls).toBe(0);
 
     view.clearWidget();
   });
@@ -1120,7 +1148,8 @@ describe('interactive-view widget metadata refresh', () => {
   it('clears below-editor widget when all visible endpoints are idle', () => {
     const listeners = new Set<(e: InteractiveRegistryEvent) => void>();
     let rows = [metaRow({ status: 'idle', hasActivation: true })];
-    let lastWidget: string[] | undefined = ['sentinel'];
+    const capture = widgetCapture();
+    capture.setWidget('init', ['sentinel']);
 
     const registry = {
       listVisibleMeta: () => rows,
@@ -1130,9 +1159,7 @@ describe('interactive-view widget metadata refresh', () => {
       },
     };
     const ui = {
-      setWidget: (_key: string, lines: string[] | undefined) => {
-        lastWidget = lines;
-      },
+      setWidget: capture.setWidget,
     };
 
     const view = createInteractiveViewController({
@@ -1142,14 +1169,14 @@ describe('interactive-view widget metadata refresh', () => {
     });
     view.installWidget();
     // Idle-only (even with hasActivation) must not show chrome.
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
 
     for (const status of ['registered', 'detached', 'error', 'unavailable'] as const) {
       rows = [metaRow({ status, hasActivation: status === 'error' })];
       for (const l of listeners) {
         l({ type: 'endpoints_changed', keys: rows.map((r) => r.key) });
       }
-      expect(lastWidget).toBeUndefined();
+      expect(capture.last).toBeUndefined();
     }
 
     view.clearWidget();
@@ -1157,7 +1184,7 @@ describe('interactive-view widget metadata refresh', () => {
 
   it('shows below-editor widget for starting or running endpoints', () => {
     for (const status of ['starting', 'running'] as const) {
-      let lastWidget: string[] | undefined;
+      const capture = widgetCapture();
       const view = createInteractiveViewController({
         registry: {
           listVisibleMeta: () => [metaRow({ status, title: `agent-${status}` })],
@@ -1165,15 +1192,15 @@ describe('interactive-view widget metadata refresh', () => {
         } as never,
         isTui: () => true,
         getUi: () => ({
-          setWidget: (_key: string, lines: string[] | undefined) => {
-            lastWidget = lines;
-          },
+          setWidget: capture.setWidget,
         }),
       });
       view.installWidget();
-      expect(lastWidget).toBeDefined();
-      expect(lastWidget!.some((l) => l.includes(`agent-${status}`))).toBe(true);
-      expect(lastWidget!.some((l) => l.includes(status))).toBe(true);
+      expect(capture.last).toBeDefined();
+      expect(capture.last!.some((l) => l.includes(`agent-${status}`))).toBe(true);
+      expect(capture.last!.some((l) => l.includes(status))).toBe(true);
+      // Running glyph is ◐ (warning-colored when theme is real).
+      expect(capture.last!.some((l) => l.includes('◐'))).toBe(true);
       view.clearWidget();
     }
   });
@@ -1181,7 +1208,7 @@ describe('interactive-view widget metadata refresh', () => {
   it('clears below-editor widget after running becomes idle', () => {
     const listeners = new Set<(e: InteractiveRegistryEvent) => void>();
     let rows = [metaRow({ status: 'running' })];
-    let lastWidget: string[] | undefined;
+    const capture = widgetCapture();
 
     const registry = {
       listVisibleMeta: () => rows,
@@ -1191,9 +1218,7 @@ describe('interactive-view widget metadata refresh', () => {
       },
     };
     const ui = {
-      setWidget: (_key: string, lines: string[] | undefined) => {
-        lastWidget = lines;
-      },
+      setWidget: capture.setWidget,
     };
 
     const view = createInteractiveViewController({
@@ -1202,8 +1227,8 @@ describe('interactive-view widget metadata refresh', () => {
       getUi: () => ui,
     });
     view.installWidget();
-    expect(lastWidget).toBeDefined();
-    expect(lastWidget!.some((l) => l.includes('running'))).toBe(true);
+    expect(capture.last).toBeDefined();
+    expect(capture.last!.some((l) => l.includes('running'))).toBe(true);
 
     rows = [metaRow({ status: 'idle', hasActivation: true })];
     for (const l of listeners) {
@@ -1214,7 +1239,7 @@ describe('interactive-view widget metadata refresh', () => {
         snapshot: snap({ key: 'run:u', linkCreatedAt: 1, status: 'idle' }),
       });
     }
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
 
     // activation_settled also refreshes chrome; still idle → stays cleared.
     for (const l of listeners) {
@@ -1225,13 +1250,13 @@ describe('interactive-view widget metadata refresh', () => {
         snapshot: snap({ key: 'run:u', linkCreatedAt: 1, status: 'idle' }),
       });
     }
-    expect(lastWidget).toBeUndefined();
+    expect(capture.last).toBeUndefined();
 
     view.clearWidget();
   });
 
-  it('when one endpoint is active, widget lists all visible endpoints including idle', () => {
-    let lastWidget: string[] | undefined;
+  it('when one endpoint is active, widget lists only running endpoints (not idle)', () => {
+    const capture = widgetCapture();
     const view = createInteractiveViewController({
       registry: {
         listVisibleMeta: () => [
@@ -1250,23 +1275,236 @@ describe('interactive-view widget metadata refresh', () => {
             hasActivation: false,
             linkCreatedAt: 2,
           }),
+          metaRow({
+            key: 'run:error',
+            unitId: 'err',
+            title: 'worker-error',
+            status: 'error',
+            hasActivation: false,
+            linkCreatedAt: 3,
+          }),
         ],
         subscribe: () => () => undefined,
       } as never,
       isTui: () => true,
       getUi: () => ({
-        setWidget: (_key: string, lines: string[] | undefined) => {
-          lastWidget = lines;
-        },
+        setWidget: capture.setWidget,
       }),
     });
     view.installWidget();
-    expect(lastWidget).toBeDefined();
-    const joined = lastWidget!.join('\n');
+    expect(capture.last).toBeDefined();
+    const joined = capture.last!.join('\n');
     expect(joined).toContain('worker-active');
-    expect(joined).toContain('worker-idle');
     expect(joined).toContain('running');
-    expect(joined).toContain('idle');
+    expect(joined).toContain('◐');
+    // Non-running tasks stay off the below-editor chrome; Agent Nav still lists them.
+    expect(joined).not.toContain('worker-idle');
+    expect(joined).not.toContain('worker-error');
+    expect(joined).not.toMatch(/(^|\n)● worker-idle/);
+    view.clearWidget();
+  });
+
+  it('endpoint status glyphs map running/completed/interrupted/error', () => {
+    expect(__test.endpointStatusKind({ status: 'starting' })).toBe('running');
+    expect(__test.endpointStatusKind({ status: 'running' })).toBe('running');
+    expect(__test.endpointStatusKind({ status: 'idle' })).toBe('completed');
+    expect(__test.endpointStatusKind({ status: 'detached' })).toBe('completed');
+    expect(__test.endpointStatusKind({ status: 'registered' })).toBe('completed');
+    expect(__test.endpointStatusKind({ status: 'error' })).toBe('error');
+    expect(__test.endpointStatusKind({ status: 'unavailable' })).toBe('error');
+    // Abort settle leaves status idle/detached + durable stopReason (not transient activation).
+    expect(
+      __test.endpointStatusKind({
+        status: 'idle',
+        usage: { stopReason: 'aborted' } as never,
+      })
+    ).toBe('interrupted');
+    expect(
+      __test.endpointStatusKind({
+        status: 'detached',
+        usage: { stopReason: 'aborted' } as never,
+      })
+    ).toBe('interrupted');
+    expect(
+      __test.endpointStatusKind({
+        status: 'idle',
+        usage: { stopReason: 'interrupted' } as never,
+      })
+    ).toBe('interrupted');
+    // Prior successful stopReason must not look interrupted.
+    expect(
+      __test.endpointStatusKind({
+        status: 'idle',
+        usage: { stopReason: 'end' } as never,
+      })
+    ).toBe('completed');
+    // Running wins over a stale stopReason from an earlier turn.
+    expect(
+      __test.endpointStatusKind({
+        status: 'running',
+        usage: { stopReason: 'aborted' } as never,
+      })
+    ).toBe('running');
+    // After registry clears prior aborted on new activation, idle without stopReason is completed.
+    expect(__test.endpointStatusKind({ status: 'idle', usage: {} as never })).toBe('completed');
+    expect(__test.formatEndpointStatusGlyph({ status: 'idle', usage: {} as never })).toBe('●');
+
+    expect(__test.formatEndpointStatusGlyph({ status: 'running' })).toBe('◐');
+    expect(__test.formatEndpointStatusGlyph({ status: 'idle' })).toBe('●');
+    expect(
+      __test.formatEndpointStatusGlyph({
+        status: 'idle',
+        usage: { stopReason: 'aborted' } as never,
+      })
+    ).toBe('⊘');
+    expect(
+      __test.formatEndpointStatusGlyph({
+        status: 'detached',
+        usage: { stopReason: 'aborted' } as never,
+      })
+    ).toBe('⊘');
+    expect(__test.formatEndpointStatusGlyph({ status: 'error' })).toBe('●');
+
+    const colored: string[] = [];
+    const fg = (color: string, text: string) => {
+      colored.push(`${color}:${text}`);
+      return text;
+    };
+    expect(__test.formatEndpointStatusGlyph({ status: 'running' }, fg as never)).toBe('◐');
+    expect(__test.formatEndpointStatusGlyph({ status: 'idle' }, fg as never)).toBe('●');
+    expect(
+      __test.formatEndpointStatusGlyph(
+        { status: 'idle', usage: { stopReason: 'aborted' } as never },
+        fg as never
+      )
+    ).toBe('⊘');
+    expect(__test.formatEndpointStatusGlyph({ status: 'error' }, fg as never)).toBe('●');
+    expect(colored).toEqual(['warning:◐', 'success:●', 'warning:⊘', 'error:●']);
+
+    expect(__test.isEndpointRunning('starting')).toBe(true);
+    expect(__test.isEndpointRunning('running')).toBe(true);
+    expect(__test.isEndpointRunning('idle')).toBe(false);
+    expect(__test.isEndpointRunning('error')).toBe(false);
+  });
+
+  it('Agent Nav shows interrupted glyph for aborted settle while widget stays empty', () => {
+    const endpoints = [
+      metaRow({
+        key: 'run:aborted',
+        unitId: 'aborted',
+        title: 'worker-aborted',
+        status: 'idle',
+        hasActivation: false,
+        linkCreatedAt: 1,
+        usage: {
+          turns: 1,
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          stopReason: 'aborted',
+        },
+      }),
+    ];
+    const capture = widgetCapture();
+    const view = createInteractiveViewController({
+      registry: {
+        listVisibleMeta: () => endpoints,
+        subscribe: () => () => undefined,
+      } as never,
+      isTui: () => true,
+      getUi: () => ({ setWidget: capture.setWidget }),
+    });
+    view.installWidget();
+    // Idle aborted is not starting/running → no below-editor chrome.
+    expect(capture.last).toBeUndefined();
+
+    const nav = new AgentNavigatorPanel({
+      tui: { requestRender: () => undefined, terminal: { rows: 24 } } as never,
+      theme: fakeTheme() as never,
+      registry: {
+        listVisibleMeta: () => endpoints,
+        subscribe: () => () => undefined,
+      } as never,
+      endpointLabel: view.endpointLabel,
+      statusText: view.statusText,
+      onClose: () => undefined,
+    });
+    const items = (
+      nav as unknown as { buildItems: () => Array<{ value: string; label: string }> }
+    ).buildItems();
+    expect(items.some((i) => i.label.includes('⊘') && i.label.includes('worker-aborted'))).toBe(
+      true
+    );
+    expect(items.some((i) => i.label.includes('idle'))).toBe(true);
+    nav.dispose();
+    view.clearWidget();
+  });
+
+  it('Agent Nav still lists non-running endpoints while widget filters them', () => {
+    const endpoints = [
+      metaRow({
+        key: 'run:active',
+        unitId: 'active',
+        title: 'worker-active',
+        status: 'running',
+        linkCreatedAt: 1,
+      }),
+      metaRow({
+        key: 'run:idle',
+        unitId: 'idle',
+        title: 'worker-idle',
+        status: 'idle',
+        hasActivation: false,
+        linkCreatedAt: 2,
+      }),
+      metaRow({
+        key: 'run:err',
+        unitId: 'err',
+        title: 'worker-error',
+        status: 'error',
+        hasActivation: false,
+        linkCreatedAt: 3,
+      }),
+    ];
+    const capture = widgetCapture();
+    const view = createInteractiveViewController({
+      registry: {
+        listVisibleMeta: () => endpoints,
+        subscribe: () => () => undefined,
+      } as never,
+      isTui: () => true,
+      getUi: () => ({ setWidget: capture.setWidget }),
+    });
+    view.installWidget();
+    expect(capture.last!.join('\n')).toContain('worker-active');
+    expect(capture.last!.join('\n')).not.toContain('worker-idle');
+
+    const nav = new AgentNavigatorPanel({
+      tui: { requestRender: () => undefined, terminal: { rows: 24 } } as never,
+      theme: fakeTheme() as never,
+      registry: {
+        listVisibleMeta: () => endpoints,
+        subscribe: () => () => undefined,
+      } as never,
+      endpointLabel: view.endpointLabel,
+      statusText: view.statusText,
+      onClose: () => undefined,
+    });
+    const items = (
+      nav as unknown as { buildItems: () => Array<{ value: string; label: string }> }
+    ).buildItems();
+    const labels = items.map((i) => i.label).join('\n');
+    expect(labels).toContain('worker-active');
+    expect(labels).toContain('worker-idle');
+    expect(labels).toContain('worker-error');
+    expect(labels).toContain('◐');
+    // Completed/error use ●; full nav keeps idle and error rows.
+    expect(labels).toMatch(/● .*worker-idle/);
+    expect(labels).toMatch(/● .*worker-error/);
+    nav.dispose();
     view.clearWidget();
   });
 

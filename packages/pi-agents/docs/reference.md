@@ -374,15 +374,17 @@ TUI-only navigator for Pi-runtime durable units linked to the active main-sessio
 
 ### Endpoint statuses
 
-| Status        | Meaning                                          |
-| ------------- | ------------------------------------------------ |
-| `registered`  | Link created; first activation about to start    |
-| `starting`    | RPC process spawning / handshake                 |
-| `running`     | Child agent turn in progress                     |
-| `idle`        | Settled; transport may remain attached           |
-| `detached`    | Transport disposed; session file retained        |
-| `error`       | Process/protocol failure; new prompt may recover |
-| `unavailable` | Trust/validation failed; no spawn                |
+| Status        | Meaning                                          | List glyph                                                                   |
+| ------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `registered`  | Link created; first activation about to start    | `●` success (completed-class)                                                |
+| `starting`    | RPC process spawning / handshake                 | `◐` warning (running)                                                        |
+| `running`     | Child agent turn in progress                     | `◐` warning                                                                  |
+| `idle`        | Settled; transport may remain attached           | `●` success; `⊘` warning if `usage.stopReason` is `aborted` or `interrupted` |
+| `detached`    | Transport disposed; session file retained        | `●` success; `⊘` warning if cancel left `stopReason: aborted`                |
+| `error`       | Process/protocol failure; new prompt may recover | `●` error                                                                    |
+| `unavailable` | Trust/validation failed; no spawn                | `●` error                                                                    |
+
+The below-editor widget shows only endpoints with status `starting` or `running`. Agent Nav (`/agent view`) lists every visible endpoint.
 
 ### Link schema (Version 1)
 
