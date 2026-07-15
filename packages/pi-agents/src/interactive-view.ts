@@ -611,9 +611,6 @@ export class AgentDetailPanel implements Component, Focusable {
     const text = value.trim();
     if (!text) return;
     if (this.isRunningInputBlocked()) {
-      this.statusMessage =
-        'Grok ACP input is unavailable while running; wait or press Ctrl+X to cancel.';
-      this.opts.tui.requestRender();
       return;
     }
     const status = this.snap?.status;
@@ -673,7 +670,7 @@ export class AgentDetailPanel implements Component, Focusable {
       ? [
           truncateToWidth(
             this.opts.theme.fg(
-              'dim',
+              'warning',
               'Grok ACP input is unavailable while running; wait or press Ctrl+X to cancel.'
             ),
             width
@@ -734,9 +731,6 @@ export class AgentDetailPanel implements Component, Focusable {
     }
     // Running Grok ACP: reject text/steer/follow-up input (cancel still works above).
     if (this.isRunningInputBlocked()) {
-      this.statusMessage =
-        'Grok ACP input is unavailable while running; wait or press Ctrl+X to cancel.';
-      this.opts.tui.requestRender();
       return;
     }
     // Alt+Enter: many terminals send \x1b\r — no follow-up for Grok ACP.
