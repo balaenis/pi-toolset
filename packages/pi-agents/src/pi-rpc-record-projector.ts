@@ -119,6 +119,8 @@ interface Frame {
   topLevel: boolean;
   /** For objects: keys seen (top-level only uses this for prefix checks). */
   keys: string[];
+  /** For arrays: number of complete elements seen. */
+  elementCount: number;
   /** Current object key awaiting/receiving its value. */
   currentKey?: string;
 }
@@ -203,6 +205,7 @@ export function createPiRpcRecordProjector(
       const piece = text.slice(offset, end);
       active.push(piece);
       if (active.retainsLine) lineBuf += piece;
+      else lineBuf = '';
 
       if (nl === -1) return;
 
@@ -274,7 +277,6 @@ class JsonRecordParser {
   // Shell capture
   private revoked = false;
   private knownOrdinary = false;
-  private typeValue?: string;
   private projectableType?: ProjectableType;
   private topLevelKeys: string[] = [];
   private willRetry?: boolean;
@@ -307,8 +309,10 @@ class JsonRecordParser {
   }
 
   push(text: string): void {
-    for (let i = 0; i < text.length;) {
-      const ch = text[i]!;
+    // Iterate Unicode code points so non-BMP scalars count as one UTF-8 sequence.
+    const chars = Array.from(text);
+    for (let i = 0; i < chars.length;) {
+      const ch = chars[i]!;
       const consumed = this.consume(ch);
       // consume returns false when the character must be reprocessed under a new mode
       // (number/literal terminator). In that case do not advance.
@@ -373,9 +377,14 @@ class JsonRecordParser {
       case 'array_value':
         this.note(ch);
         if (isWs(ch)) return true;
+        // Empty array `[]` only — after a comma `array_value` requires a value (no trailing comma).
         if (ch === ']' && this.mode === 'array_value') {
-          this.closeContainer();
-          return true;
+          const frame = this.stack[this.stack.length - 1];
+          if (frame && frame.kind === 'array' && frame.elementCount === 0) {
+            this.closeContainer();
+            return true;
+          }
+          throw new PiRpcProjectorError('malformed_json', 'Trailing comma in JSON array');
         }
         this.beginValue(ch);
         return true;
@@ -494,6 +503,10 @@ class JsonRecordParser {
 
   private enforceBudgets(): void {
     if (this.projectableBudget) {
+      // If projectability was revoked after the budget switch, fail closed at ordinary.
+      if (this.revoked || this.knownOrdinary || !this.isKnownProjectablePrefix()) {
+        throw new PiRpcProjectorError('stdout_overflow', 'RPC stdout record exceeded 8 MiB');
+      }
       if (this.recordedBytes > this.limits.projectableMaxBytes) {
         throw new PiRpcProjectorError('stdout_overflow', 'RPC stdout record exceeded 8 MiB');
       }
@@ -501,7 +514,9 @@ class JsonRecordParser {
     }
     if (this.recordedBytes <= this.limits.ordinaryMaxBytes) return;
 
-    if (this.mayStillBeProjectable()) {
+    // Grant the projectable budget only after a known projectable type and valid prefix.
+    // Unknown / non-canonical records fail at the ordinary 8 MiB boundary.
+    if (this.isKnownProjectablePrefix()) {
       this.projectableBudget = true;
       this.droppedLine = true;
       this.line = '';
@@ -513,22 +528,13 @@ class JsonRecordParser {
     throw new PiRpcProjectorError('stdout_overflow', 'RPC stdout record exceeded 8 MiB');
   }
 
-  private mayStillBeProjectable(): boolean {
-    if (this.revoked || this.knownOrdinary) return false;
-    if (this.projectableType) {
-      const expected = PROJECTABLE_PREFIXES[this.projectableType];
-      for (let i = 0; i < this.topLevelKeys.length; i++) {
-        if (this.topLevelKeys[i] !== expected[i]) return false;
-      }
-      return true;
+  /** True only when type is a known projectable event and top-level keys match its prefix so far. */
+  private isKnownProjectablePrefix(): boolean {
+    if (this.revoked || this.knownOrdinary || !this.projectableType) return false;
+    const expected = PROJECTABLE_PREFIXES[this.projectableType];
+    for (let i = 0; i < this.topLevelKeys.length; i++) {
+      if (i >= expected.length || this.topLevelKeys[i] !== expected[i]) return false;
     }
-    // Type unknown: allow only while first key is absent or is `type`.
-    if (this.topLevelKeys.length === 0) {
-      // Still probing if within prefix probe budget.
-      return this.recordedBytes <= this.limits.prefixProbeBytes + this.limits.ordinaryMaxBytes;
-    }
-    if (this.topLevelKeys[0] !== 'type') return false;
-    if (this.typeValue && !PROJECTABLE_TYPE_SET.has(this.typeValue)) return false;
     return true;
   }
 
@@ -566,7 +572,7 @@ class JsonRecordParser {
       throw new PiRpcProjectorError('malformed_json', 'JSON depth exceeded in RPC record');
     }
     const topLevel = this.stack.length === 0 && kind === 'object';
-    this.stack.push({ kind, topLevel, keys: [] });
+    this.stack.push({ kind, topLevel, keys: [], elementCount: 0 });
     this.mode = kind === 'object' ? 'object_key' : 'array_value';
   }
 
@@ -680,19 +686,15 @@ class JsonRecordParser {
         throw new PiRpcProjectorError('malformed_json', 'Object key outside object');
       }
       if (frame.keys.includes(key)) {
-        // Duplicate key.
-        if (frame.topLevel) this.revokeProjectability();
-        else {
-          // Nested duplicate keys: still valid JSON for our purposes but mark ordinary? JSON RFC
-          // says undefined; we reject duplicates at all levels for safety.
-          throw new PiRpcProjectorError('malformed_json', 'Duplicate JSON object key');
-        }
+        // Duplicate keys: JSON.parse accepts them; revoke projectability only.
+        this.revokeProjectability();
+      } else {
+        frame.keys.push(key);
       }
-      frame.keys.push(key);
       frame.currentKey = key;
       if (frame.topLevel) {
         if (this.topLevelKeys.includes(key)) this.revokeProjectability();
-        this.topLevelKeys.push(key);
+        else this.topLevelKeys.push(key);
         this.validatePrefix();
       }
       this.mode = 'object_colon';
@@ -714,13 +716,12 @@ class JsonRecordParser {
     const frame = this.stack[this.stack.length - 1];
     const key = frame?.currentKey;
     if (key === 'type') {
-      this.typeValue = value;
       if (PROJECTABLE_TYPE_SET.has(value)) {
         this.projectableType = value as ProjectableType;
         this.validatePrefix();
       } else {
-        this.knownOrdinary = true;
-        this.revoked = true;
+        // Non-projectable type — fail closed immediately if already over ordinary.
+        this.revokeProjectability();
       }
       return;
     }
@@ -767,6 +768,7 @@ class JsonRecordParser {
       this.mode = 'object_next';
       return;
     }
+    frame.elementCount += 1;
     this.mode = 'array_next';
   }
 
@@ -774,8 +776,7 @@ class JsonRecordParser {
     if (this.revoked || this.knownOrdinary) return;
     if (this.topLevelKeys.length === 0) return;
     if (this.topLevelKeys[0] !== 'type') {
-      this.knownOrdinary = true;
-      this.revoked = true;
+      this.revokeProjectability();
       return;
     }
     if (!this.projectableType) return;
@@ -861,9 +862,6 @@ class JsonRecordParser {
     }
   }
 }
-
-// Fix duplicate `bytes` accessor issue: the class has both a field and getter named bytes.
-// TypeScript will error. Fix by renaming the field.
 
 function isWs(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';

@@ -317,4 +317,75 @@ describe('PiRpcRecordProjector classification and projection', () => {
       bytes: Buffer.byteLength(small),
     });
   });
+
+  it('counts non-BMP UTF-8 bytes exactly', () => {
+    const line = JSON.stringify({ type: 'emoji', c: '😀'.repeat(10) });
+    const out = projectAll([`${line}\n`]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      kind: 'ordinary',
+      line,
+      bytes: Buffer.byteLength(line, 'utf8'),
+    });
+  });
+
+  it('fails ordinary unknown types at ordinary cap even with large whitespace after type key', () => {
+    // type is known non-projectable before crossing ordinary; must not ride projectable budget.
+    const line = `{"type":"response","payload":"${'P'.repeat(400)}"}`;
+    expectOverflow(() => projectAll([`${line}\n`], smallLimits));
+  });
+
+  it('fails at ordinary cap when type is still unknown past ordinary budget', () => {
+    // Spaces before first key keep type unknown — never grant projectable budget.
+    const line = `{${' '.repeat(250)}"type":"agent_end","messages":[],"willRetry":false}`;
+    expectOverflow(() => projectAll([`${line}\n`], smallLimits));
+  });
+
+  it('rejects array trailing commas', () => {
+    expectMalformed(() => projectAll(['{"a":[1,]}\n']));
+    expectMalformed(() => projectAll(['{"a":[1,2,]}\n']));
+  });
+
+  it('projects tool_execution_start and tool_execution_update shells', () => {
+    const start = JSON.stringify({
+      type: 'tool_execution_start',
+      toolCallId: 'c1',
+      toolName: 'bash',
+      args: { cmd: 'X'.repeat(400) },
+    });
+    const update = JSON.stringify({
+      type: 'tool_execution_update',
+      toolCallId: 'c1',
+      toolName: 'bash',
+      args: { cmd: 'y' },
+      partialResult: 'P'.repeat(400),
+    });
+    const out = projectAll([`${start}\n${update}\n`], smallLimits);
+    expect(out[0]).toMatchObject({
+      kind: 'projected',
+      requiresSettleRehydrate: true,
+      event: {
+        type: 'tool_execution_start',
+        payloadOmitted: true,
+        toolCallId: 'c1',
+        toolName: 'bash',
+      },
+    });
+    expect(out[1]).toMatchObject({
+      kind: 'projected',
+      requiresSettleRehydrate: true,
+      event: {
+        type: 'tool_execution_update',
+        payloadOmitted: true,
+        toolCallId: 'c1',
+        toolName: 'bash',
+      },
+    });
+  });
+
+  it('treats nested duplicate keys as ordinary under the ordinary cap', () => {
+    const line = '{"type":"note","a":{"k":1,"k":2}}';
+    const out = projectAll([`${line}\n`], smallLimits);
+    expect(out[0]).toMatchObject({ kind: 'ordinary', line });
+  });
 });
