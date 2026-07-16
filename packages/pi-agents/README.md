@@ -21,6 +21,7 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 - **Usage tracking** - turns, tokens, and context per execution unit; aggregates sum tokens/turns and use `ctx:max` (no aggregate model/thinking); partial stats stream live for `grok-acp`
 - **Abort support** - Ctrl+C propagates and kills active subprocesses
 - **Durable runs** - every invocation persists a run record, unit state, and native Pi sessions under `~/.pi/agent/@balaenis/pi-agents/runs/`; interrupted runs can be inspected and resumed without re-running completed work
+- **Compact parent/durable results** - parent tool details and `run.json` store assistant presentation (text/tool-call summaries) plus final/structured output, not raw child tool-result bodies
 - **Resume** - `agent({ runId })` resumes a durable run from its stored workflow and sessions; optional `task` appends a continuation instruction (required to resume a fully completed run); Pi and Grok ACP units reopen native sessions
 - **Reconciliation** - on session start, runs left running by a dead process are automatically marked interrupted
 
@@ -156,7 +157,7 @@ See [How-to: Interactive agent view](./docs/how-to.md#interactive-agent-view) an
 
 ### Privacy and disk growth
 
-Run records contain prompts, transcripts, outputs, cwd paths, and possibly sensitive tool results. Protect and manually remove them according to your retention policy. Version 1 performs no automatic pruning. To delete a run, remove its complete `<run-id>/` directory only when the run is not active. Linked interactive worktrees are also retained until you remove them manually.
+Run records contain prompts, compact assistant presentation, outputs, cwd paths, and related metadata. Parent sessions and `run.json` no longer duplicate raw child tool-result bodies; those remain only in reloadable native child sessions (Pi `sessionFile` or Grok ACP `acpSessionId` / `session/load`) when such an identity exists. When no reloadable native identity exists, raw tool-result bodies are intentionally released after terminal projection and cannot be recovered. Protect and manually remove run directories and native child sessions according to your retention policy. Version 1 performs no automatic pruning. To delete a run, remove its complete `<run-id>/` directory only when the run is not active. Linked interactive worktrees are also retained until you remove them manually.
 
 ## Documentation
 

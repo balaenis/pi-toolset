@@ -53,7 +53,7 @@ parallel task, chain step, or fanout step to label it in the collapsed summary; 
   concurrent agent tool calls and stops when the result is final, expanded, or
   the session/tree tears down. Completed runs hide activity and final output
   until you expand.
-- **Expanded view** (Ctrl+O): full task text, complete tool/transcript output,
+- **Expanded view** (Ctrl+O): full task text, retained assistant/tool-call presentation and final response (not raw child tool-result bodies; those live only in native child sessions when reloadable),
   final response once, error/worktree/structured-output details when present,
   and usage. Running expanded rows use the static `⧗` glyph (no continuous
   invalidate).

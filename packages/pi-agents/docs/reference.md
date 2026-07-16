@@ -173,6 +173,32 @@ bypassed for that step (the contract requires JSON-only output).
 | `MAX_FANOUT_ITEMS`   | 8     | Max items expanded from a structured array.   |
 | `MAX_CONCURRENCY`    | 4     | Max concurrent workers (parallel and fanout). |
 
+### Compact result presentation
+
+Parent/durable `SingleResult` values may include additive `presentation`:
+
+| Field                                     | Shape                                                                      |
+| ----------------------------------------- | -------------------------------------------------------------------------- |
+| `presentation.transcript`                 | Ordered assistant text/tool-call display items (excludes final text)       |
+| `presentation.latestActivity`             | Optional explicit latest item when it cannot be derived from `finalOutput` |
+| `presentation.truncated` / `omittedItems` | Either both absent, or `truncated: true` with positive `omittedItems`      |
+
+| Constant                                       | Value   | Meaning                                                      |
+| ---------------------------------------------- | ------- | ------------------------------------------------------------ |
+| `RESULT_PRESENTATION_MAX_BYTES`                | 512 KiB | Total UTF-8 JSON budget for a `presentation` object          |
+| `RESULT_PRESENTATION_ITEM_MAX_BYTES`           | 64 KiB  | Per display-item budget                                      |
+| `RESULT_DIAGNOSTIC_MAX_BYTES`                  | 64 KiB  | Bound for `stderr` / `errorMessage` / `errorStack` snapshots |
+| `RESULT_UPDATE_INTERVAL_MS`                    | 150     | Content-update coalescing interval                           |
+| `INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES` | 64 KiB  | Agent View per-item bound for non-authoritative payloads     |
+| `INTERACTIVE_IDLE_TRANSCRIPT_MAX_BYTES`        | 512 KiB | Warm idle endpoint transcript budget before eviction         |
+
+Expanded rendering prefers `presentation` when present and falls back to legacy
+`messages`. Truncated presentations prepend
+`[Earlier transcript omitted: N items]`. Raw child tool-result bodies are not
+stored in parent/durable results; reloadable native child sessions may still
+hold them, while non-reloadable history is intentionally unrecoverable after
+release.
+
 `expand.from.output` names a prior step; `path` is a JSON Pointer into its
 structured output. `parallel.task` is rendered with `{item}`. Collected results
 go under `collect.name`; the `structured` value is an array of each worker's
@@ -325,7 +351,7 @@ time; run `pi reload` (or restart) after adding/removing agent files.
 | `error`                   | LLM error propagated with an error message.                                                                                                               |
 | `aborted`                 | User abort (Ctrl+C) killed the subprocess.                                                                                                                |
 | `max_turns`               | Agent exceeded its `maxTurns` budget; child was `SIGTERM`'d. (`grok-acp` does not enforce this.)                                                          |
-| `context_error`           | Context preparation failed before the child started (`prepareAgentContext` / fork or fresh session materialization). Generic throws use `error` instead. |
+| `context_error`           | Context preparation failed before the child started (`prepareAgentContext` / fork or fresh session materialization). Generic throws use `error` instead.  |
 | `cwd_error`               | The requested working directory is missing, inaccessible, or not a directory.                                                                             |
 | `isolation_error`         | Worktree isolation failed before the child started (e.g. not in a git repo).                                                                              |
 | `completion_check`        | Final message is missing a configured `completionCheck` heading. Result stays failed; parent-visible text is the warning plus the unchecked final output. |
