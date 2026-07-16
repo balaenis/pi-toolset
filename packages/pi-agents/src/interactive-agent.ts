@@ -122,6 +122,21 @@ export interface ProjectedOmissionState {
   expectedAssistantDelta: number;
   /** True when any message/tool/turn payload was omitted and must be rehydrated. */
   requiresRehydrate: boolean;
+  /**
+   * Endpoint usage snapshot taken when omission state is created (pre-activation
+   * cumulative totals). Rehydrate adds post-baseline assistant usage on top.
+   */
+  priorUsage: {
+    turns: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+    contextTokens: number;
+    model?: string;
+    stopReason?: string;
+  };
 }
 
 export interface InteractiveActivation {
@@ -2838,12 +2853,24 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
     ) {
       return ep.projectedOmission;
     }
+    const u = ep.usage;
     const state: ProjectedOmissionState = {
       transportGeneration: ep.transportGeneration,
       activationId: activation.id,
       expectedFinalizedDelta: 0,
       expectedAssistantDelta: 0,
       requiresRehydrate: false,
+      priorUsage: {
+        turns: u?.turns ?? 0,
+        input: u?.input ?? 0,
+        output: u?.output ?? 0,
+        cacheRead: u?.cacheRead ?? 0,
+        cacheWrite: u?.cacheWrite ?? 0,
+        cost: u?.cost ?? 0,
+        contextTokens: u?.contextTokens ?? 0,
+        model: u?.model,
+        stopReason: u?.stopReason,
+      },
     };
     ep.projectedOmission = state;
     return state;
@@ -3001,8 +3028,8 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
     replaceFinalizedMessages(ep, messages);
     ep.transcriptHydrated = true;
 
-    // Recompute model/usage/stopReason from post-baseline assistant messages without
-    // double-counting compact streaming events that never updated usage fully.
+    // Recompute this activation's post-baseline usage and add it to the pre-omission
+    // cumulative snapshot so multi-activation endpoint usage is not wiped.
     if (ep.usage) {
       let turns = 0;
       let input = 0;
@@ -3043,19 +3070,59 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
           stopReason = (msg as { stopReason?: string }).stopReason;
         }
       }
-      ep.usage.turns = turns;
-      ep.usage.input = input;
-      ep.usage.output = output;
-      ep.usage.cacheRead = cacheRead;
-      ep.usage.cacheWrite = cacheWrite;
-      ep.usage.cost = cost;
-      ep.usage.contextTokens = contextTokens;
-      if (model) ep.usage.model = model;
-      if (stopReason) ep.usage.stopReason = stopReason;
+      const prior = state.priorUsage;
+      ep.usage.turns = prior.turns + turns;
+      ep.usage.input = prior.input + input;
+      ep.usage.output = prior.output + output;
+      ep.usage.cacheRead = prior.cacheRead + cacheRead;
+      ep.usage.cacheWrite = prior.cacheWrite + cacheWrite;
+      ep.usage.cost = prior.cost + cost;
+      ep.usage.contextTokens = contextTokens || prior.contextTokens;
+      ep.usage.model = model ?? prior.model;
+      ep.usage.stopReason = stopReason ?? prior.stopReason;
     }
 
     ep.projectedOmission = undefined;
     return { ok: true };
+  }
+
+  function boundHydrateErrorMessage(detail: string): string {
+    const prefix = 'Projected session rehydrate failed: ';
+    const maxDetail = 512;
+    const trimmed = detail.length > maxDetail ? `${detail.slice(0, maxDetail)}…` : detail;
+    return `${prefix}${trimmed}`;
+  }
+
+  /** Fail-closed settle when projected authority cannot be restored. */
+  function settleProjectedHydrateError(ep: InteractiveAgentEndpoint, detail: string): void {
+    const msg = boundHydrateErrorMessage(detail);
+    if (ep.activation && !ep.activation.settled) {
+      ep.status = 'error';
+      ep.lastError = msg;
+      ep.errorCode = 'hydrate_error';
+      ep.activation.terminalOverride = 'error';
+      ep.activation.error = msg;
+      ep.projectedOmission = undefined;
+      clearTransientActivity(ep);
+      ep.activation.settled = true;
+      const activationId = ep.activation.id;
+      const settledSnap = publish(ep, 'full');
+      emit({
+        type: 'activation_settled',
+        key: ep.key,
+        activationId,
+        snapshot: settledSnap,
+      });
+      ep.activation = undefined;
+      scheduleIdleTranscriptEviction(ep);
+      void enforceIdleLru();
+      return;
+    }
+    ep.projectedOmission = undefined;
+    ep.status = 'error';
+    ep.lastError = msg;
+    ep.errorCode = 'hydrate_error';
+    publish(ep, 'full');
   }
 
   interface ResolvedArtifacts {
@@ -3833,31 +3900,21 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
           }
           // Projected message/tool/turn shells: rehydrate from the live native session
           // before publishing activation_settled. Never use ensureTranscriptHydrated here.
-          if (needsProjectedRehydrate(ep)) {
+          const omission = ep.projectedOmission;
+          const mustRehydrate = !!omission?.requiresRehydrate;
+          if (mustRehydrate && needsProjectedRehydrate(ep)) {
             const rehydrated = rehydrateProjectedPiAtSettle(ep);
             if (!rehydrated.ok) {
-              const msg = `Projected session rehydrate failed: ${rehydrated.error}`;
-              ep.status = 'error';
-              ep.lastError = msg;
-              ep.errorCode = 'hydrate_error';
-              ep.activation.terminalOverride = 'error';
-              ep.activation.error = msg;
-              ep.projectedOmission = undefined;
-              clearTransientActivity(ep);
-              ep.activation.settled = true;
-              const activationId = ep.activation.id;
-              const settledSnap = publish(ep, 'full');
-              emit({
-                type: 'activation_settled',
-                key: ep.key,
-                activationId,
-                snapshot: settledSnap,
-              });
-              ep.activation = undefined;
-              scheduleIdleTranscriptEviction(ep);
-              void enforceIdleLru();
+              settleProjectedHydrateError(ep, rehydrated.error);
               return;
             }
+          } else if (mustRehydrate) {
+            // Generation/client mismatch after omissions — never publish omission-only success.
+            settleProjectedHydrateError(
+              ep,
+              'projected omission state is stale or endpoint is not a live Pi session'
+            );
+            return;
           } else {
             ep.projectedOmission = undefined;
           }
