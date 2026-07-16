@@ -165,6 +165,85 @@ describe('PiRpcTransport framing', () => {
     await transport.dispose();
   });
 
+  it('accepts the historical 2,320,362-byte agent_end regression under 8 MiB', async () => {
+    const child = new FakeChild();
+    const transport = await spawnTransport(child);
+    const events: unknown[] = [];
+    transport.subscribe((e) => events.push(e));
+
+    // Preceding small model/context error must stay ordered before the large agent_end.
+    const modelError = {
+      type: 'error',
+      error: 'model_context_overflow',
+      message: 'context window exceeded',
+    };
+    child.pushStdout(`${JSON.stringify(modelError)}\n`);
+
+    // Historical shape: 1 user + 50 assistant + 92 tool-result messages (143 total).
+    const messages: Array<Record<string, unknown>> = [];
+    messages.push({
+      role: 'user',
+      content: [{ type: 'text', text: 'historical-user' }],
+    });
+    for (let i = 0; i < 50; i++) {
+      messages.push({
+        role: 'assistant',
+        content: [{ type: 'text', text: `assistant-${i}-${'A'.repeat(12000)}` }],
+        usage: { input: 100 + i, output: 50 + i, totalTokens: 150 + i },
+      });
+    }
+    for (let i = 0; i < 92; i++) {
+      messages.push({
+        role: 'toolResult',
+        toolCallId: `call_${i}`,
+        toolName: `tool_${i % 7}`,
+        content: [{ type: 'text', text: `tool-result-${i}-${'B'.repeat(8000)}` }],
+        isError: false,
+      });
+    }
+    expect(messages).toHaveLength(143);
+
+    // Pad the final tool result so the serialized agent_end is exactly 2,320,362 bytes.
+    const targetBytes = 2_320_362;
+    const baseMessages = messages.slice(0, -1);
+    const last = messages[messages.length - 1]!;
+    const lastContent = (last.content as Array<{ type: string; text: string }>)[0]!;
+    let pad = 0;
+    const buildAgentEndLine = (padding: number): string =>
+      JSON.stringify({
+        type: 'agent_end',
+        messages: [
+          ...baseMessages,
+          {
+            ...last,
+            content: [{ type: 'text', text: `${lastContent.text}${'P'.repeat(padding)}` }],
+          },
+        ],
+        willRetry: false,
+      });
+    let agentEndLine = buildAgentEndLine(0);
+    for (;;) {
+      const bytes = Buffer.byteLength(agentEndLine, 'utf8');
+      if (bytes === targetBytes) break;
+      if (bytes > targetBytes) {
+        throw new Error(`unable to hit exact historical size: ${bytes}`);
+      }
+      pad += targetBytes - bytes;
+      agentEndLine = buildAgentEndLine(pad);
+    }
+    expect(Buffer.byteLength(agentEndLine, 'utf8')).toBe(targetBytes);
+    expect(targetBytes).toBeLessThan(STDOUT_RECORD_LIMIT_BYTES);
+
+    child.pushStdout(`${agentEndLine}\n`);
+    await new Promise((r) => setImmediate(r));
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual(modelError);
+    expect((events[1] as { type: string }).type).toBe('agent_end');
+    expect((events[1] as { messages: unknown[] }).messages).toHaveLength(143);
+    await transport.dispose();
+  });
+
   it('accepts a complete record exactly at the 8 MiB limit', async () => {
     const child = new FakeChild();
     const transport = await spawnTransport(child);
@@ -254,7 +333,7 @@ describe('PiRpcTransport requests', () => {
     });
 
     const p1 = transport.request({ type: 'get_state' });
-    const p2 = transport.request({ type: 'get_messages' });
+    const p2 = transport.request({ type: 'get_state' });
     await new Promise((r) => setImmediate(r));
 
     // respond to second first
@@ -262,9 +341,19 @@ describe('PiRpcTransport requests', () => {
       JSON.stringify({
         id: 'r2',
         type: 'response',
-        command: 'get_messages',
+        command: 'get_state',
         success: true,
-        data: { messages: [{ role: 'user', content: 'hi' }] },
+        data: {
+          sessionId: 's2',
+          thinkingLevel: 'off',
+          isStreaming: false,
+          isCompacting: false,
+          steeringMode: 'all',
+          followUpMode: 'one-at-a-time',
+          autoCompactionEnabled: true,
+          messageCount: 1,
+          pendingMessageCount: 0,
+        },
       }) + '\n'
     );
     child.pushStdout(
@@ -287,9 +376,22 @@ describe('PiRpcTransport requests', () => {
       }) + '\n'
     );
 
-    const [state, messages] = await Promise.all([p1, p2]);
-    expect((state as { success: boolean }).success).toBe(true);
-    expect((messages as { success: boolean }).success).toBe(true);
+    const [state1, state2] = await Promise.all([p1, p2]);
+    expect((state1 as { success: boolean }).success).toBe(true);
+    expect((state2 as { success: boolean }).success).toBe(true);
+    await transport.dispose();
+  });
+
+  it('rejects get_messages before allocating request state or writing stdin', async () => {
+    const child = new FakeChild();
+    const transport = await spawnTransport(child);
+
+    await expect(transport.request({ type: 'get_messages' } as never)).rejects.toMatchObject({
+      name: 'PiRpcTransportError',
+      code: 'get_messages_disabled',
+      message: 'get_messages is disabled; hydrate the validated sessionFile instead',
+    });
+    expect(child.stdin.chunks).toEqual([]);
     await transport.dispose();
   });
 

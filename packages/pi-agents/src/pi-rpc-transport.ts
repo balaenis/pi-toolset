@@ -11,11 +11,10 @@ import type {
   RpcResponse,
   RpcSessionState,
 } from '@earendil-works/pi-coding-agent';
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ImageContent } from '@earendil-works/pi-ai';
+import { MAX_STDOUT_RECORD_BYTES } from './constants.ts';
 import type { SpawnFn, SpawnedChild } from './execution.ts';
 
-const MAX_STDOUT_RECORD_BYTES = 8 * 1024 * 1024;
 const MAX_STDERR_BYTES = 1 * 1024 * 1024;
 const DEFAULT_KILL_TIMEOUT_MS = 5000;
 const STDERR_TRUNCATION_MARKER = '[stderr truncated]\n';
@@ -134,6 +133,12 @@ export class PiRpcTransport {
   }
 
   async request(command: RpcCommand): Promise<RpcResponse> {
+    if (command.type === 'get_messages') {
+      throw new PiRpcTransportError(
+        'get_messages_disabled',
+        'get_messages is disabled; hydrate the validated sessionFile instead'
+      );
+    }
     return this.send(command);
   }
 
@@ -160,11 +165,6 @@ export class PiRpcTransport {
   async getState(): Promise<RpcSessionState> {
     const response = await this.send({ type: 'get_state' });
     return this.getData(response) as RpcSessionState;
-  }
-
-  async getMessages(): Promise<AgentMessage[]> {
-    const response = await this.send({ type: 'get_messages' });
-    return (this.getData(response) as { messages: AgentMessage[] }).messages;
   }
 
   /**
