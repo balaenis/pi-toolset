@@ -103,7 +103,6 @@ export const BUILTIN_RECIPES: readonly LspServerRecipe[] = [
       '.mdx': 'mdx',
     },
     role: 'companion',
-    startupMode: 'manual',
     installHint:
       'Install `@tailwindcss/language-server` (for example `npm install -g @tailwindcss/language-server`) and ensure `tailwindcss-language-server` is on PATH.',
   },
@@ -329,7 +328,6 @@ export function getDetectedRecipeServers(
       maxRestarts: 3,
       transport: 'stdio',
       role: recipe.role ?? 'primary',
-      startupMode: recipe.startupMode ?? 'auto',
       conflictGroup: recipe.role === 'companion' ? undefined : recipe.name,
       ...(recipe.settings !== undefined ? { settings: recipe.settings } : {}),
     };

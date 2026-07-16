@@ -18,7 +18,6 @@ function fakeServer(
     extensionToLanguage: { '.ts': 'typescript' },
     workspaceFolder: '/workspace',
     role: 'primary',
-    startupMode: 'auto',
   };
 
   return {
@@ -43,12 +42,8 @@ function fakeServer(
   };
 }
 
-function fakeManager(
-  servers: LSPServerInstance[],
-  options: { manualActiveSet?: Set<string> } = {}
-): LSPServerManager {
+function fakeManager(servers: LSPServerInstance[]): LSPServerManager {
   const serverMap = new Map(servers.map((server) => [server.name, server]));
-  const manualActive = options.manualActiveSet ?? new Set<string>();
 
   return {
     async initialize() {},
@@ -62,16 +57,6 @@ function fakeManager(
     getAllServers: () => serverMap,
     getStateCounts: () => ({ running: 0, starting: 0, error: 0 }),
     onServersChanged: () => () => {},
-    markManualServerActive: (name) => {
-      manualActive.add(name);
-    },
-    markManualServerInactive: (name) => {
-      manualActive.delete(name);
-    },
-    isServerAutoActive: (server) => (server.config.startupMode ?? 'auto') !== 'manual',
-    isServerManuallyActive: (server) => manualActive.has(server.name),
-    isServerActive: (server) =>
-      (server.config.startupMode ?? 'auto') !== 'manual' || manualActive.has(server.name),
     async openFile() {},
     async changeFile() {},
     async saveFile() {},
@@ -140,63 +125,51 @@ describe('formatLspStatusDetails', () => {
     expect(output).toContain('  extensions: .ts, .tsx');
     expect(output).toContain('  started: 2026-06-20T00:00:00.000Z');
     expect(output).toContain('  role: primary');
-    expect(output).toContain('  startup: auto');
   });
 
-  it('shows role, startup mode, and manual active state for companion servers', () => {
-    const manual = new Set<string>(['tailwindcss']);
+  it('shows role and conflictGroup for primary and companion servers', () => {
     const output = formatLspStatusDetails(
-      fakeManager(
-        [
-          fakeServer('typescript', 'running', {
-            config: {
-              command: 'typescript-language-server',
-              args: ['--stdio'],
-              extensionToLanguage: { '.ts': 'typescript' },
-              workspaceFolder: '/repo',
-              role: 'primary',
-              startupMode: 'auto',
-              conflictGroup: 'typescript',
-            },
-          }),
-          fakeServer('eslint', 'stopped', {
-            config: {
-              command: 'eslint-lsp',
-              args: ['--stdio'],
-              extensionToLanguage: { '.ts': 'typescript' },
-              workspaceFolder: '/repo',
-              role: 'companion',
-              startupMode: 'auto',
-            },
-          }),
-          fakeServer('tailwindcss', 'running', {
-            config: {
-              command: 'tailwindcss-language-server',
-              args: ['--stdio'],
-              extensionToLanguage: { '.ts': 'typescript' },
-              workspaceFolder: '/repo',
-              role: 'companion',
-              startupMode: 'manual',
-            },
-          }),
-        ],
-        { manualActiveSet: manual }
-      )
+      fakeManager([
+        fakeServer('typescript', 'running', {
+          config: {
+            command: 'typescript-language-server',
+            args: ['--stdio'],
+            extensionToLanguage: { '.ts': 'typescript' },
+            workspaceFolder: '/repo',
+            role: 'primary',
+            conflictGroup: 'typescript',
+          },
+        }),
+        fakeServer('eslint', 'stopped', {
+          config: {
+            command: 'eslint-lsp',
+            args: ['--stdio'],
+            extensionToLanguage: { '.ts': 'typescript' },
+            workspaceFolder: '/repo',
+            role: 'companion',
+          },
+        }),
+        fakeServer('tailwindcss', 'running', {
+          config: {
+            command: 'tailwindcss-language-server',
+            args: ['--stdio'],
+            extensionToLanguage: { '.ts': 'typescript' },
+            workspaceFolder: '/repo',
+            role: 'companion',
+          },
+        }),
+      ])
     );
 
-    // Primary auto: role + startup: auto, no manual active line.
     expect(output).toContain('- typescript: running');
     expect(output).toContain('  role: primary');
-    expect(output).toContain('  startup: auto');
     expect(output).toContain('  conflictGroup: typescript');
 
-    // Companion auto.
     expect(output).toContain('- eslint: stopped');
     expect(output).toContain('  role: companion');
 
-    // Manual companion: must include startup: manual and manual active line.
     expect(output).toContain('- tailwindcss: running');
-    expect(output).toContain('  startup: manual');
-    expect(output).toContain('  manual active: yes');
+    expect(output).not.toContain('startup:');
+    expect(output).not.toContain('manual active');
   });
 });

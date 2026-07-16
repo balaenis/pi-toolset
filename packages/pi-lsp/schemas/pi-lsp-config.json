@@ -41,13 +41,6 @@
               "type": "boolean",
               "description": "When false, the server is disabled and excluded from routing entirely. Defaults to true."
             },
-            "startupMode": {
-              "anyOf": [
-                { "type": "string", "const": "auto" },
-                { "type": "string", "const": "manual" }
-              ],
-              "description": "Whether the server participates in routing automatically (\"auto\") or must be enabled per session via `/lsp start` (\"manual\")."
-            },
             "env": {
               "type": "object",
               "patternProperties": { "^.*$": { "type": "string" } },

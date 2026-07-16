@@ -22,8 +22,8 @@ do not send a position.
 
 Location-returning operations (`findReferences`, `goToDefinition`,
 `goToImplementation`, `workspaceSymbol`) are filtered to exclude `.gitignore`d
-files. All `lsp` operations target the file's active primary server. Passive
-diagnostics are collected from every active server covering the file (primary +
+files. All `lsp` operations target the file's primary server. Passive
+diagnostics are collected from every configured server covering the file (primary +
 companions).
 
 ## Config file locations
@@ -83,7 +83,6 @@ Both use JSONC syntax. A JSON Schema for the whole config is generated at
 | `maxRestarts`           | no       | `3`                                    | Max manual restart, crash-recovery, and retryable startup attempts.                                                               |
 | `transport`             | no       | `"stdio"`                              | Accepted for compatibility; only `"stdio"` is implemented.                                                                        |
 | `role`                  | no       | `"primary"`                            | `"primary"` (one per file, drives navigation) or `"companion"` (adds diagnostics alongside the primary).                          |
-| `startupMode`           | no       | `"auto"`                               | `"auto"` (joins routing automatically) or `"manual"` (only after `/lsp start`).                                                   |
 | `enabled`               | no       | `true`                                 | When `false`, the server is completely disabled: excluded from routing, diagnostics, and `/lsp status`.                           |
 | `conflictGroup`         | no       | primary: server name; companion: unset | Display-only grouping label for primary replacement scenarios, surfaced in `/lsp status`. Not yet enforced at routing time.       |
 
@@ -98,8 +97,7 @@ C#, and ~20 others). Unknown extensions fall back to `"plaintext"`.
 ## Built-in recipes
 
 With no `servers` block, the extension scans `PATH` and adds each recipe whose
-command is found. Auto recipes join routing immediately; manual recipes remain
-dormant until enabled with `/lsp start`.
+command is found. Detected recipes join routing immediately.
 
 | Recipe       | Command                         | Args      | Extensions                                                                                                                                                   | Install hint                                                                                                                          |
 | ------------ | ------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -120,15 +118,13 @@ dormant until enabled with `/lsp start`.
 | Vue          | `vue-language-server`           | `--stdio` | `.vue`                                                                                                                                                       | `npm install -g @vue/language-server`                                                                                                 |
 
 User entries are authoritative. A built-in recipe is skipped when its extensions
-are already covered by a user `primary` + `startupMode: "auto"` entry. Companion
-and manual user entries do **not** suppress an auto-primary recipe, so you can
-layer ESLint alongside the built-in TypeScript recipe without losing navigation.
-When a user entry shares a recipe name, it is merged on top at the field level.
-The built-in ESLint recipe ships default `vscode-eslint-language-server` settings
-so pull diagnostics work out of the box. The built-in Tailwind CSS recipe is a
-manual companion: after autodetection, enable it for the current session with
-`/lsp start`. This prevents a global install from activating in unrelated
-projects.
+are already covered by an enabled user `primary` entry. Companion user entries
+do **not** suppress a primary recipe, so you can layer ESLint alongside the
+built-in TypeScript recipe without losing navigation. When a user entry shares a
+recipe name, it is merged on top at the field level. The built-in ESLint recipe
+ships default `vscode-eslint-language-server` settings so pull diagnostics work
+out of the box. The built-in Tailwind CSS recipe is a companion and joins
+routing as soon as its binary is detected on `PATH`.
 
 ## Statusline states
 
@@ -152,7 +148,7 @@ counts are zero.
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/lsp status`      | Inspect the current LSP runtime snapshot without starting stopped servers. Manager state, server counts, per-server details.                            |
 | `/lsp diagnostics` | Inspect every tracked diagnostic (pending + delivered), grouped by file, tagged with severity, position, message, code, source, and originating server. |
-| `/lsp start`       | Interactive panel to start/stop any configured server and enable manual servers for the session. Arrow keys move, space toggles, esc closes. TUI only.  |
+| `/lsp start`       | Interactive panel to start/stop any configured server for the session. Arrow keys move, space toggles, esc closes. TUI only.                            |
 
 ## Environment variables
 

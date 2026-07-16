@@ -105,7 +105,7 @@ async function handleStartCommand(
           refresh();
           return;
         }
-        void toggleServer(server, manager, ctx, () => refresh());
+        void toggleServer(server, ctx, () => refresh());
       },
       () => done(undefined)
     );
@@ -143,7 +143,6 @@ async function handleStartCommand(
 
 async function toggleServer(
   server: LSPServerInstance,
-  manager: LSPServerManager,
   ctx: CommandContext,
   onSettled: () => void
 ): Promise<void> {
@@ -151,18 +150,8 @@ async function toggleServer(
   try {
     if (stopping) {
       await server.stop();
-      // Manual servers exit the active set on stop; auto servers remain
-      // candidates for the next matching file operation.
-      if (!manager.isServerAutoActive(server)) {
-        manager.markManualServerInactive(server.name);
-      }
     } else {
       await server.start();
-      // Mark manual servers as session-active only after a successful start so
-      // a failed startup does not pollute the active set.
-      if (!manager.isServerAutoActive(server)) {
-        manager.markManualServerActive(server.name);
-      }
     }
   } catch (error) {
     ctx.ui.notify(
@@ -199,7 +188,7 @@ export function formatLspStatusDetails(manager: LSPServerManager | undefined): s
 
   lines.push('', 'Server details:');
   for (const server of servers) {
-    lines.push(...formatServerDetails(server, manager));
+    lines.push(...formatServerDetails(server));
   }
 
   return lines.join('\n');
@@ -221,18 +210,10 @@ function countServerStates(servers: LSPServerInstance[]): Record<LspServerState,
   return counts;
 }
 
-function formatServerDetails(server: LSPServerInstance, manager: LSPServerManager): string[] {
+function formatServerDetails(server: LSPServerInstance): string[] {
   const extensions = Object.keys(server.config.extensionToLanguage).sort();
   const role = server.config.role ?? 'primary';
-  const startupMode = server.config.startupMode ?? 'auto';
-  const lines = [
-    `- ${server.name}: ${server.state}`,
-    `  role: ${role}`,
-    `  startup: ${startupMode}`,
-  ];
-  if (startupMode === 'manual') {
-    lines.push(`  manual active: ${manager.isServerManuallyActive(server) ? 'yes' : 'no'}`);
-  }
+  const lines = [`- ${server.name}: ${server.state}`, `  role: ${role}`];
   if (server.config.conflictGroup) {
     lines.push(`  conflictGroup: ${server.config.conflictGroup}`);
   }

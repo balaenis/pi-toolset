@@ -123,7 +123,6 @@ describe('getDetectedRecipeServers', () => {
     expect(ts.extensionToLanguage['.ts']).toBe('typescript');
     expect(ts.transport).toBe('stdio');
     expect(ts.role).toBe('primary');
-    expect(ts.startupMode).toBe('auto');
     expect(ts.conflictGroup).toBe('typescript');
   });
 
@@ -174,7 +173,6 @@ describe('getDetectedRecipeServers', () => {
     expect(detected.tailwindcss!.command).toBe('tailwindcss-language-server');
     expect(detected.tailwindcss!.args).toEqual(['--stdio']);
     expect(detected.tailwindcss!.role).toBe('companion');
-    expect(detected.tailwindcss!.startupMode).toBe('manual');
     expect(detected.tailwindcss!.conflictGroup).toBeUndefined();
     expect(detected.tailwindcss!.extensionToLanguage['.tsx']).toBe('typescriptreact');
     expect(detected.tailwindcss!.extensionToLanguage['.svelte']).toBe('svelte');

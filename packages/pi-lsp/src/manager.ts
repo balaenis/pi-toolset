@@ -144,17 +144,17 @@ export type LSPServerManager = {
   initialize(cwd: string): Promise<void>;
   /** Shutdown all running servers and clear state */
   shutdown(): Promise<void>;
-  /** Get the active primary LSP server instance for a given file path */
+  /** Get the primary LSP server instance for a given file path */
   getServerForFile(filePath: string): LSPServerInstance | undefined;
-  /** Get every configured server (including inactive manual) covering the file */
+  /** Get every configured server covering the file */
   getConfiguredServersForFile(filePath: string): LSPServerInstance[];
-  /** Get every active server (auto + manually enabled) covering the file */
+  /** Get every server covering the file (alias of getConfiguredServersForFile) */
   getServersForFile(filePath: string): LSPServerInstance[];
-  /** Get the active primary server covering the file, if any */
+  /** Get the primary server covering the file, if any */
   getPrimaryServerForFile(filePath: string): LSPServerInstance | undefined;
-  /** Ensure the active primary LSP server is started for the given file */
+  /** Ensure the primary LSP server is started for the given file */
   ensureServerStarted(filePath: string): Promise<LSPServerInstance | undefined>;
-  /** Send a request to the active primary LSP server for the given file */
+  /** Send a request to the primary LSP server for the given file */
   sendRequest<T>(filePath: string, method: string, params: unknown): Promise<T | undefined>;
   /** Get all server instances */
   getAllServers(): Map<string, LSPServerInstance>;
@@ -162,16 +162,6 @@ export type LSPServerManager = {
   getStateCounts(): { running: number; starting: number; error: number };
   /** Subscribe to any per-instance state change. Returns an unsubscribe. */
   onServersChanged(listener: () => void): () => void;
-  /** Mark a manual server as enabled for this session. */
-  markManualServerActive(serverName: string): void;
-  /** Clear a manual server's session enablement (e.g. user stopped it). */
-  markManualServerInactive(serverName: string): void;
-  /** Whether the server is automatically active (startupMode !== 'manual'). */
-  isServerAutoActive(server: LSPServerInstance): boolean;
-  /** Whether a manual server has been enabled for this session. */
-  isServerManuallyActive(server: LSPServerInstance): boolean;
-  /** Whether the server currently participates in routing. */
-  isServerActive(server: LSPServerInstance): boolean;
   /** Synchronize file open to LSP server (sends didOpen notification) */
   openFile(filePath: string, content: string): Promise<void>;
   /** Synchronize file change to LSP server (sends didChange notification) */
@@ -182,7 +172,7 @@ export type LSPServerManager = {
   closeFile(filePath: string): Promise<void>;
   /** Re-sync a file after an external edit: reads disk, sends didChange + didSave */
   syncFileChange(filePath: string): Promise<void>;
-  /** Check whether the active primary server already has the file open */
+  /** Check whether the primary server already has the file open */
   isFileOpen(filePath: string): boolean;
   /** Check whether a specific server already has the file URI open */
   isFileOpenInServer(fileUri: string, serverName: string): boolean;
@@ -204,7 +194,6 @@ export function createLSPServerManager(
   const extensionMap: Map<string, string[]> = new Map();
   // URI → set of server names that have the file open via didOpen.
   const openedFiles: Map<string, Set<string>> = new Map();
-  const manualEnabledServers: Set<string> = new Set();
   const stateChangeListeners: Set<() => void> = new Set();
   // Last observed state per server, used to detect transitions out of
   // 'running' so we can clear the server's open-file tracking when its child
@@ -218,34 +207,6 @@ export function createLSPServerManager(
       } catch (error) {
         logError(new Error(`LSP statusLine listener threw: ${errorMessage(error)}`));
       }
-    }
-  }
-
-  function isServerAutoActive(server: LSPServerInstance): boolean {
-    return (server.config.startupMode ?? 'auto') !== 'manual';
-  }
-
-  function isServerManuallyActive(server: LSPServerInstance): boolean {
-    return manualEnabledServers.has(server.name);
-  }
-
-  function isServerActive(server: LSPServerInstance): boolean {
-    return isServerAutoActive(server) || isServerManuallyActive(server);
-  }
-
-  function markManualServerActive(serverName: string): void {
-    const server = servers.get(serverName);
-    if (!server) return;
-    if (isServerAutoActive(server)) return;
-    if (!manualEnabledServers.has(serverName)) {
-      manualEnabledServers.add(serverName);
-      notifyServersChanged();
-    }
-  }
-
-  function markManualServerInactive(serverName: string): void {
-    if (manualEnabledServers.delete(serverName)) {
-      notifyServersChanged();
     }
   }
 
@@ -378,7 +339,6 @@ export function createLSPServerManager(
     servers.clear();
     extensionMap.clear();
     openedFiles.clear();
-    manualEnabledServers.clear();
     lastObservedState.clear();
     stateChangeListeners.clear();
 
@@ -396,8 +356,7 @@ export function createLSPServerManager(
   }
 
   /**
-   * Return every configured server whose extensions cover the file, including
-   * inactive manual servers.
+   * Return every configured server whose extensions cover the file.
    */
   function getConfiguredServersForFile(filePath: string): LSPServerInstance[] {
     const ext = path.extname(filePath).toLowerCase();
@@ -412,21 +371,22 @@ export function createLSPServerManager(
   }
 
   /**
-   * Return active servers (auto servers plus manually enabled servers) that
-   * cover the file. Inactive manual servers are excluded.
+   * Return every configured server covering the file. Kept as a named alias of
+   * `getConfiguredServersForFile` for call sites that historically distinguished
+   * active vs configured servers.
    */
   function getServersForFile(filePath: string): LSPServerInstance[] {
-    return getConfiguredServersForFile(filePath).filter((s) => isServerActive(s));
+    return getConfiguredServersForFile(filePath);
   }
 
   /**
-   * Return the active primary server for a file.
+   * Return the primary server for a file.
    *
-   * Returns the first active candidate carrying `role: 'primary'`. When all
-   * active candidates explicitly have a role and none is `primary` (e.g. only
-   * companion servers are active), returns `undefined` so navigation does not
-   * accidentally fall through to a companion. The fallback to the first
-   * candidate only applies for legacy candidates that lack a `role` entirely.
+   * Returns the first candidate carrying `role: 'primary'`. When all candidates
+   * explicitly have a role and none is `primary` (e.g. only companion servers),
+   * returns `undefined` so navigation does not accidentally fall through to a
+   * companion. The fallback to the first candidate only applies for legacy
+   * candidates that lack a `role` entirely.
    */
   function getPrimaryServerForFile(filePath: string): LSPServerInstance | undefined {
     const candidates = getServersForFile(filePath);
@@ -440,7 +400,7 @@ export function createLSPServerManager(
   }
 
   /**
-   * Backward-compatible alias: returns the active primary server for a file.
+   * Backward-compatible alias: returns the primary server for a file.
    * Multi-server callers should prefer the more specific getters above.
    */
   function getServerForFile(filePath: string): LSPServerInstance | undefined {
@@ -468,7 +428,7 @@ export function createLSPServerManager(
   }
 
   /**
-   * Send a request to the active primary LSP server for the file. Used for
+   * Send a request to the primary LSP server for the file. Used for
    * navigation operations that should produce one authoritative result.
    */
   async function sendRequest<T>(
@@ -632,7 +592,7 @@ export function createLSPServerManager(
   }
 
   /**
-   * Save a file across active candidate servers (sends didSave notification).
+   * Save a file across candidate servers (sends didSave notification).
    * Called after a file is written to disk to trigger diagnostics.
    */
   async function saveFile(filePath: string): Promise<void> {
@@ -662,7 +622,7 @@ export function createLSPServerManager(
   }
 
   /**
-   * Close a file across active candidate servers (sends didClose notification).
+   * Close a file across candidate servers (sends didClose notification).
    */
   async function closeFile(filePath: string): Promise<void> {
     const candidates = getServersForFile(filePath);
@@ -695,8 +655,8 @@ export function createLSPServerManager(
    * Re-sync a file after an external edit (e.g. the agent's edit/write tool).
    *
    * Reads the current disk content and fans didChange + didSave out to every
-   * active candidate so each one re-publishes diagnostics for the updated file.
-   * Active candidates that have not seen the file yet are opened first.
+   * candidate so each one re-publishes diagnostics for the updated file.
+   * Candidates that have not seen the file yet are opened first.
    */
   async function syncFileChange(filePath: string): Promise<void> {
     const candidates = getServersForFile(filePath);
@@ -774,11 +734,6 @@ export function createLSPServerManager(
     getAllServers,
     getStateCounts,
     onServersChanged,
-    markManualServerActive,
-    markManualServerInactive,
-    isServerAutoActive,
-    isServerManuallyActive,
-    isServerActive,
     openFile,
     changeFile,
     saveFile,

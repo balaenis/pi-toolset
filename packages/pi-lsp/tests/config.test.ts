@@ -76,13 +76,12 @@ describe('zero-config: PATH detection drives the server set', () => {
     expect(servers.typescript!.extensionToLanguage['.tsx']).toBe('typescriptreact');
   });
 
-  it('returns the Tailwind CSS recipe as a manual companion when detected', async () => {
+  it('returns the Tailwind CSS recipe as a companion when detected', async () => {
     makeExecutable(pathDir, 'tailwindcss-language-server');
     const { servers } = await getAllLspServers(cwdDir);
     expect(Object.keys(servers)).toEqual(['tailwindcss']);
     expect(servers.tailwindcss!.command).toBe('tailwindcss-language-server');
     expect(servers.tailwindcss!.role).toBe('companion');
-    expect(servers.tailwindcss!.startupMode).toBe('manual');
     expect(servers.tailwindcss!.extensionToLanguage['.astro']).toBe('astro');
   });
 
@@ -190,8 +189,8 @@ describe('user config precedence', () => {
   });
 });
 
-describe('role and startup mode normalization', () => {
-  it('defaults omitted role and startupMode to primary/auto for user servers', async () => {
+describe('role normalization', () => {
+  it('defaults omitted role to primary for user servers', async () => {
     writeProjectSettings(
       JSON.stringify({
         servers: {
@@ -204,11 +203,10 @@ describe('role and startup mode normalization', () => {
     );
     const { servers } = await getAllLspServers(cwdDir);
     expect(servers.mysrv!.role).toBe('primary');
-    expect(servers.mysrv!.startupMode).toBe('auto');
     expect(servers.mysrv!.conflictGroup).toBe('mysrv');
   });
 
-  it('preserves role: companion and startupMode: manual when provided', async () => {
+  it('preserves role: companion when provided', async () => {
     writeProjectSettings(
       JSON.stringify({
         servers: {
@@ -216,14 +214,12 @@ describe('role and startup mode normalization', () => {
             command: '/abs/path/tailwindcss-language-server',
             extensionToLanguage: { '.ts': 'typescript' },
             role: 'companion',
-            startupMode: 'manual',
           },
         },
       })
     );
     const { servers } = await getAllLspServers(cwdDir);
     expect(servers.tailwind!.role).toBe('companion');
-    expect(servers.tailwind!.startupMode).toBe('manual');
     // Companion servers without an explicit conflictGroup leave it undefined.
     expect(servers.tailwind!.conflictGroup).toBeUndefined();
   });
@@ -251,30 +247,9 @@ describe('role and startup mode normalization', () => {
     // Recipe still autodetected for unrelated extension.
     expect(servers.typescript).toBeDefined();
   });
-
-  it('rejects invalid startupMode values while keeping valid sibling servers', async () => {
-    writeProjectSettings(
-      JSON.stringify({
-        servers: {
-          bad: {
-            command: '/abs/path/srv',
-            extensionToLanguage: { '.x': 'x' },
-            startupMode: 'eager',
-          },
-          good: {
-            command: '/abs/path/srv2',
-            extensionToLanguage: { '.y': 'y' },
-          },
-        },
-      })
-    );
-    const { servers } = await getAllLspServers(cwdDir);
-    expect(servers.bad).toBeUndefined();
-    expect(servers.good).toBeDefined();
-  });
 });
 
-describe('recipe merge rules for role and startup mode', () => {
+describe('recipe merge rules for role', () => {
   it('keeps the typescript recipe when a user eslint companion overlaps .ts', async () => {
     makeExecutable(pathDir, 'typescript-language-server');
     writeProjectSettings(
@@ -294,7 +269,7 @@ describe('recipe merge rules for role and startup mode', () => {
     expect(servers.typescript!.role).toBe('primary');
   });
 
-  it('keeps the typescript recipe when a manual tailwindcss companion overlaps .ts', async () => {
+  it('keeps the typescript recipe when a tailwindcss companion overlaps .ts', async () => {
     makeExecutable(pathDir, 'typescript-language-server');
     writeProjectSettings(
       JSON.stringify({
@@ -303,32 +278,31 @@ describe('recipe merge rules for role and startup mode', () => {
             command: '/abs/path/tailwindcss-language-server',
             extensionToLanguage: { '.ts': 'typescript' },
             role: 'companion',
-            startupMode: 'manual',
           },
         },
       })
     );
     const { servers } = await getAllLspServers(cwdDir);
     expect(Object.keys(servers).sort()).toEqual(['tailwindcss', 'typescript']);
-    expect(servers.tailwindcss!.startupMode).toBe('manual');
-    expect(servers.typescript!.startupMode).toBe('auto');
+    expect(servers.tailwindcss!.role).toBe('companion');
+    expect(servers.typescript!.role).toBe('primary');
   });
 
-  it('does not let a manual primary user server suppress the auto primary recipe', async () => {
+  it('lets an enabled primary user server suppress the overlapping primary recipe', async () => {
     makeExecutable(pathDir, 'typescript-language-server');
     writeProjectSettings(
       JSON.stringify({
         servers: {
-          'opt-in-ts': {
+          'custom-ts': {
             command: '/abs/path/some-ts-lsp',
             extensionToLanguage: { '.ts': 'typescript' },
-            startupMode: 'manual',
           },
         },
       })
     );
     const { servers } = await getAllLspServers(cwdDir);
-    expect(Object.keys(servers).sort()).toEqual(['opt-in-ts', 'typescript']);
+    expect(Object.keys(servers)).toEqual(['custom-ts']);
+    expect(servers['custom-ts']!.role).toBe('primary');
   });
 });
 
@@ -417,7 +391,6 @@ describe('recipe field-level overrides', () => {
     expect(servers.typescript!.extensionToLanguage['.ts']).toBe('typescript');
     expect(servers.typescript!.extensionToLanguage['.tsx']).toBe('typescriptreact');
     expect(servers.typescript!.role).toBe('primary');
-    expect(servers.typescript!.startupMode).toBe('auto');
     expect(servers.typescript!.transport).toBe('stdio');
   });
 
@@ -539,7 +512,7 @@ describe('recipe field-level overrides', () => {
     );
     const { servers } = await getAllLspServers(cwdDir);
     // The merged typescript primary covers .ts, so the overlapping eslint
-    // recipe is suppressed just as it would be with a fully manual primary.
+    // recipe is suppressed.
     expect(Object.keys(servers)).toEqual(['typescript']);
   });
 });
