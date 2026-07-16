@@ -1,7 +1,7 @@
 // ABOUTME: LSP server config source — reads the dedicated config.json and appends detected recipe servers.
-// ABOUTME: Validates servers, preserves user precedence, and applies env substitution.
+// ABOUTME: Validates servers, preserves user precedence, applies env substitution, and writes enabled toggles.
 
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { Value } from 'typebox/value';
 import { getAgentDir, CONFIG_DIR_NAME } from '@earendil-works/pi-coding-agent';
@@ -12,6 +12,7 @@ import type {
   ScopedLspServerConfig,
   LspServerRecipe,
   InputLspConfig,
+  LspServerRole,
 } from './types.ts';
 import { InputScopedLspServerConfigSchema } from './types.ts';
 
@@ -412,4 +413,101 @@ function extractServers(
   const config = settings as InputLspConfig;
   if (!config.servers) return {};
   return config.servers as Record<string, InputScopedLspServerConfig>;
+}
+
+export type ConfigScope = 'global' | 'project';
+
+export type ConfigurableServerSource = 'builtin' | 'user' | 'override';
+
+export type ConfigurableServerEntry = {
+  name: string;
+  enabled: boolean;
+  role: LspServerRole;
+  command: string;
+  source: ConfigurableServerSource;
+};
+
+/** Resolve the config.json path for a scope. */
+export function getConfigFilePath(scope: ConfigScope, cwd: string): string {
+  if (scope === 'global') {
+    return path.join(getAgentDir(), CONFIG_FILENAME);
+  }
+  return path.join(cwd, CONFIG_DIR_NAME, CONFIG_FILENAME);
+}
+
+/**
+ * List built-in recipes plus user servers from one config scope.
+ * Same-named scope entries override built-in defaults (including `enabled`).
+ */
+export async function listConfigurableServers(
+  scope: ConfigScope,
+  cwd: string
+): Promise<ConfigurableServerEntry[]> {
+  const settings = await readConfigFile(getConfigFilePath(scope, cwd));
+  const userServers = extractServers(settings);
+  const recipeByName = new Map(BUILTIN_RECIPES.map((recipe) => [recipe.name, recipe]));
+
+  const names = new Set<string>([
+    ...BUILTIN_RECIPES.map((recipe) => recipe.name),
+    ...Object.keys(userServers),
+  ]);
+
+  const entries: ConfigurableServerEntry[] = [];
+  for (const name of [...names].sort((a, b) => a.localeCompare(b))) {
+    const recipe = recipeByName.get(name);
+    const user = userServers[name];
+    const enabled = user?.enabled ?? recipe?.enabled ?? true;
+    const role = (user?.role ?? recipe?.role ?? 'primary') as LspServerRole;
+    const command = user?.command ?? recipe?.command ?? '';
+    const source: ConfigurableServerSource = recipe ? (user ? 'override' : 'builtin') : 'user';
+    entries.push({
+      name,
+      enabled: enabled !== false,
+      role,
+      command,
+      source,
+    });
+  }
+  return entries;
+}
+
+/**
+ * Set `servers.<name>.enabled` in the scope's config.json, creating the file
+ * and parent directories when needed. Other fields on the entry and sibling
+ * servers are preserved. JSONC comments are not preserved on write.
+ */
+export async function setServerEnabled(
+  scope: ConfigScope,
+  cwd: string,
+  name: string,
+  enabled: boolean
+): Promise<void> {
+  const filePath = getConfigFilePath(scope, cwd);
+  const existing = (await readConfigFile(filePath)) ?? {};
+  const existingServers =
+    existing.servers && typeof existing.servers === 'object' && !Array.isArray(existing.servers)
+      ? (existing.servers as Record<string, unknown>)
+      : {};
+
+  const currentEntry =
+    existingServers[name] &&
+    typeof existingServers[name] === 'object' &&
+    !Array.isArray(existingServers[name])
+      ? (existingServers[name] as Record<string, unknown>)
+      : {};
+
+  const next = {
+    ...existing,
+    servers: {
+      ...existingServers,
+      [name]: {
+        ...currentEntry,
+        enabled,
+      },
+    },
+  };
+
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+  logForDebugging(`config: wrote enabled=${enabled} for '${name}' to ${filePath}`);
 }

@@ -154,6 +154,9 @@ function tailwindCompanion(): ScopedLspServerConfig {
     command: '/abs/path/tailwindcss-language-server',
     extensionToLanguage: { '.ts': 'typescript' },
     role: 'companion',
+    // Built-in recipe defaults to enabled: false; tests that exercise the
+    // companion must opt in explicitly when using the recipe name.
+    enabled: true,
   };
 }
 

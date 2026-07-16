@@ -96,8 +96,10 @@ C#, and ~20 others). Unknown extensions fall back to `"plaintext"`.
 
 ## Built-in recipes
 
-With no `servers` block, the extension scans `PATH` and adds each recipe whose
-command is found. Detected recipes join routing immediately.
+With no `servers` block, the extension scans `PATH` and adds each **enabled**
+recipe whose command is found. Detected recipes join routing immediately.
+Recipes with `enabled: false` (currently Tailwind CSS) stay off until a user
+config sets `enabled: true`.
 
 | Recipe       | Command                         | Args      | Extensions                                                                                                                                                   | Install hint                                                                                                                          |
 | ------------ | ------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -123,8 +125,8 @@ do **not** suppress a primary recipe, so you can layer ESLint alongside the
 built-in TypeScript recipe without losing navigation. When a user entry shares a
 recipe name, it is merged on top at the field level. The built-in ESLint recipe
 ships default `vscode-eslint-language-server` settings so pull diagnostics work
-out of the box. The built-in Tailwind CSS recipe is a companion and joins
-routing as soon as its binary is detected on `PATH`.
+out of the box. The built-in Tailwind CSS recipe is a companion with
+`enabled: false` by default; enable it via `/lsp config` or a user config entry.
 
 ## Statusline states
 
@@ -146,9 +148,10 @@ counts are zero.
 
 | Command            | Action                                                                                                                                                  |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/lsp status`      | Inspect the current LSP runtime snapshot without starting stopped servers. Manager state, server counts, per-server details.                            |
-| `/lsp diagnostics` | Inspect every tracked diagnostic (pending + delivered), grouped by file, tagged with severity, position, message, code, source, and originating server. |
-| `/lsp start`       | Interactive panel to start/stop any configured server for the session. Arrow keys move, space toggles, esc closes. TUI only.                            |
+| `/lsp status`                 | Inspect the current LSP runtime snapshot without starting stopped servers. Manager state, server counts, per-server details.                            |
+| `/lsp diagnostics`            | Inspect every tracked diagnostic (pending + delivered), grouped by file, tagged with severity, position, message, code, source, and originating server. |
+| `/lsp start`                  | Interactive panel to start/stop any configured server for the session. Arrow keys move, space toggles, esc closes. TUI only.                            |
+| `/lsp config <global\|project>` | Interactive panel listing built-in recipes plus that scope's user servers. Space toggles `enabled` and writes it to the scope's `config.json`. TUI only. Reload the session to apply. |
 
 ## Environment variables
 

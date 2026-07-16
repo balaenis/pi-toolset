@@ -104,11 +104,28 @@ Install the server and ensure its command is on `PATH`:
 npm install -g @tailwindcss/language-server
 ```
 
-The built-in `tailwindcss` recipe is autodetected as a companion when its binary
-is on `PATH`. It joins routing immediately and receives file notifications for
-covered extensions, publishing Tailwind diagnostics alongside the primary
-language server. Use `/lsp status` to confirm it was detected. To permanently
-exclude it from a project, set `"enabled": false` on the `tailwindcss` entry.
+The built-in `tailwindcss` recipe is a companion with `enabled: false` by default,
+so a global install does not activate in every project. Enable it for a project
+with `/lsp config project` (space to toggle) or by writing:
+
+```jsonc
+{
+  "servers": {
+    "tailwindcss": { "enabled": true },
+  },
+}
+```
+
+Reload the Pi session after changing config. Once enabled, Tailwind receives file
+notifications for covered extensions and publishes diagnostics alongside the
+primary language server.
+
+## Toggle built-in and configured servers
+
+Use `/lsp config project` or `/lsp config global` (TUI only) to list built-in
+recipes plus that scope's user servers. Same-named scope entries override built-in
+defaults. Space toggles `enabled` and writes it to the corresponding
+`config.json`. Reload the session for the change to take effect.
 
 ## Inspect diagnostics
 

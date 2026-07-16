@@ -5,7 +5,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { getAllLspServers } from '../src/config.ts';
+import { readFileSync } from 'node:fs';
+import {
+  getAllLspServers,
+  getConfigFilePath,
+  listConfigurableServers,
+  setServerEnabled,
+} from '../src/config.ts';
+import { BUILTIN_RECIPES } from '../src/recipes.ts';
 
 const isWindows = process.platform === 'win32';
 
@@ -76,8 +83,21 @@ describe('zero-config: PATH detection drives the server set', () => {
     expect(servers.typescript!.extensionToLanguage['.tsx']).toBe('typescriptreact');
   });
 
-  it('returns the Tailwind CSS recipe as a companion when detected', async () => {
+  it('skips the Tailwind CSS recipe by default even when its binary is on PATH', async () => {
     makeExecutable(pathDir, 'tailwindcss-language-server');
+    const { servers } = await getAllLspServers(cwdDir);
+    expect(Object.keys(servers)).toEqual([]);
+  });
+
+  it('loads Tailwind CSS when the user explicitly enables the built-in recipe', async () => {
+    makeExecutable(pathDir, 'tailwindcss-language-server');
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          tailwindcss: { enabled: true },
+        },
+      })
+    );
     const { servers } = await getAllLspServers(cwdDir);
     expect(Object.keys(servers)).toEqual(['tailwindcss']);
     expect(servers.tailwindcss!.command).toBe('tailwindcss-language-server');
@@ -278,6 +298,7 @@ describe('recipe merge rules for role', () => {
             command: '/abs/path/tailwindcss-language-server',
             extensionToLanguage: { '.ts': 'typescript' },
             role: 'companion',
+            enabled: true,
           },
         },
       })
@@ -514,5 +535,104 @@ describe('recipe field-level overrides', () => {
     // The merged typescript primary covers .ts, so the overlapping eslint
     // recipe is suppressed.
     expect(Object.keys(servers)).toEqual(['typescript']);
+  });
+});
+
+describe('listConfigurableServers and setServerEnabled', () => {
+  it('lists every built-in recipe with default enabled state', async () => {
+    const entries = await listConfigurableServers('project', cwdDir);
+    const names = entries.map((entry) => entry.name);
+    expect(names).toEqual([...BUILTIN_RECIPES.map((recipe) => recipe.name)].sort());
+
+    const tailwind = entries.find((entry) => entry.name === 'tailwindcss');
+    expect(tailwind).toEqual({
+      name: 'tailwindcss',
+      enabled: false,
+      role: 'companion',
+      command: 'tailwindcss-language-server',
+      source: 'builtin',
+    });
+
+    const typescript = entries.find((entry) => entry.name === 'typescript');
+    expect(typescript?.enabled).toBe(true);
+    expect(typescript?.source).toBe('builtin');
+  });
+
+  it('applies same-scope user overrides and includes custom user servers', async () => {
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          tailwindcss: { enabled: true },
+          custom: {
+            command: '/abs/custom-lsp',
+            extensionToLanguage: { '.x': 'x' },
+            role: 'companion',
+            enabled: false,
+          },
+        },
+      })
+    );
+
+    const entries = await listConfigurableServers('project', cwdDir);
+    const byName = new Map(entries.map((entry) => [entry.name, entry]));
+
+    expect(byName.get('tailwindcss')).toMatchObject({
+      enabled: true,
+      source: 'override',
+      role: 'companion',
+    });
+    expect(byName.get('custom')).toEqual({
+      name: 'custom',
+      enabled: false,
+      role: 'companion',
+      command: '/abs/custom-lsp',
+      source: 'user',
+    });
+
+    // Global scope does not see project-only overrides.
+    const globalEntries = await listConfigurableServers('global', cwdDir);
+    expect(globalEntries.find((entry) => entry.name === 'tailwindcss')?.enabled).toBe(false);
+    expect(globalEntries.find((entry) => entry.name === 'custom')).toBeUndefined();
+  });
+
+  it('writes enabled into the scope config file and preserves sibling fields', async () => {
+    writeProjectSettings(
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: '/custom/typescript-language-server',
+            args: ['--stdio'],
+          },
+        },
+      })
+    );
+
+    await setServerEnabled('project', cwdDir, 'typescript', false);
+    await setServerEnabled('project', cwdDir, 'tailwindcss', true);
+
+    const filePath = getConfigFilePath('project', cwdDir);
+    const written = JSON.parse(readFileSync(filePath, 'utf-8')) as {
+      servers: Record<string, Record<string, unknown>>;
+    };
+
+    expect(written.servers.typescript).toEqual({
+      command: '/custom/typescript-language-server',
+      args: ['--stdio'],
+      enabled: false,
+    });
+    expect(written.servers.tailwindcss).toEqual({ enabled: true });
+
+    const entries = await listConfigurableServers('project', cwdDir);
+    expect(entries.find((entry) => entry.name === 'typescript')?.enabled).toBe(false);
+    expect(entries.find((entry) => entry.name === 'tailwindcss')?.enabled).toBe(true);
+  });
+
+  it('creates the global config file when toggling enabled', async () => {
+    await setServerEnabled('global', cwdDir, 'eslint', false);
+    const filePath = getConfigFilePath('global', cwdDir);
+    const written = JSON.parse(readFileSync(filePath, 'utf-8')) as {
+      servers: Record<string, Record<string, unknown>>;
+    };
+    expect(written.servers.eslint).toEqual({ enabled: false });
   });
 });

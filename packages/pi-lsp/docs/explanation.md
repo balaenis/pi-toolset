@@ -83,7 +83,8 @@ User entries in `servers` are authoritative. The rules:
 ## Zero-config design
 
 With no `servers` block, the extension scans `PATH` for built-in recipes and
-enables each one whose command is found. This lets a fresh install work
+enables each one whose command is found and whose recipe default is not
+`enabled: false` (Tailwind CSS is opt-in). This lets a fresh install work
 immediately for common languages without configuration. When the agent edits a
 file or invokes the `lsp` tool for an extension covered by a recipe but the
 matching binary is missing on `PATH`, the extension surfaces a single

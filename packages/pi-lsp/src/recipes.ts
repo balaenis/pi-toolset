@@ -103,6 +103,7 @@ export const BUILTIN_RECIPES: readonly LspServerRecipe[] = [
       '.mdx': 'mdx',
     },
     role: 'companion',
+    enabled: false,
     installHint:
       'Install `@tailwindcss/language-server` (for example `npm install -g @tailwindcss/language-server`) and ensure `tailwindcss-language-server` is on PATH.',
   },

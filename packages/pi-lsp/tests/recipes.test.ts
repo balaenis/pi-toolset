@@ -155,11 +155,11 @@ describe('getDetectedRecipeServers', () => {
       'kotlin',
       'lua',
       'python',
-      'tailwindcss',
       'typescript',
       'vue',
       'yaml',
     ]);
+    expect(detected.tailwindcss).toBeUndefined();
     expect(detected.eslint!.role).toBe('companion');
     expect(detected.eslint!.conflictGroup).toBeUndefined();
     expect(detected.eslint!.extensionToLanguage['.ts']).toBe('typescript');
@@ -170,12 +170,6 @@ describe('getDetectedRecipeServers', () => {
     expect(eslintSettings.packageManager).toBe('npm');
     expect(eslintSettings.useFlatConfig).toBe(true);
     expect(eslintSettings.workingDirectory).toEqual({ mode: 'location' });
-    expect(detected.tailwindcss!.command).toBe('tailwindcss-language-server');
-    expect(detected.tailwindcss!.args).toEqual(['--stdio']);
-    expect(detected.tailwindcss!.role).toBe('companion');
-    expect(detected.tailwindcss!.conflictGroup).toBeUndefined();
-    expect(detected.tailwindcss!.extensionToLanguage['.tsx']).toBe('typescriptreact');
-    expect(detected.tailwindcss!.extensionToLanguage['.svelte']).toBe('svelte');
     expect(detected.typescript!.role).toBe('primary');
     expect(detected.typescript!.conflictGroup).toBe('typescript');
     expect(detected.python!.extensionToLanguage['.py']).toBe('python');

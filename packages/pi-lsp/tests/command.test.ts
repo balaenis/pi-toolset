@@ -1,10 +1,10 @@
-// ABOUTME: Unit tests for /lsp status detail formatting.
+// ABOUTME: Unit tests for /lsp status detail formatting and argument completions.
 // ABOUTME: Uses fake manager/server objects so no language-server process is started.
 
 import { describe, expect, it } from 'bun:test';
 import type { LSPServerInstance } from '../src/instance.ts';
 import type { LSPServerManager } from '../src/manager.ts';
-import { formatLspStatusDetails } from '../src/command.ts';
+import { formatLspStatusDetails, getLspArgumentCompletions } from '../src/command.ts';
 import type { LspServerState, ScopedLspServerConfig } from '../src/types.ts';
 
 function fakeServer(
@@ -171,5 +171,32 @@ describe('formatLspStatusDetails', () => {
     expect(output).toContain('- tailwindcss: running');
     expect(output).not.toContain('startup:');
     expect(output).not.toContain('manual active');
+  });
+});
+
+describe('getLspArgumentCompletions', () => {
+  it('completes top-level subcommands', () => {
+    expect(getLspArgumentCompletions('')).toEqual([
+      { value: 'status', label: 'status' },
+      { value: 'start', label: 'start' },
+      { value: 'diagnostics', label: 'diagnostics' },
+      { value: 'config', label: 'config' },
+    ]);
+    expect(getLspArgumentCompletions('st')).toEqual([
+      { value: 'status', label: 'status' },
+      { value: 'start', label: 'start' },
+    ]);
+    expect(getLspArgumentCompletions('c')).toEqual([{ value: 'config', label: 'config' }]);
+  });
+
+  it('completes config scopes', () => {
+    expect(getLspArgumentCompletions('config')).toEqual([
+      { value: 'config global', label: 'config global' },
+      { value: 'config project', label: 'config project' },
+    ]);
+    expect(getLspArgumentCompletions('config p')).toEqual([
+      { value: 'config project', label: 'config project' },
+    ]);
+    expect(getLspArgumentCompletions('config x')).toBeNull();
   });
 });
