@@ -2844,6 +2844,196 @@ describe('InteractiveAgentRegistry streaming snapshot cost', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it('bounds text-part identity siblings under complete-item budget without truncating text', async () => {
+    const { root, store, coordinator } = makeTempStore();
+    const agent = makeAgent();
+    const eventListenerRef: { current?: (e: unknown) => void } = {};
+    const { registry, key } = await registerWithFakeTransport({
+      root,
+      store,
+      coordinator,
+      agent,
+      eventListenerRef,
+    });
+
+    await registry.activate(key, 'Task: text-siblings', 'prompt', undefined, 'tool_call');
+    await new Promise((r) => setImmediate(r));
+
+    const hugeText = 'T'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 16384);
+    const hugeId = 'I'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 4096);
+    const hugeName = 'N'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 2048);
+    const hugeToolCallId = 'C'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 1024);
+    const hugeToolName = 'M'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 512);
+    const hugeMime = 'X'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 256);
+    const hugeExtra = 'E'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 128);
+
+    const sourcePart = {
+      type: 'text' as const,
+      text: hugeText,
+      id: hugeId,
+      name: hugeName,
+      toolCallId: hugeToolCallId,
+      toolName: hugeToolName,
+      mimeType: hugeMime,
+      mystery: hugeExtra,
+    };
+    eventListenerRef.current?.({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [sourcePart],
+        usage: { input: 2, output: 3, totalTokens: 5, cost: { total: 0 } },
+        model: 'sibling-model',
+        stopReason: 'stop',
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+
+    const snap = registry.get(key)!;
+    const assistant = snap.messages[0] as unknown as {
+      content: Array<Record<string, unknown>>;
+      model?: string;
+      stopReason?: string;
+      usage?: { input?: number };
+    };
+    const part = assistant.content[0]!;
+    expect(part.text).toBe(hugeText);
+    expect(assistant.model).toBe('sibling-model');
+    expect(assistant.stopReason).toBe('stop');
+    expect(assistant.usage?.input).toBe(2);
+
+    for (const key of ['id', 'name', 'toolCallId', 'toolName', 'mimeType', 'mystery'] as const) {
+      const val = part[key];
+      if (typeof val === 'string') {
+        expect(Buffer.byteLength(val, 'utf8')).toBeLessThanOrEqual(
+          INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES
+        );
+        expect(val).not.toBe(hugeId);
+        expect(val).not.toBe(hugeName);
+        expect(val).not.toBe(hugeToolCallId);
+        expect(val).not.toBe(hugeToolName);
+        expect(val).not.toBe(hugeMime);
+        expect(val).not.toBe(hugeExtra);
+      }
+    }
+    // Non-text envelope (type + siblings) must fit a complete-item budget.
+    const shell: Record<string, unknown> = { type: part.type };
+    for (const [k, v] of Object.entries(part)) {
+      if (k === 'type' || k === 'text') continue;
+      shell[k] = v;
+    }
+    expect(Buffer.byteLength(JSON.stringify(shell), 'utf8')).toBeLessThanOrEqual(
+      INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES
+    );
+    expect(JSON.stringify(part)).not.toContain(hugeId);
+    expect(JSON.stringify(part)).not.toContain(hugeMime);
+
+    // Source transport object remains unbounded/unmutated.
+    expect(sourcePart.text).toBe(hugeText);
+    expect(sourcePart.id).toBe(hugeId);
+    expect(sourcePart.mimeType).toBe(hugeMime);
+    expect(sourcePart.mystery).toBe(hugeExtra);
+
+    await registry.shutdown();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('projects bashExecution and unknown roles with bounded payloads; preserves assistant final text', async () => {
+    const { root, store, coordinator } = makeTempStore();
+    const agent = makeAgent();
+    const eventListenerRef: { current?: (e: unknown) => void } = {};
+    const { registry, key } = await registerWithFakeTransport({
+      root,
+      store,
+      coordinator,
+      agent,
+      eventListenerRef,
+    });
+
+    await registry.activate(key, 'Task: unknown-roles', 'prompt', undefined, 'tool_call');
+    await new Promise((r) => setImmediate(r));
+
+    const hugeOutput = 'O'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 8192);
+    const hugeUnknown = 'U'.repeat(INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES + 4096);
+    const finalText = 'authoritative final assistant text — keep exact';
+
+    const bashSource = {
+      role: 'bashExecution' as const,
+      command: 'ls -la',
+      output: hugeOutput,
+      exitCode: 0,
+    };
+    const unknownSource = {
+      role: 'futureRole' as const,
+      payload: hugeUnknown,
+      nested: { blob: hugeUnknown },
+      content: hugeUnknown,
+    };
+
+    eventListenerRef.current?.({ type: 'message_end', message: bashSource });
+    eventListenerRef.current?.({ type: 'message_end', message: unknownSource });
+    eventListenerRef.current?.({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: finalText }],
+        usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } },
+        model: 'final-model',
+        stopReason: 'stop',
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+
+    const snap = registry.get(key)!;
+    expect(snap.messages).toHaveLength(3);
+
+    const bash = snap.messages[0] as unknown as Record<string, unknown>;
+    expect(bash.role).toBe('bashExecution');
+    if (typeof bash.output === 'string') {
+      expect(Buffer.byteLength(bash.output, 'utf8')).toBeLessThanOrEqual(
+        INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES
+      );
+      expect(bash.output).not.toBe(hugeOutput);
+    }
+    expect(JSON.stringify(bash)).not.toContain(hugeOutput);
+
+    const unknown = snap.messages[1] as unknown as Record<string, unknown>;
+    expect(unknown.role).toBe('futureRole');
+    if (typeof unknown.content === 'string') {
+      expect(Buffer.byteLength(unknown.content, 'utf8')).toBeLessThanOrEqual(
+        INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES
+      );
+    }
+    if (typeof unknown.payload === 'string') {
+      expect(Buffer.byteLength(unknown.payload, 'utf8')).toBeLessThanOrEqual(
+        INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES
+      );
+    }
+    if (unknown.nested !== undefined) {
+      expect(Buffer.byteLength(JSON.stringify(unknown.nested), 'utf8')).toBeLessThanOrEqual(
+        INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES
+      );
+    }
+    expect(JSON.stringify(unknown)).not.toContain(hugeUnknown);
+
+    const assistant = snap.messages[2] as unknown as {
+      content: Array<{ type?: string; text?: string }>;
+      model?: string;
+      stopReason?: string;
+    };
+    expect(assistant.content[0]?.text).toBe(finalText);
+    expect(assistant.model).toBe('final-model');
+    expect(assistant.stopReason).toBe('stop');
+
+    // Source transport objects remain unbounded/unmutated.
+    expect(bashSource.output).toBe(hugeOutput);
+    expect(unknownSource.payload).toBe(hugeUnknown);
+    expect(unknownSource.content).toBe(hugeUnknown);
+
+    await registry.shutdown();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it('bounds huge activeTools Map keys across start/update/end and keeps retained size finite', async () => {
     const { root, store, coordinator } = makeTempStore();
     const agent = makeAgent();

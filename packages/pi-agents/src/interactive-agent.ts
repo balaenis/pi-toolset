@@ -579,17 +579,53 @@ function enforceNonAuthoritativeItemBudget(part: unknown, label: string): unknow
   return omitOversizedItem(p, label);
 }
 
+/**
+ * Bound non-authoritative siblings on an assistant text part without touching text.
+ * Identity fields (id/name/toolCallId/…) and unknown extras are each complete-item
+ * budgeted, then dropped until the non-text envelope fits the item cap.
+ */
+function boundTextPartSiblings(part: Record<string, unknown>): void {
+  for (const key of Object.keys(part)) {
+    if (key === 'type' || key === 'text') continue;
+    const val = part[key];
+    if (typeof val === 'string') {
+      part[key] = boundStringField(val, `assistant text ${key}`);
+    } else if (val !== null && typeof val === 'object') {
+      part[key] = boundUnknownPayload(val, `assistant text ${key}`);
+    } else if (val !== undefined && typeof val !== 'number' && typeof val !== 'boolean') {
+      part[key] = enforceNonAuthoritativeItemBudget(val, `assistant text ${key}`);
+    }
+  }
+  // Drop largest siblings until the non-text envelope fits the complete-item budget.
+  for (let round = 0; round < 32; round++) {
+    const shell: Record<string, unknown> = { type: part.type };
+    for (const [key, val] of Object.entries(part)) {
+      if (key === 'type' || key === 'text') continue;
+      shell[key] = val;
+    }
+    if (utf8JsonBytes(shell) <= INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) return;
+    let victim: string | undefined;
+    let victimBytes = 0;
+    for (const [key, val] of Object.entries(part)) {
+      if (key === 'type' || key === 'text') continue;
+      const bytes = utf8JsonBytes(val);
+      if (bytes > victimBytes) {
+        victimBytes = bytes;
+        victim = key;
+      }
+    }
+    if (!victim) return;
+    delete part[victim];
+  }
+}
+
 function boundAssistantContentPart(part: unknown): unknown {
   if (!part || typeof part !== 'object') return part;
   const p = part as Record<string, unknown>;
   if (p.type === 'text') {
     // Authoritative assistant text remains exact (even when > 64 KiB).
-    // All non-authoritative sibling fields are projected/bounded independently.
-    boundRecordFields(
-      p,
-      'assistant text content',
-      new Set([...CONTENT_PART_IDENTITY_KEYS, 'text'])
-    );
+    // Identity siblings and unknown extras are complete-item budgeted and may be stripped.
+    boundTextPartSiblings(p);
     return p;
   }
   if (p.type === 'thinking' && typeof p.thinking === 'string') {
@@ -734,6 +770,44 @@ function projectFinalizedMessage(msg: AgentMessage): AgentMessage {
       'customType',
     ]);
     boundRecordFields(projected as Record<string, unknown>, role, preserveTop);
+  } else {
+    // bashExecution and every other/unknown role: complete-item bound all payloads.
+    // Especially large non-authoritative fields like bashExecution.output.
+    const label = typeof role === 'string' && role.length > 0 ? role : 'message';
+    const rec = projected as Record<string, unknown>;
+    if (typeof rec.output === 'string') {
+      rec.output = boundStringField(rec.output, `${label} output`);
+    } else if (rec.output !== undefined) {
+      rec.output = boundUnknownPayload(rec.output, `${label} output`);
+    }
+    const content = rec.content;
+    if (typeof content === 'string') {
+      rec.content = boundStringField(content, `${label} content`);
+    } else if (Array.isArray(content)) {
+      for (let i = 0; i < content.length; i++) {
+        content[i] = boundNonAuthoritativeContentPart(content[i], label);
+      }
+    } else if (content !== undefined) {
+      rec.content = boundUnknownPayload(content, `${label} content`);
+    }
+    if (rec.details !== undefined) {
+      rec.details = boundUnknownPayload(rec.details, `${label} details`);
+    }
+    // Bound remaining top-level fields (command, exitCode strings, custom extras…).
+    const preserveTop = new Set(['role', 'content', 'output', 'details']);
+    boundRecordFields(rec, label, preserveTop);
+    for (const key of Object.keys(rec)) {
+      if (key === 'role') continue;
+      const val = rec[key];
+      if (val !== null && typeof val === 'object') {
+        rec[key] = enforceNonAuthoritativeItemBudget(val, `${label} ${key}`);
+      } else if (typeof val === 'string' && key !== 'content' && key !== 'output') {
+        // Re-check complete-item budget for scalars not already bound above.
+        if (Buffer.byteLength(val, 'utf8') > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
+          rec[key] = boundStringField(val, `${label} ${key}`);
+        }
+      }
+    }
   }
   return projected;
 }

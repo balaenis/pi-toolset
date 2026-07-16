@@ -2,80 +2,59 @@
 
 **Branch:** `fix/subagent-memory-optimization`  
 **Source:** independent re-review after remediation Rounds 1–8  
-**Status:** deferred — remaining items for a later session  
+**Status:** closed — all deferred items resolved in Follow-up Closure / Review Round 9  
 **Plan:** `packages/pi-agents/docs/plans/2026-07-16-subagent-memory-review-fix-plan.md`
 
 ## Context
 
-Memory-optimization remediation Rounds 1–8 closed most Critical findings around compact snapshots, Interactive retention, claim cleanup, worktree metadata, and durable fail-closed validation. Package suite last reported **1020 pass / 0 fail**.
+Memory-optimization remediation Rounds 1–8 closed most Critical findings around compact snapshots, Interactive retention, claim cleanup, worktree metadata, and durable fail-closed validation. Residual review findings were deferred here and are now closed.
 
-This file captures residual review findings that were **not closed** when work paused. Treat them as optimization/hardening items, not blockers for unrelated work, unless a later merge decision reclassifies them.
+Package suite after closure: **1026 pass / 0 fail**.
 
-## Open Critical
+## Closed Critical
 
-### C1. Durable result status/exitCode consistency is under-validated
+### C1. Durable result status/exitCode consistency is under-validated — CLOSED
 
-- **Where:** `packages/pi-agents/src/run-store.ts` result-shell validation; consumer `packages/pi-agents/src/tool.ts` Parallel restoration/status skip.
-- **Issue:** Validation only requires `messages` to be an array. A durable unit can be marked completed while its `result.status` is still `running`/`failed` or `exitCode: -1`. Parallel restoration can copy that result and later redispatch an already-completed unit.
-- **Impact:** Incorrect resume skip/redispatch; post-claim snapshot may throw on malformed message entries instead of pre-claim `corrupt_run`.
-- **Next step:**
-  - Validate minimum status/exitCode/message-entry consistency for unit results and `details.results`.
-  - Reject contextual contradictions as `corrupt_run` before claim.
-  - Add resume/Parallel tests for completed unit with inconsistent result shell and malformed message entries.
+- **Where:** `packages/pi-agents/src/run-store.ts` `validateResultShell`; consumer Parallel restore skip in `packages/pi-agents/src/tool.ts`.
+- **Resolution:** `validateResultShell` now validates message entries as non-null objects, optional status/exitCode types, and completed-unit consistency (`status` must be `completed` when present; `exitCode` must not be `-1`; status-less shells require `exitCode === 0`). Inconsistent completed shells and malformed messages fail as `corrupt_run` pre-claim.
+- **Evidence:** `bun test packages/pi-agents/tests/run-store.test.ts -t "inconsistent result"` → pass; full package suite 1026 pass; existing Parallel skip-completed regression still green.
 
-### C2. Details validation is not mode/topology-aware
+### C2. Details validation is not mode/topology-aware — CLOSED
 
-- **Where:** `packages/pi-agents/src/run-store.ts` details validator; consumers `packages/pi-agents/src/resume.ts`, `packages/pi-agents/src/chain.ts`.
-- **Issue:** Validator does not receive record mode/request topology. Chain details can appear on Single runs; output entries can carry impossible step/agent provenance. In Chain restore, an invalid high step can win later-step-wins and poison downstream templates.
-- **Impact:** Corrupt provenance survives claim/restore; wrong named output can drive later tasks.
-- **Next step:**
-  - Pass mode + request topology into details validation.
-  - Require Chain details only for chain mode; reject impossible step/agent/output provenance.
-  - Keep valid legacy fixtures accepted; add mode-mismatch and bad-provenance regressions.
+- **Where:** `packages/pi-agents/src/run-store.ts` `validateSubagentDetails` / `validateRunRecord`.
+- **Resolution:** Details validation receives record `mode` + request topology. When `mode === 'chain'`, output/step agent provenance is checked against `request.chain` so impossible high steps and wrong agents cannot poison later-step-wins. Single/Parallel may still carry ignored legacy `details.chain`/`outputs` presentation (documented; not a schema migration).
+- **Evidence:** `bun test packages/pi-agents/tests/run-store.test.ts -t "impossible step"` → pass; legacy single-with-chain fixture still accepted.
 
-### C3. Non-allowlisted AgentMessage roles skip projection
+### C3. Non-allowlisted AgentMessage roles skip projection — CLOSED
 
-- **Where:** `packages/pi-agents/src/interactive-agent.ts` finalized-message projection / hydrate path.
-- **Issue:** Valid Pi roles outside assistant/user/toolResult/custom (notably `bashExecution`) receive no payload projection. Hydrated shell `output` can remain unbounded in active and settled Agent View.
-- **Impact:** Bypasses documented per-item/active retention caps.
-- **Next step:**
-  - Project every known and unknown role with complete-item bounding.
-  - Preserve only documented authoritative assistant text/usage/model/stopReason.
-  - Add hydrate tests with large `bashExecution.output` and other unknown roles.
+- **Where:** `packages/pi-agents/src/interactive-agent.ts` `projectFinalizedMessage`.
+- **Resolution:** Every non-assistant role (including `bashExecution` and unknown roles) is projected with complete-item bounding of `output`/`content`/`details` and remaining top-level payloads. Authoritative assistant text/usage/model/stopReason preserved.
+- **Evidence:** `bun test packages/pi-agents/tests/interactive-agent.test.ts -t "bashExecution and unknown"` → pass.
 
-## Open Warnings
+## Closed Warnings
 
-### W1. Assistant text sibling identity fields remain unbounded
+### W1. Assistant text sibling identity fields remain unbounded — CLOSED
 
-- **Where:** `packages/pi-agents/src/interactive-agent.ts` assistant content-part projection.
-- **Issue:** Authoritative text is preserved, but oversized sibling fields such as `id`, `name`, `toolCallId`, `toolName`, or `mimeType` on text parts may skip complete-item budgeting.
-- **Next step:** Keep text exact; bound/strip sibling non-authoritative fields under the complete-item cap; add multi-field text-part regressions.
+- **Where:** `packages/pi-agents/src/interactive-agent.ts` `boundAssistantContentPart` / `boundTextPartSiblings`.
+- **Resolution:** Text remains exact even when huge. Identity siblings (`id`, `name`, `toolCallId`, `toolName`, `mimeType`) and unknown extras are complete-item budgeted and dropped until the non-text envelope fits the item cap.
+- **Evidence:** `bun test packages/pi-agents/tests/interactive-agent.test.ts -t "text-part identity siblings"` → pass.
 
-### W2. Truncated render summary may reintroduce ANSI reset injection
+### W2. Truncated render summary may reintroduce ANSI reset injection — CLOSED
 
-- **Where:** `packages/pi-agents/src/render.ts` truncated summary/activity lines.
-- **Issue:** Reviewer reports raw `truncateToWidth()` can restore a known `\x1b[0m` injection that clears parent tool-result background; prior reset-stripping helper/test may have been removed.
-- **Next step:** Confirm against current render helpers and parent TUI contract; restore reset-stripping if still needed and re-add the regression.
+- **Where:** `packages/pi-agents/src/render.ts` `truncateDisplayToWidth`.
+- **Resolution:** Restored wrapper strips pi-tui `truncateToWidth` SGR full-reset (`\x1b[0m`) around ellipsis so parent tool-result background is not cleared. Applied to summary preview, title clamp, and activity-line fit.
+- **Evidence:** `bun test packages/pi-agents/tests/render.test.ts -t "SGR full-reset"` → 2 pass.
 
-## Validation Baseline At Pause
+## Validation After Closure
 
-Recorded by remediation work before pause (not re-run in this note):
-
-| Gate | Last reported result |
-| --- | --- |
-| Focused suite (incl. resume/worktree) | 685 pass / 0 fail |
-| `mise run typecheck --package packages/pi-agents` | pass |
-| `mise run test --package packages/pi-agents` | 1020 pass / 0 fail |
-| `hk check` | pass |
-| `mise run build --package packages/pi-agents` | pass |
-| `git diff --check` | pass |
-
-## Suggested Next Session Order
-
-1. Close **C3** first if memory bounds remain the primary goal.
-2. Close **C1** + **C2** before relying on durable resume of untrusted/hand-edited records.
-3. Then **W1** and **W2**.
-4. Re-run full package suite + independent review against this list.
+| Gate                                                            | Result             |
+| --------------------------------------------------------------- | ------------------ |
+| Focused suite (interactive-agent / run-store / resume / render) | 231 pass / 0 fail  |
+| `mise run typecheck --package packages/pi-agents`               | pass               |
+| `mise run test --package packages/pi-agents`                    | 1026 pass / 0 fail |
+| `hk check`                                                      | pass               |
+| `mise run build --package packages/pi-agents`                   | pass               |
+| `git diff --check`                                              | pass               |
 
 ## Explicitly Out Of Scope Here
 

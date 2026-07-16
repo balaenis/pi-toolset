@@ -481,19 +481,52 @@ Independent re-review residual defects closed after Round 7. Round 1–7 executi
 
 ## Pause After Round 8
 
-Remediation paused by request after Round 8 validation. Residual independent-review findings were not fixed in this session and are tracked as deferred optimization items in:
+Remediation paused by request after Round 8 validation. Residual independent-review findings were deferred to:
 
 - `packages/pi-agents/docs/todos/2026-07-16-subagent-memory-optimization-followups.md`
 
-Open at pause:
+Those items are closed below in Review Round 9 / Follow-up Closure.
 
-- Critical: durable result status/exitCode consistency under-validation
-- Critical: details validation not mode/topology-aware
-- Critical: non-allowlisted AgentMessage roles (e.g. `bashExecution`) skip projection
-- Warning: assistant text sibling identity fields may remain unbounded
-- Warning: truncated render summary may reintroduce ANSI reset injection
+## Review Round 9 / Follow-up Closure
 
-Do not treat the branch as final-approval-ready until those follow-ups are closed and re-reviewed.
+Deferred Critical and Warning items from the post–Round 8 independent re-review are closed here. Round 1–8 execution evidence above is preserved.
+
+### Round 9 findings (deferred follow-ups)
+
+1. **Critical — Durable result status/exitCode consistency** (`run-store.ts` `validateResultShell`; Parallel restore in `tool.ts`): completed units could keep `status: 'running'|'failed'` or `exitCode: -1`; message entries were not shape-checked pre-claim.
+2. **Critical — Details validation not mode/topology-aware** (`run-store.ts` `validateSubagentDetails`): chain outputs/steps were not checked against request topology, so impossible high steps could poison later-step-wins.
+3. **Critical — Non-allowlisted AgentMessage roles skip projection** (`interactive-agent.ts`): `bashExecution` and unknown roles retained unbounded payloads (e.g. `output`).
+4. **Warning — Assistant text sibling identity fields unbounded** (`interactive-agent.ts` text-part projection): `id`/`name`/`toolCallId`/`toolName`/`mimeType` skipped complete-item budgeting.
+5. **Warning — Truncated render SGR full-reset injection** (`render.ts`): raw `truncateToWidth()` reintroduced `\x1b[0m` that clears parent tool-result background.
+
+### Round 9 compatibility choices
+
+- Completed unit results: when `unit.status === 'completed'`, require `result.status === 'completed'` if present; reject `exitCode === -1`; status-less shells require `exitCode === 0`. Message entries must be non-null objects.
+- Chain topology provenance enforced only for `mode === 'chain'`. Single/Parallel may still carry ignored legacy `details.chain`/`outputs` presentation (existing fixture accepted; not a schema migration).
+- Text parts keep authoritative text exact; only non-text siblings are complete-item budgeted/stripped.
+- `truncateDisplayToWidth` strips SGR full-reset via string split (no control-regex).
+
+### Round 9 execution record
+
+| Item                                        | Status   | Files changed                                                 | Validation evidence                                                   | Notes / deviations                                                                                                            |
+| ------------------------------------------- | -------- | ------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| C1 Result status/exitCode + message entries | Complete | `src/run-store.ts`, `tests/run-store.test.ts`                 | `bun test …run-store -t "inconsistent result"` → pass                 | Pre-claim `corrupt_run`; valid legacy empty+presentation / populated messages / exitCode 0\|1 with completed status accepted. |
+| C2 Mode/topology-aware details              | Complete | `src/run-store.ts`, `tests/run-store.test.ts`                 | `bun test …run-store -t "impossible step"` → pass                     | Chain-only provenance; single legacy chain presentation still loads.                                                          |
+| C3 Project every role                       | Complete | `src/interactive-agent.ts`, `tests/interactive-agent.test.ts` | `bun test …interactive-agent -t "bashExecution and unknown"` → pass   | `bashExecution.output` + unknown roles bounded; source unchanged; assistant final text preserved.                             |
+| W1 Text sibling identity fields             | Complete | `src/interactive-agent.ts`, `tests/interactive-agent.test.ts` | `bun test …interactive-agent -t "text-part identity siblings"` → pass | `boundTextPartSiblings` keeps text exact; drops oversized identity/extras.                                                    |
+| W2 Truncated SGR reset strip                | Complete | `src/render.ts`, `tests/render.test.ts`                       | `bun test …render -t "SGR full-reset"` → 2 pass                       | Restored `truncateDisplayToWidth` for summary/activity/title clamp.                                                           |
+
+### Round 9 status
+
+- Items C1, C2, C3, W1, W2 implemented with focused regression coverage.
+- Follow-up todo file marked closed with evidence.
+- **Round 9 complete** after mandatory final validation:
+  - Focused suite (interactive-agent / run-store / resume / render): **231 pass / 0 fail**
+  - `mise run typecheck --package packages/pi-agents`: pass
+  - `mise run test --package packages/pi-agents`: **1026 pass / 0 fail** (43 files)
+  - `hk check`: pass (eslint + prettier)
+  - `mise run build --package packages/pi-agents`: pass
+  - `git diff --check`: pass
 
 ## Final Validation
 

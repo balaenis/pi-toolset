@@ -802,6 +802,278 @@ describe('listRuns', () => {
     expect(store.getRun(runId).ok).toBe(true);
   });
 
+  it('returns corrupt_run for completed unit with inconsistent result status/exitCode or malformed messages', async () => {
+    const store = createRunStore({ rootDir: root, ...makeDeps() });
+    const { runId } = await store.createRun(makeCreateInput());
+    const file = path.join(root, runId, 'run.json');
+    const base: AgentRunRecordV1 = JSON.parse(readFileSync(file, 'utf-8'));
+    const unitId = Object.keys(base.units)[0]!;
+
+    const badCases: Array<{ label: string; result: unknown; message: string | RegExp }> = [
+      {
+        label: 'status running',
+        result: { messages: [], status: 'running', exitCode: -1 },
+        message: /status must be completed/,
+      },
+      {
+        label: 'status failed',
+        result: { messages: [], status: 'failed', exitCode: 1 },
+        message: /status must be completed/,
+      },
+      {
+        label: 'exitCode -1 with completed status',
+        result: { messages: [], status: 'completed', exitCode: -1 },
+        message: /exitCode must not be -1/,
+      },
+      {
+        label: 'status-less non-zero exitCode',
+        result: { messages: [], exitCode: 1 },
+        message: /exitCode must be 0 when status is absent/,
+      },
+      {
+        label: 'primitive message entry',
+        result: { messages: ['nope'], status: 'completed', exitCode: 0 },
+        message: /messages\[0\] must be a non-null object/,
+      },
+      {
+        label: 'null message entry',
+        result: { messages: [null], status: 'completed', exitCode: 0 },
+        message: /messages\[0\] must be a non-null object/,
+      },
+      {
+        label: 'array message entry',
+        result: { messages: [[{ role: 'assistant' }]], status: 'completed', exitCode: 0 },
+        message: /messages\[0\] must be a non-null object/,
+      },
+    ];
+
+    for (const c of badCases) {
+      const record = structuredClone(base);
+      record.units[unitId] = {
+        ...record.units[unitId]!,
+        status: 'completed',
+        result: c.result as never,
+      };
+      record.details = { ...record.details, results: [] };
+      writeFileSync(file, JSON.stringify(record));
+      const loaded = store.getRun(runId);
+      expect(loaded.ok).toBe(false);
+      if (!loaded.ok) {
+        expect(loaded.error.code).toBe('corrupt_run');
+        expect(loaded.error.message).toContain(`unit ${unitId} result`);
+        expect(loaded.error.message).toMatch(c.message);
+      }
+    }
+
+    // Malformed details.results messages rejected pre-claim too.
+    const detailsBad = structuredClone(base);
+    detailsBad.details = {
+      ...detailsBad.details,
+      results: [{ agent: 'noop', messages: [42] } as never],
+    };
+    writeFileSync(file, JSON.stringify(detailsBad));
+    const detailsLoaded = store.getRun(runId);
+    expect(detailsLoaded.ok).toBe(false);
+    if (!detailsLoaded.ok) {
+      expect(detailsLoaded.error.code).toBe('corrupt_run');
+      expect(detailsLoaded.error.message).toContain('details.results[0].messages[0]');
+    }
+
+    // Valid legacy completed shells still load: empty messages + presentation, or populated messages.
+    const legacyOk: Array<{ label: string; result: unknown }> = [
+      {
+        label: 'empty messages + presentation',
+        result: {
+          agent: 'noop',
+          messages: [],
+          status: 'completed',
+          exitCode: 0,
+          presentation: { transcript: [{ type: 'text', text: 'done' }] },
+        },
+      },
+      {
+        label: 'populated messages terminal exitCode 1 with completed status',
+        result: {
+          agent: 'noop',
+          messages: [{ role: 'assistant', content: [{ type: 'text', text: 'x' }] }],
+          status: 'completed',
+          exitCode: 1,
+        },
+      },
+      {
+        label: 'status-less exitCode 0',
+        result: {
+          agent: 'noop',
+          messages: [],
+          exitCode: 0,
+        },
+      },
+    ];
+    for (const c of legacyOk) {
+      const record = structuredClone(base);
+      record.units[unitId] = {
+        ...record.units[unitId]!,
+        status: 'completed',
+        result: c.result as never,
+      };
+      record.details = { ...record.details, results: [] };
+      writeFileSync(file, JSON.stringify(record));
+      const loaded = store.getRun(runId);
+      expect(loaded.ok).toBe(true);
+    }
+  });
+
+  it('returns corrupt_run for chain outputs with impossible step/agent; accepts valid chain topology', async () => {
+    const store = createRunStore({ rootDir: root, ...makeDeps() });
+    const { runId } = await store.createRun(makeCreateInput());
+    const file = path.join(root, runId, 'run.json');
+    const base: AgentRunRecordV1 = JSON.parse(readFileSync(file, 'utf-8'));
+
+    const chainBase = {
+      ...base,
+      mode: 'chain' as const,
+      request: {
+        mode: 'chain' as const,
+        agentScope: 'both' as const,
+        chain: [
+          { agent: 'seed', task: 'seed work' },
+          { agent: 'impl', task: 'implement' },
+        ],
+      },
+      units: {
+        'chain-0001': {
+          unitId: 'chain-0001',
+          agent: 'seed',
+          agentFingerprint: 'fp',
+          runtime: undefined,
+          capability: 'session' as const,
+          status: 'queued' as const,
+          step: 1,
+          attempt: 1,
+          attempts: [],
+          effectiveCwd: '/tmp',
+        },
+        'chain-0002': {
+          unitId: 'chain-0002',
+          agent: 'impl',
+          agentFingerprint: 'fp',
+          runtime: undefined,
+          capability: 'session' as const,
+          status: 'queued' as const,
+          step: 2,
+          attempt: 1,
+          attempts: [],
+          effectiveCwd: '/tmp',
+        },
+      },
+      details: {
+        ...base.details,
+        mode: 'chain' as const,
+        results: [],
+      },
+    };
+
+    // Impossible high step poisons later-step-wins.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...chainBase,
+        details: {
+          ...chainBase.details,
+          outputs: {
+            poisoned: { text: 'bad', agent: 'seed', step: 99 },
+          },
+        },
+      })
+    );
+    const highStep = store.getRun(runId);
+    expect(highStep.ok).toBe(false);
+    if (!highStep.ok) {
+      expect(highStep.error.code).toBe('corrupt_run');
+      expect(highStep.error.message).toContain('details.outputs[poisoned].step');
+      expect(highStep.error.message).toContain('outside chain topology');
+    }
+
+    // Wrong agent at a valid step.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...chainBase,
+        details: {
+          ...chainBase.details,
+          outputs: {
+            step1: { text: 'ok', agent: 'wrong-agent', step: 1 },
+          },
+        },
+      })
+    );
+    const badAgent = store.getRun(runId);
+    expect(badAgent.ok).toBe(false);
+    if (!badAgent.ok) {
+      expect(badAgent.error.code).toBe('corrupt_run');
+      expect(badAgent.error.message).toContain('details.outputs[step1].agent');
+      expect(badAgent.error.message).toContain('wrong-agent');
+      expect(badAgent.error.message).toContain('seed');
+    }
+
+    // Valid chain outputs + chain presentation accepted.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...chainBase,
+        details: {
+          ...chainBase.details,
+          outputs: {
+            step1: { text: 'hello', agent: 'seed', step: 1 },
+            step2: { text: 'world', agent: 'impl', step: 2, structured: null },
+          },
+          chain: {
+            totalSteps: 2,
+            steps: [
+              {
+                kind: 'sequential',
+                step: 1,
+                agent: 'seed',
+                task: 'seed work',
+                status: 'completed',
+              },
+              {
+                kind: 'sequential',
+                step: 2,
+                agent: 'impl',
+                task: 'implement',
+                status: 'queued',
+              },
+            ],
+          },
+        },
+      })
+    );
+    const ok = store.getRun(runId);
+    expect(ok.ok).toBe(true);
+
+    // Single-mode records may still carry ignored legacy chain presentation (not corrupt).
+    const singleLegacy = structuredClone(base);
+    singleLegacy.details = {
+      ...singleLegacy.details,
+      outputs: { orphan: { text: 'x', agent: 'noop', step: 9 } },
+      chain: {
+        totalSteps: 1,
+        steps: [
+          {
+            kind: 'sequential',
+            step: 1,
+            agent: 'noop',
+            task: 't',
+            status: 'completed',
+          },
+        ],
+      },
+    };
+    writeFileSync(file, JSON.stringify(singleLegacy));
+    expect(store.getRun(runId).ok).toBe(true);
+  });
+
   it('loads Version 1 records when continuationTasks is absent', async () => {
     const store = createRunStore({ rootDir: root, ...makeDeps() });
     const { runId } = await store.createRun(makeCreateInput());

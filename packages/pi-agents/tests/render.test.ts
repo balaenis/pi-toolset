@@ -1548,6 +1548,64 @@ describe('renderResult title', () => {
     expect(text).not.toContain(longTask);
   });
 
+  it('does not inject SGR full-reset when truncating a summary preview', () => {
+    // pi-tui truncateToWidth wraps ellipsis in \x1b[0m, which clears parent toolSuccessBg.
+    const { context } = makeContext();
+    const r = singleResult({
+      status: 'completed',
+      task: 'task',
+      title: 'Map pi-agents snapshot consumption for nested tool results',
+      usage: {
+        ...emptyUsage(),
+        turns: 34,
+        input: 73000,
+        output: 12000,
+        cacheRead: 1300000,
+        contextTokens: 83000,
+      },
+      model: 'deepseek-v4-flash',
+      thinking: 'high',
+    });
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'done' }], details: singleDetails(r) },
+        { expanded: false },
+        theme,
+        context
+      ),
+      120
+    );
+    const firstLine = text.split('\n')[0] ?? '';
+    expect(firstLine).toContain('…');
+    expect(firstLine).not.toContain('\u001b[0m');
+    expect(firstLine).toContain('34 turns');
+  });
+
+  it('does not inject SGR full-reset when truncating a colored activity line', () => {
+    const { context } = makeContext();
+    const longPath =
+      '/data/repos/my/pi-toolset/packages/pi-agents/very/deeply/nested/long/path/to/a/source/file.ts';
+    const r = singleResult({
+      status: 'running',
+      exitCode: -1,
+      messages: assistantMessages([{ type: 'toolCall', name: 'read', path: longPath }]),
+    });
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'run' }], details: singleDetails(r) },
+        { expanded: false, isPartial: true },
+        theme,
+        context
+      ),
+      50
+    );
+    const activityLines = text.split('\n').filter((l) => l.includes('└─'));
+    expect(activityLines).toHaveLength(1);
+    const line = activityLines[0]!;
+    expect(line).toContain('…');
+    expect(line).not.toContain('\u001b[0m');
+  });
+
   it('clamps a CJK title to at most 30 terminal columns', async () => {
     const { visibleWidth } = await import('@earendil-works/pi-tui');
     const { context } = makeContext();

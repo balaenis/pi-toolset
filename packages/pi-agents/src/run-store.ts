@@ -61,15 +61,60 @@ function isAllowedDurableCapability(capability: unknown): boolean {
  * Minimum durable SingleResult shell: non-null non-array object with `messages` array.
  * Accepts legacy populated messages and compact empty messages; optional presentation
  * is validated separately when present.
+ *
+ * When `unitStatus` is `completed`, rejects contradictory result shells that would
+ * redispatch a completed unit (status running/failed/…, exitCode -1, or status-less
+ * non-zero exitCode). Message entries must be non-null objects so post-claim snapshot
+ * normalization cannot throw on primitives.
  */
-function validateResultShell(result: unknown, pathLabel: string): string | undefined {
+function validateResultShell(
+  result: unknown,
+  pathLabel: string,
+  options?: { unitStatus?: string }
+): string | undefined {
   if (result === undefined) return undefined;
   if (result === null || typeof result !== 'object' || Array.isArray(result)) {
     return `${pathLabel} must be a non-null object`;
   }
-  const messages = (result as { messages?: unknown }).messages;
+  const r = result as Record<string, unknown>;
+  const messages = r.messages;
   if (!Array.isArray(messages)) {
     return `${pathLabel}.messages must be an array`;
+  }
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) {
+      return `${pathLabel}.messages[${i}] must be a non-null object`;
+    }
+  }
+  if (r.status !== undefined) {
+    if (typeof r.status !== 'string' || !UNIT_STATUS_VALUES.has(r.status)) {
+      return `${pathLabel}.status has unsupported value ${String(r.status)}`;
+    }
+  }
+  if (r.exitCode !== undefined) {
+    if (typeof r.exitCode !== 'number' || !Number.isInteger(r.exitCode)) {
+      return `${pathLabel}.exitCode must be an integer when present`;
+    }
+  }
+  // Completed unit must carry a terminal completed result shell so Parallel/resume
+  // skip-by-status cannot redispatch via lagging result.status / exitCode -1.
+  if (options?.unitStatus === 'completed') {
+    if (r.status !== undefined && r.status !== 'completed') {
+      return `${pathLabel}.status must be completed when unit is completed (got ${String(r.status)})`;
+    }
+    if (r.exitCode === -1) {
+      return `${pathLabel}.exitCode must not be -1 when unit is completed`;
+    }
+    // Absent status falls back to exitCode: only 0 resolves to completed.
+    if (r.status === undefined) {
+      if (typeof r.exitCode !== 'number') {
+        return `${pathLabel} must have status completed or exitCode 0 when unit is completed`;
+      }
+      if (r.exitCode !== 0) {
+        return `${pathLabel}.exitCode must be 0 when status is absent and unit is completed`;
+      }
+    }
   }
   return undefined;
 }
@@ -226,11 +271,34 @@ function validateChainLogicalStep(step: unknown, pathLabel: string): string | un
   return undefined;
 }
 
+/** Resolve agent name for request.chain[step-1] (sequential agent or fanout parallel.agent). */
+function chainRequestStepAgent(chain: unknown[], step: number): string | undefined {
+  if (step < 1 || step > chain.length) return undefined;
+  const entry = chain[step - 1];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+  const e = entry as Record<string, unknown>;
+  const isFanout = 'expand' in e && !('agent' in e);
+  if (isFanout) {
+    const parallel = e.parallel;
+    if (!parallel || typeof parallel !== 'object' || Array.isArray(parallel)) return undefined;
+    const agent = (parallel as { agent?: unknown }).agent;
+    return typeof agent === 'string' ? agent : undefined;
+  }
+  return typeof e.agent === 'string' ? e.agent : undefined;
+}
+
 /**
  * Minimum mode-aware SubagentDetails shape consumed by getRun / preflight / chain restore.
  * Requires results; validates optional chain/outputs enough that resume cannot throw.
+ *
+ * Compatibility: `details.chain` / `details.outputs` may appear on single/parallel records
+ * as ignored presentation (legacy fixtures). Topology provenance is enforced only when
+ * `mode === 'chain'` so impossible step/agent entries cannot poison later-step-wins restore.
  */
-function validateSubagentDetails(details: unknown): string | undefined {
+function validateSubagentDetails(
+  details: unknown,
+  options?: { mode?: string; request?: Record<string, unknown> }
+): string | undefined {
   if (details === null || typeof details !== 'object' || Array.isArray(details)) {
     return 'invalid details';
   }
@@ -280,6 +348,59 @@ function validateSubagentDetails(details: unknown): string | undefined {
     for (let i = 0; i < chain.steps.length; i++) {
       const stepError = validateChainLogicalStep(chain.steps[i], `details.chain.steps[${i}]`);
       if (stepError) return stepError;
+    }
+  }
+
+  // Chain-mode topology provenance: reject impossible output/step agents that can
+  // win later-step-wins and poison named templates. Non-chain modes may still carry
+  // ignored legacy chain/outputs presentation (accepted without topology checks).
+  if (options?.mode === 'chain' && options.request) {
+    const requestChain = options.request.chain;
+    const topology = Array.isArray(requestChain) ? requestChain : [];
+    const totalSteps = topology.length;
+
+    if (d.outputs !== undefined && totalSteps > 0) {
+      for (const [name, entry] of Object.entries(d.outputs as Record<string, unknown>)) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        const e = entry as { step?: unknown; agent?: unknown };
+        if (typeof e.step === 'number' && isPositiveInteger(e.step) && e.step > totalSteps) {
+          return `details.outputs[${name}].step ${e.step} is outside chain topology (1..${totalSteps})`;
+        }
+        if (
+          typeof e.step === 'number' &&
+          isPositiveInteger(e.step) &&
+          typeof e.agent === 'string'
+        ) {
+          const expected = chainRequestStepAgent(topology, e.step);
+          if (expected !== undefined && e.agent !== expected) {
+            return `details.outputs[${name}].agent "${e.agent}" does not match topology agent "${expected}" at step ${e.step}`;
+          }
+        }
+      }
+    }
+
+    if (d.chain !== undefined && totalSteps > 0) {
+      const chain = d.chain as { steps?: unknown };
+      if (Array.isArray(chain.steps)) {
+        for (let i = 0; i < chain.steps.length; i++) {
+          const step = chain.steps[i];
+          if (!step || typeof step !== 'object' || Array.isArray(step)) continue;
+          const s = step as { step?: unknown; agent?: unknown };
+          if (typeof s.step === 'number' && isPositiveInteger(s.step) && s.step > totalSteps) {
+            return `details.chain.steps[${i}].step ${s.step} is outside chain topology (1..${totalSteps})`;
+          }
+          if (
+            typeof s.step === 'number' &&
+            isPositiveInteger(s.step) &&
+            typeof s.agent === 'string'
+          ) {
+            const expected = chainRequestStepAgent(topology, s.step);
+            if (expected !== undefined && s.agent !== expected) {
+              return `details.chain.steps[${i}].agent "${s.agent}" does not match topology agent "${expected}" at step ${s.step}`;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -810,7 +931,9 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         };
       }
       if (u.result !== undefined) {
-        const shellError = validateResultShell(u.result, `unit ${unitId} result`);
+        const shellError = validateResultShell(u.result, `unit ${unitId} result`, {
+          unitStatus: typeof u.status === 'string' ? u.status : undefined,
+        });
         if (shellError) {
           return {
             ok: false,
@@ -900,7 +1023,13 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       }
     }
     // Mode-aware SubagentDetails minimum shape used by preflight/resume/chain restore.
-    const detailsError = validateSubagentDetails(r.details);
+    const detailsError = validateSubagentDetails(r.details, {
+      mode: typeof r.mode === 'string' ? r.mode : undefined,
+      request:
+        r.request && typeof r.request === 'object' && !Array.isArray(r.request)
+          ? (r.request as unknown as Record<string, unknown>)
+          : undefined,
+    });
     if (detailsError) {
       return {
         ok: false,
