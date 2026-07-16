@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
+import { MAX_STDOUT_RECORD_BYTES } from '../src/constants.ts';
 import {
   buildUiCancelResponse,
   PI_RPC_TRANSPORT_EXIT,
@@ -102,7 +103,7 @@ async function spawnTransport(
   });
 }
 
-const STDOUT_RECORD_LIMIT_BYTES = 8 * 1024 * 1024;
+const STDOUT_RECORD_LIMIT_BYTES = MAX_STDOUT_RECORD_BYTES;
 const STDOUT_OVERFLOW_MESSAGE = 'RPC stdout record exceeded 8 MiB';
 
 describe('PiRpcTransport framing', () => {
@@ -384,14 +385,44 @@ describe('PiRpcTransport requests', () => {
 
   it('rejects get_messages before allocating request state or writing stdin', async () => {
     const child = new FakeChild();
-    const transport = await spawnTransport(child);
+    let idCalls = 0;
+    const transport = await spawnTransport(child, {
+      requestIdGenerator: () => `id-${++idCalls}`,
+    });
 
-    await expect(transport.request({ type: 'get_messages' } as never)).rejects.toMatchObject({
+    await expect(transport.request({ type: 'get_messages' })).rejects.toMatchObject({
       name: 'PiRpcTransportError',
       code: 'get_messages_disabled',
       message: 'get_messages is disabled; hydrate the validated sessionFile instead',
     });
+    expect(idCalls).toBe(0);
     expect(child.stdin.chunks).toEqual([]);
+
+    // A subsequent legitimate request still gets the first generated id.
+    const statePromise = transport.request({ type: 'get_state' });
+    await new Promise((r) => setImmediate(r));
+    expect(idCalls).toBe(1);
+    expect(child.stdin.chunks.some((c) => c.includes('"id":"id-1"'))).toBe(true);
+    child.pushStdout(
+      JSON.stringify({
+        id: 'id-1',
+        type: 'response',
+        command: 'get_state',
+        success: true,
+        data: {
+          sessionId: 's1',
+          thinkingLevel: 'off',
+          isStreaming: false,
+          isCompacting: false,
+          steeringMode: 'all',
+          followUpMode: 'one-at-a-time',
+          autoCompactionEnabled: true,
+          messageCount: 0,
+          pendingMessageCount: 0,
+        },
+      }) + '\n'
+    );
+    await expect(statePromise).resolves.toMatchObject({ success: true });
     await transport.dispose();
   });
 
