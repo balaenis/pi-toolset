@@ -31,7 +31,7 @@ import {
   getPiInvocation,
   writePromptToTempFile,
 } from './invocation.ts';
-import { applyTerminalStatus, getFinalOutput } from './output.ts';
+import { applyTerminalStatus, getResultFinalOutput } from './output.ts';
 import type { UnitExecutionContext } from './run-coordinator.ts';
 import { buildChildAgentEnv, isAgentDelegationAllowed } from './security.ts';
 import {
@@ -44,7 +44,8 @@ import { ABORT_MESSAGE, AgentAbortError, isAbortError } from './abort.ts';
 import { emptyUsage } from './empty-usage.ts';
 import { runSingleAgentInteractive } from './interactive-execution.ts';
 import { runSingleAgentPiRpc } from './pi-rpc-execution.ts';
-import { cloneSingleResult, type SingleResult, type SubagentDetails } from './types.ts';
+import { snapshotSingleResult } from './result-snapshot.ts';
+import type { SingleResult, SubagentDetails } from './types.ts';
 
 export { ABORT_MESSAGE, AgentAbortError, getAbortResult, isAbortError } from './abort.ts';
 
@@ -232,13 +233,14 @@ function emitRunningSnapshot(
   makeDetails: (results: SingleResult[]) => SubagentDetails
 ): void {
   if (!onUpdate) return;
-  const snapshot = cloneSingleResult(currentResult);
+  // Provisional UI update — authoritative terminal/durable snapshot is produced by runStepWithContext.
+  const snapshot = snapshotSingleResult(currentResult);
   snapshot.status = 'running';
   onUpdate({
     content: [
       {
         type: 'text',
-        text: getFinalOutput(snapshot.messages) || '(running...)',
+        text: getResultFinalOutput(snapshot) || '(running...)',
       },
     ],
     details: makeDetails([snapshot]),
@@ -251,13 +253,14 @@ function emitTerminalSnapshot(
   makeDetails: (results: SingleResult[]) => SubagentDetails
 ): void {
   if (!onUpdate) return;
-  const snapshot = cloneSingleResult(currentResult);
+  // Provisional UI update — authoritative terminal/durable snapshot is produced by runStepWithContext.
+  const snapshot = snapshotSingleResult(currentResult);
   onUpdate({
     content: [
       {
         type: 'text',
         text:
-          getFinalOutput(snapshot.messages) ||
+          getResultFinalOutput(snapshot) ||
           snapshot.errorMessage ||
           snapshot.stderr ||
           (snapshot.status === 'cancelled' ? '(cancelled)' : '(done)'),
@@ -542,41 +545,36 @@ export async function runSingleAgent(
 
         if (evt.type === 'message_end' && evt.message) {
           const msg = evt.message;
-          currentResult.messages.push(msg);
+          // Parent live result retains only assistant messages. Raw tool-result bodies
+          // stay in the child session when a reloadable identity exists; otherwise they
+          // are intentionally released after execution.
+          if (msg.role !== 'assistant') return;
 
-          if (msg.role === 'assistant') {
-            currentResult.usage.turns++;
-            const usage = msg.usage;
-            if (usage) {
-              currentResult.usage.input += usage.input || 0;
-              currentResult.usage.output += usage.output || 0;
-              currentResult.usage.cacheRead += usage.cacheRead || 0;
-              currentResult.usage.cacheWrite += usage.cacheWrite || 0;
-              currentResult.usage.cost += usage.cost?.total || 0;
-              currentResult.usage.contextTokens = usage.totalTokens || 0;
-            }
-            if (!currentResult.model && msg.model) currentResult.model = msg.model;
-            if (!maxTurnsExceeded) {
-              if (msg.stopReason) currentResult.stopReason = msg.stopReason;
-              if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
-            }
+          currentResult.messages.push(msg);
+          currentResult.usage.turns++;
+          const usage = msg.usage;
+          if (usage) {
+            currentResult.usage.input += usage.input || 0;
+            currentResult.usage.output += usage.output || 0;
+            currentResult.usage.cacheRead += usage.cacheRead || 0;
+            currentResult.usage.cacheWrite += usage.cacheWrite || 0;
+            currentResult.usage.cost += usage.cost?.total || 0;
+            currentResult.usage.contextTokens = usage.totalTokens || 0;
+          }
+          if (!currentResult.model && msg.model) currentResult.model = msg.model;
+          if (!maxTurnsExceeded) {
+            if (msg.stopReason) currentResult.stopReason = msg.stopReason;
+            if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
           }
           emitUpdate();
 
-          if (
-            msg.role === 'assistant' &&
-            agent.maxTurns &&
-            currentResult.usage.turns >= agent.maxTurns &&
-            !maxTurnsExceeded
-          ) {
+          if (agent.maxTurns && currentResult.usage.turns >= agent.maxTurns && !maxTurnsExceeded) {
             triggerMaxTurns();
           }
         }
 
-        if (evt.type === 'tool_result_end' && evt.message) {
-          currentResult.messages.push(evt.message);
-          emitUpdate();
-        }
+        // tool_result_end is intentionally ignored: raw tool-result bodies are not
+        // retained in the parent live result (see message_end assistant-only path).
       };
 
       proc.stdout.on('data', (data) => {

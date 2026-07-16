@@ -15,7 +15,7 @@ import {
 import { readJsonPointer } from './json-pointer.ts';
 import {
   applyTerminalStatus,
-  getFinalOutput,
+  getResultFinalOutput,
   getResultOutput,
   isFailedResult,
   resolveExecutionStatus,
@@ -30,6 +30,7 @@ import {
 } from './structured-output.ts';
 import { emptyUsage } from './empty-usage.ts';
 import { renderTaskTemplate } from './template.ts';
+import { snapshotSingleResult } from './result-snapshot.ts';
 import {
   cloneResults,
   cloneSingleResult,
@@ -344,7 +345,7 @@ function durableCompletedSequentialResult(
 }
 
 function resultText(result: SingleResult): string {
-  return result.finalOutput ?? getFinalOutput(result.messages);
+  return getResultFinalOutput(result);
 }
 
 /**
@@ -589,7 +590,9 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
           type: 'text',
           text:
             previousOutput ||
-            getFinalOutput(results[results.length - 1]?.messages ?? []) ||
+            (results[results.length - 1]
+              ? getResultFinalOutput(results[results.length - 1]!)
+              : '') ||
             '(no output)',
         },
       ],
@@ -664,7 +667,7 @@ function applyStructuredOutputValidation(
   stepNumber: number
 ): void {
   if (result.messages.length > 0) {
-    result.finalOutput = getFinalOutput(result.messages);
+    result.finalOutput = getResultFinalOutput(result);
   }
   if (isFailedResult(result) || !schema) return;
 
@@ -783,6 +786,12 @@ async function runSequentialStep(
 
   const chainUpdate = makeSequentialUpdate(results, stepNumber, opts.onUpdate, buildDetails);
 
+  const postprocessTerminal = (result: SingleResult): void => {
+    applyStructuredOutputValidation(result, outputSchema, stepNumber);
+    if (!result.status || result.status === 'running') applyTerminalStatus(result);
+    result.step = stepNumber;
+  };
+
   let result: SingleResult;
   try {
     result = await opts.runStep({
@@ -796,7 +805,13 @@ async function runSequentialStep(
       signal,
       onUpdate: chainUpdate,
       skipCompletionCheck: outputSchema !== undefined,
+      postprocessTerminal,
     });
+    // Idempotent fallback for injected runStep stubs that ignore postprocessTerminal:
+    // copy into mutable working state, re-apply postprocess, and resnapshot.
+    const working = cloneSingleResult(result);
+    postprocessTerminal(working);
+    result = snapshotSingleResult(working);
   } catch (err) {
     if (isAbortError(err)) {
       const cancelled: SingleResult = {
@@ -829,9 +844,8 @@ async function runSequentialStep(
     throw err;
   }
 
-  applyStructuredOutputValidation(result, outputSchema, stepNumber);
-  if (!result.status || result.status === 'running') applyTerminalStatus(result);
-  result.step = stepNumber;
+  // postprocessTerminal already ran (production runStep and/or stub fallback above).
+  // Do not mutate the compact snapshot — only store it.
   upsertSequentialResult(results, result);
 
   if (isFailedResult(result) || resolveExecutionStatus(result) === 'failed') {
@@ -872,7 +886,7 @@ async function runSequentialStep(
   }
 
   logicalSteps[stepIndex].status = 'completed';
-  const nextPreviousOutput = result.finalOutput ?? getFinalOutput(result.messages);
+  const nextPreviousOutput = getResultFinalOutput(result);
   if (step.name) {
     outputs.set(step.name, {
       text: nextPreviousOutput,
@@ -1129,20 +1143,26 @@ async function runFanoutStep(
 
   const markSlotCancelled = (index: number, fromErr?: unknown): SingleResult => {
     const fromAbort = fromErr ? getAbortResult(fromErr) : undefined;
-    const existing = fromAbort ?? slots[index];
-    existing.status = 'cancelled';
-    existing.stopReason = existing.stopReason ?? 'aborted';
-    if (existing.exitCode === 0 || existing.exitCode === -1) existing.exitCode = 1;
-    if (!existing.errorMessage) existing.errorMessage = ABORT_MESSAGE;
-    existing.step = stepNumber;
-    existing.fanout = {
-      index,
-      count: renderedTasks.length,
-      itemTask: renderedTasks[index],
+    const base = fromAbort ?? slots[index];
+    // Never mutate the abort error's compact result or a prior snapshot in place.
+    const cancelled: SingleResult = {
+      ...base,
+      status: 'cancelled',
+      stopReason: base.stopReason ?? 'aborted',
+      exitCode: base.exitCode === 0 || base.exitCode === -1 ? 1 : base.exitCode,
+      errorMessage: base.errorMessage ?? ABORT_MESSAGE,
+      step: stepNumber,
+      fanout: {
+        index,
+        count: renderedTasks.length,
+        itemTask: renderedTasks[index],
+      },
+      messages: base.messages ? [...base.messages] : [],
+      usage: { ...base.usage },
     };
-    slots[index] = existing;
+    slots[index] = cancelled;
     fanoutMeta.latestIndex = index;
-    return existing;
+    return cancelled;
   };
 
   const makeTerminalPostprocess = (index: number, task: string) => {
@@ -1223,12 +1243,14 @@ async function runFanoutStep(
             // Worker finished after cancel: keep cancelled if we already marked it.
             if (resolveExecutionStatus(slots[index]) === 'cancelled') return slots[index];
           }
-          // Idempotent: re-apply so stubs that ignore postprocessTerminal still match.
-          postprocessTerminal(result);
-          slots[index] = result;
+          // Idempotent stub fallback: never mutate the returned compact snapshot in place.
+          const working = cloneSingleResult(result);
+          postprocessTerminal(working);
+          const compact = snapshotSingleResult(working);
+          slots[index] = compact;
           fanoutMeta.latestIndex = index;
           if (!fanoutTerminal && !signal?.aborted) emitFanout();
-          return result;
+          return compact;
         } catch (err) {
           if (isAbortError(err)) {
             markSlotCancelled(index, err);
@@ -1314,10 +1336,7 @@ async function runFanoutStep(
 
   fanoutMeta.status = 'completed';
   const collected = slots.map(
-    (result) =>
-      (result.structuredOutput ??
-        result.finalOutput ??
-        getFinalOutput(result.messages)) as JsonValue
+    (result) => (result.structuredOutput ?? getResultFinalOutput(result)) as JsonValue
   );
   const maxItemsNote =
     typeof step.expand.maxItems === 'number' ? Math.floor(step.expand.maxItems) : undefined;

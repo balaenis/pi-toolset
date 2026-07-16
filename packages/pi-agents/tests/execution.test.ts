@@ -1287,3 +1287,123 @@ describe('mapWithConcurrencyLimit cancel-safe scheduling', () => {
     expect(finished.sort()).toEqual([0, 1]);
   });
 });
+
+describe('runSingleAgent compact parent projection', () => {
+  it('ignores tool_result_end and non-assistant message_end events', async () => {
+    const fake = new FakeChild();
+    const updates: SubagentDetails[] = [];
+    const promise = runSingleAgent(
+      process.cwd(),
+      [makeAgent()],
+      'maxie',
+      'do work',
+      undefined,
+      undefined,
+      undefined,
+      (partial) => {
+        if (partial.details) updates.push(partial.details);
+      },
+      makeDetails,
+      {
+        spawnFn: (() => fake as unknown as SpawnedChild) as SpawnFn,
+      }
+    );
+
+    setImmediate(() => {
+      fake.emitAssistant('thinking');
+      fake.stdout.push(
+        JSON.stringify({
+          type: 'message_end',
+          message: {
+            role: 'toolResult',
+            toolCallId: 't1',
+            toolName: 'bash',
+            content: [{ type: 'text', text: 'RAW_TOOL_BODY_' + 'x'.repeat(100) }],
+            isError: false,
+          },
+        }) + '\n'
+      );
+      fake.stdout.push(
+        JSON.stringify({
+          type: 'tool_result_end',
+          message: {
+            role: 'toolResult',
+            toolCallId: 't2',
+            toolName: 'bash',
+            content: [{ type: 'text', text: 'RAW_TOOL_BODY_END_' + 'y'.repeat(100) }],
+            isError: false,
+          },
+        }) + '\n'
+      );
+      fake.emitAssistant('final answer');
+      fake.stdout.push(null);
+      fake.stderr.push(null);
+      fake.emit('close', 0);
+    });
+
+    const result = await promise;
+    // Live private result retains assistant messages only.
+    expect(result.messages.every((m) => m.role === 'assistant')).toBe(true);
+    expect(result.messages).toHaveLength(2);
+    expect(result.usage.turns).toBe(2);
+    expect(JSON.stringify(result.messages)).not.toContain('RAW_TOOL_BODY_');
+
+    // Parent onUpdate details are compact snapshots without raw tool bodies.
+    expect(updates.length).toBeGreaterThan(0);
+    for (const details of updates) {
+      const json = JSON.stringify(details);
+      expect(json).not.toContain('RAW_TOOL_BODY_');
+      for (const r of details.results) {
+        expect(r.messages).toEqual([]);
+        expect(r.presentation).toBeDefined();
+      }
+    }
+    const last = updates[updates.length - 1]!.results[0]!;
+    expect(last.finalOutput).toBe('final answer');
+    expect(
+      last.presentation?.transcript.some((i) => i.type === 'text' && i.text === 'thinking')
+    ).toBe(true);
+  });
+
+  it('still updates usage and stopReason from assistant message_end events', async () => {
+    const fake = new FakeChild();
+    const promise = runSingleAgent(
+      process.cwd(),
+      [makeAgent()],
+      'maxie',
+      'do work',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      makeDetails,
+      {
+        spawnFn: (() => fake as unknown as SpawnedChild) as SpawnFn,
+      }
+    );
+
+    setImmediate(() => {
+      const message = {
+        role: 'assistant',
+        model: 'fake-model',
+        content: [{ type: 'text', text: 'done' }],
+        usage: { input: 11, output: 7, totalTokens: 18, cacheRead: 3, cacheWrite: 1 },
+        stopReason: 'end',
+      };
+      fake.stdout.push(JSON.stringify({ type: 'message_end', message }) + '\n');
+      fake.stdout.push(null);
+      fake.stderr.push(null);
+      fake.emit('close', 0);
+    });
+
+    const result = await promise;
+    expect(result.usage.turns).toBe(1);
+    expect(result.usage.input).toBe(11);
+    expect(result.usage.output).toBe(7);
+    expect(result.usage.cacheRead).toBe(3);
+    expect(result.usage.cacheWrite).toBe(1);
+    expect(result.usage.contextTokens).toBe(18);
+    expect(result.model).toBe('fake-model');
+    expect(result.stopReason === 'end' || result.status === 'completed').toBe(true);
+  });
+});

@@ -31,6 +31,7 @@ import { prepareAgentContext } from './context.ts';
 import { listAvailableSkillNames, resolveSkillNames } from './skills.ts';
 import {
   ABORT_MESSAGE,
+  AgentAbortError,
   getAbortResult,
   isAbortError,
   mapWithConcurrencyLimit,
@@ -39,12 +40,13 @@ import {
 } from './execution.ts';
 import {
   applyTerminalStatus,
-  getFinalOutput,
+  getResultFinalOutput,
   getResultOutput,
   isFailedResult,
   resolveExecutionStatus,
   truncateParallelOutput,
 } from './output.ts';
+import { snapshotSingleResult } from './result-snapshot.ts';
 import {
   createRunLifecycle,
   bridgeIncomingSignal,
@@ -1625,10 +1627,16 @@ async function runParallel(
               : {}),
           }
         );
-        if (!result.status || result.status === 'running') applyTerminalStatus(result);
-        allResults[index] = result;
+        // Never mutate the compact endUnit snapshot in place.
+        let stored = result;
+        if (!result.status || result.status === 'running') {
+          stored = cloneSingleResult(result);
+          applyTerminalStatus(stored);
+          stored = snapshotSingleResult(stored);
+        }
+        allResults[index] = stored;
         emitParallelUpdate();
-        return result;
+        return stored;
       } catch (err) {
         if (isAbortError(err)) {
           const fromErr = getAbortResult(err);
@@ -1791,13 +1799,13 @@ async function runSingle(
             text: `Agent ${result.stopReason || resolveExecutionStatus(result)}: ${errorMsg}`,
           },
         ],
-        details: makeDetails('single')([cloneSingleResult(result)]),
+        details: makeDetails('single')([snapshotSingleResult(result)]),
         isError: true,
       };
     }
     return {
-      content: [{ type: 'text', text: getFinalOutput(result.messages) || '(no output)' }],
-      details: makeDetails('single')([cloneSingleResult(result)]),
+      content: [{ type: 'text', text: getResultFinalOutput(result) || '(no output)' }],
+      details: makeDetails('single')([snapshotSingleResult(result)]),
     };
   } catch (err) {
     if (isAbortError(err)) {
@@ -1818,7 +1826,7 @@ async function runSingle(
         } satisfies SingleResult);
       return {
         content: [{ type: 'text', text: `Agent cancelled: ${getResultOutput(result)}` }],
-        details: makeDetails('single')([cloneSingleResult(result)]),
+        details: makeDetails('single')([snapshotSingleResult(result)]),
         isError: true,
       };
     }
@@ -1889,10 +1897,22 @@ async function runStepWithContext(
   const applyPostprocess = (result: SingleResult): void => {
     if (options.postprocessTerminal) options.postprocessTerminal(result);
   };
-  const markEnd = (result: SingleResult, status?: ExecutionStatus): void => {
-    if (options.unitContext && options.endUnit) {
-      options.endUnit(options.unitContext, result, status ?? resolveExecutionStatus(result));
+  /**
+   * Terminal compaction boundary: snapshot private mutable working state, pass the
+   * compact result to endUnit, and return it as the sole authoritative terminal result.
+   */
+  const finalizeTerminalResult = (
+    working: SingleResult,
+    status?: ExecutionStatus
+  ): SingleResult => {
+    if (working.finalOutput === undefined && working.messages.length > 0) {
+      working.finalOutput = getResultFinalOutput(working);
     }
+    const snapshot = snapshotSingleResult(working);
+    if (options.unitContext && options.endUnit) {
+      options.endUnit(options.unitContext, snapshot, status ?? resolveExecutionStatus(snapshot));
+    }
+    return snapshot;
   };
   if (!agent) {
     const failed = await runSingleAgent(
@@ -1921,8 +1941,7 @@ async function runStepWithContext(
           : {}),
       }
     );
-    markEnd(failed, 'failed');
-    return failed;
+    return finalizeTerminalResult(failed, 'failed');
   }
 
   const effectiveRuntime: Runtime | undefined = options.runtimeOverride ?? agent.runtime;
@@ -1957,8 +1976,7 @@ async function runStepWithContext(
         `Cannot resolve skill name(s): ${missing.join(', ')}. Available skills: ${availableText}.`,
         options.title
       );
-      markEnd(failure, 'failed');
-      return failure;
+      return finalizeTerminalResult(failure, 'failed');
     }
     resolvedSkillPaths = resolved;
   }
@@ -1987,8 +2005,7 @@ async function runStepWithContext(
           'Worktree isolation requires a git repository.',
           options.title
         );
-        markEnd(failure1, 'failed');
-        return failure1;
+        return finalizeTerminalResult(failure1, 'failed');
       }
       const opened = openAgentWorktree(repoRoot, storedWorktreePath);
       if (!opened.ok) {
@@ -2001,8 +2018,7 @@ async function runStepWithContext(
           opened.error,
           options.title
         );
-        markEnd(failure2, 'failed');
-        return failure2;
+        return finalizeTerminalResult(failure2, 'failed');
       }
       worktree = opened.worktree;
       effectiveCwd = worktree.path;
@@ -2018,8 +2034,7 @@ async function runStepWithContext(
           'Worktree isolation requires a git repository.',
           options.title
         );
-        markEnd(failure3, 'failed');
-        return failure3;
+        return finalizeTerminalResult(failure3, 'failed');
       }
       try {
         worktree = createAgentWorktree(repoRoot, agentName, taskIndex);
@@ -2035,8 +2050,7 @@ async function runStepWithContext(
           message,
           options.title
         );
-        markEnd(failure5, 'failed');
-        return failure5;
+        return finalizeTerminalResult(failure5, 'failed');
       }
 
       if (agent.worktreeSetupHook) {
@@ -2050,8 +2064,7 @@ async function runStepWithContext(
         );
         if (failure) {
           removeAgentWorktree(worktree);
-          markEnd(failure, 'failed');
-          return failure;
+          return finalizeTerminalResult(failure, 'failed');
         }
       }
     }
@@ -2109,8 +2122,7 @@ async function runStepWithContext(
       const dirty = getWorktreeDirtyStatus(storedWorktreePath);
       failure4.worktreeDirty = dirty.ok ? dirty.output.trim().length > 0 : true;
     }
-    markEnd(failure4, 'failed');
-    return failure4;
+    return finalizeTerminalResult(failure4, 'failed');
   }
 
   // Interactive TUI registration: Pi (pre-spawn with session file) or Grok ACP
@@ -2303,8 +2315,7 @@ async function runStepWithContext(
         );
         if (formalCode) failure.errorCode = formalCode;
         maybeRemoveOwnedCleanWorktree(failure);
-        markEnd(failure, 'failed');
-        return failure;
+        return finalizeTerminalResult(failure, 'failed');
       }
     }
 
@@ -2325,8 +2336,7 @@ async function runStepWithContext(
       );
       failure.errorCode = 'session_prompt_unestablished';
       maybeRemoveOwnedCleanWorktree(failure);
-      markEnd(failure, 'failed');
-      return failure;
+      return finalizeTerminalResult(failure, 'failed');
     }
 
     executionStarted = true;
@@ -2490,17 +2500,19 @@ async function runStepWithContext(
     if (worktree) {
       finalizeWorktree(worktree, result, { retainClean: retainCleanWorktree });
     }
-    markEnd(result);
-    return result;
+    return finalizeTerminalResult(result);
   } catch (err) {
-    if (isAbortError(err) && options.unitContext && options.endUnit) {
+    if (isAbortError(err)) {
       const origin = options.getAbortOrigin?.() ?? 'unknown';
-      const abortResult = getAbortResult(err);
-      if (abortResult) {
-        // Retain worktree after execution/abort; stamp path/dirty when available.
-        if (worktree) stampWorktreeOnFailure(abortResult);
-        applyPostprocess(abortResult);
-        markEnd(abortResult, originToUnitStatus(origin));
+      const provisional = getAbortResult(err);
+      if (provisional) {
+        // Mutable working state from the provisional compact/low-level snapshot.
+        const working = cloneSingleResult(provisional);
+        if (worktree) stampWorktreeOnFailure(working);
+        applyPostprocess(working);
+        const snapshot = finalizeTerminalResult(working, originToUnitStatus(origin));
+        // Replacement abort error carries the authoritative compact terminal snapshot.
+        throw new AgentAbortError(snapshot, origin);
       }
       throw err;
     }
@@ -2530,11 +2542,11 @@ async function runStepWithContext(
     // Always terminalize when we own a unit context (including post-begin stamp
     // failure) so durable state is not left running without a finishUnit.
     if (options.unitContext && options.endUnit) {
-      markEnd(failure, 'failed');
-      return failure;
+      return finalizeTerminalResult(failure, 'failed');
     }
     if (beganUnit) throw err;
-    return failure;
+    // Compact even non-durable early failures so raw transcripts never escape.
+    return finalizeTerminalResult(failure, 'failed');
   } finally {
     await agentContext.cleanup();
   }
