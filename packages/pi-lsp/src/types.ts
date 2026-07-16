@@ -20,12 +20,6 @@ export const LspServerRoleSchema = Type.Union(
 );
 export type LspServerRole = Type.Static<typeof LspServerRoleSchema>;
 
-export const LspStartupModeSchema = Type.Union([Type.Literal('auto'), Type.Literal('manual')], {
-  description:
-    'Whether the server participates in routing automatically ("auto") or must be enabled per session via `/lsp start` ("manual").',
-});
-export type LspStartupMode = Type.Static<typeof LspStartupModeSchema>;
-
 export const LspServerBaseSchema = Type.Object({
   command: Type.String({
     description: 'Executable used to launch the LSP server process.',
@@ -56,7 +50,6 @@ export const LspServerBaseSchema = Type.Object({
         'When false, the server is disabled and excluded from routing entirely. Defaults to true.',
     })
   ),
-  startupMode: Type.Optional(LspStartupModeSchema),
 });
 
 export const LspServerRecipeSchema = Type.Object({

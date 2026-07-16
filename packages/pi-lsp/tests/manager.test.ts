@@ -1,4 +1,4 @@
-// ABOUTME: Tests for multi-server file routing, lifecycle fan-out, and manual server enablement.
+// ABOUTME: Tests for multi-server file routing and lifecycle fan-out.
 // ABOUTME: Uses fake LSPServerInstance objects and a temp config dir so no real LSP process is spawned.
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
@@ -138,7 +138,6 @@ function tsPrimary(): ScopedLspServerConfig {
     command: '/abs/path/typescript-language-server',
     extensionToLanguage: { '.ts': 'typescript', '.tsx': 'typescriptreact' },
     role: 'primary',
-    startupMode: 'auto',
   };
 }
 
@@ -147,25 +146,26 @@ function eslintCompanion(): ScopedLspServerConfig {
     command: '/abs/path/eslint-lsp',
     extensionToLanguage: { '.ts': 'typescript', '.js': 'javascript' },
     role: 'companion',
-    startupMode: 'auto',
   };
 }
 
-function tailwindManual(): ScopedLspServerConfig {
+function tailwindCompanion(): ScopedLspServerConfig {
   return {
     command: '/abs/path/tailwindcss-language-server',
     extensionToLanguage: { '.ts': 'typescript' },
     role: 'companion',
-    startupMode: 'manual',
+    // Built-in recipe defaults to enabled: false; tests that exercise the
+    // companion must opt in explicitly when using the recipe name.
+    enabled: true,
   };
 }
 
-describe('manager: configured vs active routing', () => {
-  it('keeps inactive manual servers configured but excludes them from active routing', async () => {
+describe('manager: multi-server routing', () => {
+  it('returns every configured server covering the file', async () => {
     const { manager } = await buildManager({
       typescript: tsPrimary(),
       eslint: eslintCompanion(),
-      tailwindcss: tailwindManual(),
+      tailwindcss: tailwindCompanion(),
     });
 
     const configured = manager
@@ -178,7 +178,7 @@ describe('manager: configured vs active routing', () => {
       .sort();
 
     expect(configured).toEqual(['eslint', 'tailwindcss', 'typescript']);
-    expect(active).toEqual(['eslint', 'typescript']);
+    expect(active).toEqual(['eslint', 'tailwindcss', 'typescript']);
   });
 
   it('returns the primary server even when a companion is listed first', async () => {
@@ -198,29 +198,10 @@ describe('manager: configured vs active routing', () => {
     expect(manager.getPrimaryServerForFile('/tmp/foo.ts')).toBeUndefined();
     expect(manager.getServerForFile('/tmp/foo.ts')).toBeUndefined();
   });
-
-  it('admits a manual server into routing only after markManualServerActive', async () => {
-    const { manager } = await buildManager({
-      typescript: tsPrimary(),
-      tailwindcss: tailwindManual(),
-    });
-    expect(manager.getServersForFile('/tmp/foo.ts').map((s) => s.name)).toEqual(['typescript']);
-
-    manager.markManualServerActive('tailwindcss');
-    expect(
-      manager
-        .getServersForFile('/tmp/foo.ts')
-        .map((s) => s.name)
-        .sort()
-    ).toEqual(['tailwindcss', 'typescript']);
-
-    manager.markManualServerInactive('tailwindcss');
-    expect(manager.getServersForFile('/tmp/foo.ts').map((s) => s.name)).toEqual(['typescript']);
-  });
 });
 
 describe('manager: lifecycle fan-out', () => {
-  it('opens a .ts file on both the primary and the active companion', async () => {
+  it('opens a .ts file on both the primary and the companion', async () => {
     const { manager, instances, cwdDir } = await buildManager({
       typescript: tsPrimary(),
       eslint: eslintCompanion(),
@@ -238,10 +219,10 @@ describe('manager: lifecycle fan-out', () => {
     ]);
   });
 
-  it('inactive manual servers receive no lifecycle notifications', async () => {
+  it('fans lifecycle notifications to companion servers covering the file', async () => {
     const { manager, instances, cwdDir } = await buildManager({
       typescript: tsPrimary(),
-      tailwindcss: tailwindManual(),
+      tailwindcss: tailwindCompanion(),
     });
     const filePath = path.join(cwdDir, 'foo.ts');
     writeFileSync(filePath, 'v1');
@@ -250,11 +231,15 @@ describe('manager: lifecycle fan-out', () => {
     await manager.changeFile(filePath, 'v2');
     await manager.saveFile(filePath);
 
-    expect(instances.get('tailwindcss')!.notifications).toEqual([]);
-    expect(instances.get('typescript')!.notifications.length).toBeGreaterThan(0);
+    for (const name of ['typescript', 'tailwindcss']) {
+      const methods = instances.get(name)!.notifications.map((n) => n.method);
+      expect(methods).toContain('textDocument/didOpen');
+      expect(methods).toContain('textDocument/didChange');
+      expect(methods).toContain('textDocument/didSave');
+    }
   });
 
-  it('fans didChange and didSave to every active server after open', async () => {
+  it('fans didChange and didSave to every server after open', async () => {
     const { manager, instances, cwdDir } = await buildManager({
       typescript: tsPrimary(),
       eslint: eslintCompanion(),
@@ -339,11 +324,11 @@ describe('manager: lifecycle fan-out', () => {
 });
 
 describe('manager: primary-only request routing', () => {
-  it('sendRequest targets the active primary server only', async () => {
+  it('sendRequest targets the primary server only', async () => {
     const { manager, instances, cwdDir } = await buildManager({
       typescript: tsPrimary(),
       eslint: eslintCompanion(),
-      tailwindcss: tailwindManual(),
+      tailwindcss: tailwindCompanion(),
     });
     const filePath = path.join(cwdDir, 'foo.ts');
     writeFileSync(filePath, 'v1');
@@ -361,7 +346,7 @@ describe('manager: primary-only request routing', () => {
     expect(instances.get('tailwindcss')!.requests).toEqual([]);
   });
 
-  it('still opens active companions before primary-only requests', async () => {
+  it('still opens companions before primary-only requests', async () => {
     const { manager, instances, cwdDir } = await buildManager({
       typescript: tsPrimary(),
       eslint: eslintCompanion(),

@@ -132,8 +132,7 @@ export default function (pi: ExtensionAPI): void {
       await waitForInitialization();
       const manager = getManager();
       if (manager) {
-        const configured = manager.getConfiguredServersForFile(absolutePath);
-        const active = manager.getServersForFile(absolutePath);
+        const candidates = manager.getServersForFile(absolutePath);
         const primaryBefore = manager.getPrimaryServerForFile(absolutePath);
         // Snapshot the state *value*, not the live instance: `instance.state`
         // is a getter over mutable closure state, so re-reading after the
@@ -143,9 +142,8 @@ export default function (pi: ExtensionAPI): void {
 
         // Surface a notification when:
         // - no configured server covers the file (recipe-hint case)
-        // - only inactive manual servers cover the file (configured but dormant)
-        // - the active primary failed to start (lastError available)
-        if (configured.length === 0 || active.length === 0) {
+        // - the primary failed to start (lastError available)
+        if (candidates.length === 0) {
           maybeNotifyMissingServer(absolutePath, ctx, 'edit');
         } else if (primaryBefore && primaryStateBefore === 'error') {
           maybeNotifyMissingServer(
@@ -160,7 +158,7 @@ export default function (pi: ExtensionAPI): void {
         await manager.syncFileChange(absolutePath);
 
         // syncFileChange swallows per-server start failures so one bad server
-        // can't block edit sync; re-check the active primary state after sync
+        // can't block edit sync; re-check the primary state after sync
         // and surface a failed-start notice if it just transitioned to 'error'.
         const primaryAfter = manager.getPrimaryServerForFile(absolutePath);
         if (primaryAfter && primaryAfter.state === 'error' && primaryStateBefore !== 'error') {

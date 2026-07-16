@@ -28,7 +28,6 @@ Both use JSONC syntax (comments allowed).
         ".jsx": "javascriptreact",
       },
       "role": "primary",
-      "startupMode": "auto",
     },
   },
 }
@@ -40,8 +39,8 @@ required fields. Either `extensionToLanguage` or `extensions` must be present;
 
 ## Override a built-in recipe
 
-Share the recipe name to inherit its `extensionToLanguage`, `args`, `role`,
-`startupMode`, and other defaults, then replace only the fields you want:
+Share the recipe name to inherit its `extensionToLanguage`, `args`, `role`, and
+other defaults, then replace only the fields you want:
 
 ```jsonc
 {
@@ -87,7 +86,6 @@ go-to-definition:
         ".tsx": "typescriptreact",
       },
       "role": "companion",
-      "startupMode": "auto",
     },
   },
 }
@@ -98,7 +96,7 @@ Using the recipe name `eslint` inherits the built-in ESLint defaults
 required for pull diagnostics. With a different server name, supply your own
 `settings` block.
 
-## Enable the built-in Tailwind CSS server
+## Use the built-in Tailwind CSS server
 
 Install the server and ensure its command is on `PATH`:
 
@@ -106,27 +104,28 @@ Install the server and ensure its command is on `PATH`:
 npm install -g @tailwindcss/language-server
 ```
 
-The built-in `tailwindcss` recipe is autodetected as a manual companion. Enable
-it for the current session via `/lsp start` (an interactive panel; space to
-toggle, esc to close). Manual servers are only enrolled into routing after you
-start them. Use `/lsp status` to see its `startup` mode and `manual active` flag.
-Requires TUI mode.
-
-To start Tailwind CSS automatically in a project, override only the recipe's
-startup mode in `<project>/.pi/@balaenis/pi-lsp/config.json`:
+The built-in `tailwindcss` recipe is a companion with `enabled: false` by default,
+so a global install does not activate in every project. Enable it for a project
+with `/lsp config project` (space to toggle) or by writing:
 
 ```jsonc
 {
   "servers": {
-    "tailwindcss": {
-      "startupMode": "auto",
-    },
+    "tailwindcss": { "enabled": true },
   },
 }
 ```
 
-Using the built-in recipe name inherits its command, arguments, extension map,
-and companion role.
+Reload the Pi session after changing config. Once enabled, Tailwind receives file
+notifications for covered extensions and publishes diagnostics alongside the
+primary language server.
+
+## Toggle built-in and configured servers
+
+Use `/lsp config project` or `/lsp config global` (TUI only) to list built-in
+recipes plus that scope's user servers. Same-named scope entries override built-in
+defaults. Space toggles `enabled` and writes it to the corresponding
+`config.json`. Reload the session for the change to take effect.
 
 ## Inspect diagnostics
 

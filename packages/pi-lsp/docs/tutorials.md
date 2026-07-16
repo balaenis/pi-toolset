@@ -76,8 +76,8 @@ restart count, last error). It starts no stopped servers.
 
 ## Next steps
 
-- [How-to guides](./how-to.md) for configuring custom servers, companions, manual
-  servers, and diagnostics.
+- [How-to guides](./how-to.md) for configuring custom servers, companions, and
+  diagnostics.
 - [Reference](./reference.md) for the full config field table, recipes, and
   statusline states.
 - [Explanation](./explanation.md) for multi-server routing, startup failure

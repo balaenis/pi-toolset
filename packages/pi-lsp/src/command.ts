@@ -1,10 +1,16 @@
-// ABOUTME: Registers the /lsp slash command (status, start/stop, diagnostics) and its subcommand handlers.
-// ABOUTME: /lsp status formats live state; /lsp start shows a picker to toggle each configured server; /lsp diagnostics lists tracked diagnostics.
+// ABOUTME: Registers the /lsp slash command (status, start/stop, diagnostics, config) and its handlers.
+// ABOUTME: /lsp status formats live state; /lsp start toggles processes; /lsp config toggles enabled in config files.
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { getSettingsListTheme } from '@earendil-works/pi-coding-agent';
 import type { AutocompleteItem } from '@earendil-works/pi-tui';
 import { Container, type SettingItem, SettingsList, Text } from '@earendil-works/pi-tui';
+import {
+  type ConfigScope,
+  getConfigFilePath,
+  listConfigurableServers,
+  setServerEnabled,
+} from './config.ts';
 import { formatDiagnosticsState } from './diagnostics.ts';
 import type { LSPServerInstance } from './instance.ts';
 import { errorMessage } from './log.ts';
@@ -19,20 +25,33 @@ import type { LspServerState } from './types.ts';
 const STATUS_SUBCOMMAND = 'status';
 const START_SUBCOMMAND = 'start';
 const DIAGNOSTICS_SUBCOMMAND = 'diagnostics';
-const SUBCOMMANDS = [STATUS_SUBCOMMAND, START_SUBCOMMAND, DIAGNOSTICS_SUBCOMMAND];
+const CONFIG_SUBCOMMAND = 'config';
+const CONFIG_SCOPES = ['global', 'project'] as const;
+const SUBCOMMANDS = [
+  STATUS_SUBCOMMAND,
+  START_SUBCOMMAND,
+  DIAGNOSTICS_SUBCOMMAND,
+  CONFIG_SUBCOMMAND,
+];
+
+const ENABLED_VALUE = 'enabled';
+const DISABLED_VALUE = 'disabled';
 
 export function registerLspCommand(pi: ExtensionAPI): void {
   pi.registerCommand('lsp', {
     description:
-      'Inspect LSP server status, start/stop configured servers, or list tracked diagnostics',
+      'Inspect LSP status, start/stop servers, toggle config enabled flags, or list diagnostics',
     getArgumentCompletions(prefix: string): AutocompleteItem[] | null {
-      const trimmed = prefix.trim();
-      const matches = SUBCOMMANDS.filter((name) => name.startsWith(trimmed));
-      if (matches.length === 0) return null;
-      return matches.map((name) => ({ value: name, label: name }));
+      return getLspArgumentCompletions(prefix);
     },
     handler: async (args, ctx) => {
       const subcommand = args.trim();
+
+      if (subcommand === CONFIG_SUBCOMMAND || subcommand.startsWith(`${CONFIG_SUBCOMMAND} `)) {
+        const scopeArg = subcommand.slice(CONFIG_SUBCOMMAND.length).trim();
+        await handleConfigCommand(scopeArg, ctx);
+        return;
+      }
 
       initializeManager(ctx.cwd);
       await waitForInitialization();
@@ -50,7 +69,10 @@ export function registerLspCommand(pi: ExtensionAPI): void {
 
       // Empty input defaults to status.
       if (subcommand !== '' && subcommand !== STATUS_SUBCOMMAND) {
-        ctx.ui.notify('Usage: /lsp status | /lsp start | /lsp diagnostics', 'info');
+        ctx.ui.notify(
+          'Usage: /lsp status | /lsp start | /lsp diagnostics | /lsp config <global|project>',
+          'info'
+        );
         return;
       }
 
@@ -60,6 +82,134 @@ export function registerLspCommand(pi: ExtensionAPI): void {
 }
 
 type CommandContext = Parameters<Parameters<ExtensionAPI['registerCommand']>[1]['handler']>[1];
+
+export function getLspArgumentCompletions(prefix: string): AutocompleteItem[] | null {
+  const trimmed = prefix.trimStart();
+
+  if (trimmed === CONFIG_SUBCOMMAND || trimmed.startsWith(`${CONFIG_SUBCOMMAND} `)) {
+    const rest = trimmed.slice(CONFIG_SUBCOMMAND.length).trimStart();
+    const matches = CONFIG_SCOPES.filter((scope) => scope.startsWith(rest));
+    if (matches.length === 0) return null;
+    return matches.map((scope) => ({
+      value: `${CONFIG_SUBCOMMAND} ${scope}`,
+      label: `${CONFIG_SUBCOMMAND} ${scope}`,
+    }));
+  }
+
+  const matches = SUBCOMMANDS.filter((name) => name.startsWith(trimmed));
+  if (matches.length === 0) return null;
+  return matches.map((name) => ({ value: name, label: name }));
+}
+
+async function handleConfigCommand(scopeArg: string, ctx: CommandContext): Promise<void> {
+  if (scopeArg !== 'global' && scopeArg !== 'project') {
+    ctx.ui.notify('Usage: /lsp config <global|project>', 'info');
+    return;
+  }
+
+  if (ctx.mode !== 'tui') {
+    ctx.ui.notify('/lsp config requires TUI mode.', 'error');
+    return;
+  }
+
+  const scope: ConfigScope = scopeArg;
+  let entries;
+  try {
+    entries = await listConfigurableServers(scope, ctx.cwd);
+  } catch (error) {
+    ctx.ui.notify(`Failed to load LSP ${scope} config: ${errorMessage(error)}`, 'error');
+    return;
+  }
+
+  if (entries.length === 0) {
+    ctx.ui.notify('No built-in or configured LSP servers are available.', 'warning');
+    return;
+  }
+
+  const configPath = getConfigFilePath(scope, ctx.cwd);
+
+  await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+    const items: SettingItem[] = entries.map((entry) => ({
+      id: entry.name,
+      label: formatConfigEntryLabel(entry.name, entry.role, entry.source),
+      description: entry.command || undefined,
+      currentValue: entry.enabled ? ENABLED_VALUE : DISABLED_VALUE,
+      values: [ENABLED_VALUE, DISABLED_VALUE],
+    }));
+
+    const settingsList = new SettingsList(
+      items,
+      Math.min(items.length + 2, 15),
+      getSettingsListTheme(),
+      (id, newValue) => {
+        void persistEnabledToggle(scope, ctx, id, newValue === ENABLED_VALUE, (ok) => {
+          if (!ok) {
+            const item = items.find((candidate) => candidate.id === id);
+            if (item) {
+              item.currentValue = newValue === ENABLED_VALUE ? DISABLED_VALUE : ENABLED_VALUE;
+            }
+          }
+          tui.requestRender();
+        });
+      },
+      () => done(undefined)
+    );
+
+    const container = new Container();
+    container.addChild(
+      new Text(
+        theme.fg(
+          'accent',
+          theme.bold(
+            `LSP ${scope} config — space toggles enabled, esc closes (reload session to apply)`
+          )
+        ),
+        0,
+        0
+      )
+    );
+    container.addChild(new Text(theme.fg('dim', configPath), 0, 0));
+    container.addChild(settingsList);
+
+    return {
+      render: (width: number) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data: string) => {
+        settingsList.handleInput?.(data);
+        tui.requestRender();
+      },
+    };
+  });
+}
+
+function formatConfigEntryLabel(
+  name: string,
+  role: string,
+  source: 'builtin' | 'user' | 'override'
+): string {
+  const sourceLabel =
+    source === 'builtin' ? 'builtin' : source === 'override' ? 'override' : 'user';
+  return `${name} (${role}, ${sourceLabel})`;
+}
+
+async function persistEnabledToggle(
+  scope: ConfigScope,
+  ctx: CommandContext,
+  name: string,
+  enabled: boolean,
+  onSettled: (ok: boolean) => void
+): Promise<void> {
+  try {
+    await setServerEnabled(scope, ctx.cwd, name, enabled);
+    onSettled(true);
+  } catch (error) {
+    ctx.ui.notify(
+      `Failed to save enabled=${enabled} for '${name}' in ${scope} config: ${errorMessage(error)}`,
+      'error'
+    );
+    onSettled(false);
+  }
+}
 
 async function handleStartCommand(
   manager: LSPServerManager | undefined,
@@ -105,7 +255,7 @@ async function handleStartCommand(
           refresh();
           return;
         }
-        void toggleServer(server, manager, ctx, () => refresh());
+        void toggleServer(server, ctx, () => refresh());
       },
       () => done(undefined)
     );
@@ -143,7 +293,6 @@ async function handleStartCommand(
 
 async function toggleServer(
   server: LSPServerInstance,
-  manager: LSPServerManager,
   ctx: CommandContext,
   onSettled: () => void
 ): Promise<void> {
@@ -151,18 +300,8 @@ async function toggleServer(
   try {
     if (stopping) {
       await server.stop();
-      // Manual servers exit the active set on stop; auto servers remain
-      // candidates for the next matching file operation.
-      if (!manager.isServerAutoActive(server)) {
-        manager.markManualServerInactive(server.name);
-      }
     } else {
       await server.start();
-      // Mark manual servers as session-active only after a successful start so
-      // a failed startup does not pollute the active set.
-      if (!manager.isServerAutoActive(server)) {
-        manager.markManualServerActive(server.name);
-      }
     }
   } catch (error) {
     ctx.ui.notify(
@@ -199,7 +338,7 @@ export function formatLspStatusDetails(manager: LSPServerManager | undefined): s
 
   lines.push('', 'Server details:');
   for (const server of servers) {
-    lines.push(...formatServerDetails(server, manager));
+    lines.push(...formatServerDetails(server));
   }
 
   return lines.join('\n');
@@ -221,18 +360,10 @@ function countServerStates(servers: LSPServerInstance[]): Record<LspServerState,
   return counts;
 }
 
-function formatServerDetails(server: LSPServerInstance, manager: LSPServerManager): string[] {
+function formatServerDetails(server: LSPServerInstance): string[] {
   const extensions = Object.keys(server.config.extensionToLanguage).sort();
   const role = server.config.role ?? 'primary';
-  const startupMode = server.config.startupMode ?? 'auto';
-  const lines = [
-    `- ${server.name}: ${server.state}`,
-    `  role: ${role}`,
-    `  startup: ${startupMode}`,
-  ];
-  if (startupMode === 'manual') {
-    lines.push(`  manual active: ${manager.isServerManuallyActive(server) ? 'yes' : 'no'}`);
-  }
+  const lines = [`- ${server.name}: ${server.state}`, `  role: ${role}`];
   if (server.config.conflictGroup) {
     lines.push(`  conflictGroup: ${server.config.conflictGroup}`);
   }

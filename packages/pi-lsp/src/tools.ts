@@ -179,11 +179,10 @@ async function runLsp(
 
   // Per-file routing checks decide messaging before any LSP request: a session
   // may have running servers for other files while this file's candidates are
-  // all inactive/failed/starting, and a coarse "any server up?" gate would
-  // mask those cases. Each branch below corresponds to a distinct user-facing
-  // story (failed primary, inactive-only, companion-only, transient, no-config).
-  const configured = manager.getConfiguredServersForFile(absolutePath);
-  const active = manager.getServersForFile(absolutePath);
+  // failed/starting, and a coarse "any server up?" gate would mask those cases.
+  // Each branch below corresponds to a distinct user-facing story (failed primary,
+  // companion-only, transient, no-config).
+  const candidates = manager.getServersForFile(absolutePath);
   const primary = manager.getPrimaryServerForFile(absolutePath);
 
   if (primary && primary.state === 'error') {
@@ -198,36 +197,12 @@ async function runLsp(
     return textResult(message, params, { ready: false });
   }
 
-  if (configured.length > 0 && active.length === 0) {
-    const names = configured.map((s) => s.name).join(', ');
-    const message =
-      `LSP server${configured.length === 1 ? '' : 's'} '${names}' configured for ` +
-      `${path.extname(absolutePath)} but inactive. Start with /lsp start to enable.`;
-    maybeNotifyMissingServer(params.filePath, ctx, 'tool');
-    return textResult(message, params, { ready: false });
-  }
-
-  if (active.length > 0 && !primary) {
-    // Active companions only — navigation has no primary to route to.
-    // A configured manual primary that the user hasn't started yet shows up
-    // here; point them at `/lsp start` instead of the generic install hint.
-    // (Auto primaries are always active by construction even when stopped, so
-    // they reach this branch only if their `role`/`startupMode` filter them out.)
-    const inactivePrimaries = configured.filter(
-      (s) => (s.config.role ?? 'primary') === 'primary' && !manager.isServerActive(s)
-    );
-    if (inactivePrimaries.length > 0) {
-      const names = inactivePrimaries.map((s) => s.name).join(', ');
-      const message =
-        `Primary LSP server${inactivePrimaries.length === 1 ? '' : 's'} '${names}' configured ` +
-        `for ${path.extname(absolutePath)} but inactive. Start with /lsp start to enable.`;
-      maybeNotifyMissingServer(params.filePath, ctx, 'tool');
-      return textResult(message, params, { ready: false });
-    }
+  if (candidates.length > 0 && !primary) {
+    // Companions only — navigation has no primary to route to.
     const hint = formatMissingServerMessage(params.filePath);
     const base =
       `No primary LSP server is available for ${path.extname(absolutePath)}; ` +
-      'only companion servers are active and they do not handle navigation requests.';
+      'only companion servers are configured and they do not handle navigation requests.';
     maybeNotifyMissingServer(params.filePath, ctx, 'tool');
     return textResult(hint ? `${base}\n\n${hint}` : base, params, { ready: false });
   }
