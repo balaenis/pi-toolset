@@ -6,6 +6,13 @@ export const MAX_FANOUT_ITEMS = MAX_PARALLEL_TASKS;
 export const MAX_CONCURRENCY = 4;
 export const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
+/** Total UTF-8 JSON size budget for a compact `presentation` object (transcript + latestActivity). */
+export const RESULT_PRESENTATION_MAX_BYTES = 512 * 1024;
+/** Per display-item UTF-8 JSON size budget before text/args bounding. */
+export const RESULT_PRESENTATION_ITEM_MAX_BYTES = 64 * 1024;
+/** Bound for non-authoritative `stderr` / `errorMessage` / `errorStack` snapshots. */
+export const RESULT_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
+
 export const PI_AGENT_CHILD = 'PI_AGENT_CHILD';
 export const PI_AGENT_DEPTH = 'PI_AGENT_DEPTH';
 export const PI_AGENT_MAX_DEPTH = 'PI_AGENT_MAX_DEPTH';
