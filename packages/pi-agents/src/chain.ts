@@ -429,7 +429,7 @@ function completedStepPreviousOutput(
 
   if (logical.kind === 'fanout') {
     const entry = outputs.get(logical.collectName);
-    if (entry) return entry.text;
+    if (entry) return entry.text ?? '';
   }
   return undefined;
 }
@@ -969,7 +969,7 @@ async function runFanoutStep(
 
   if (isRestoredExpansion) {
     // Authoritative stored expansion: do not re-read source or reapply maxItems.
-    items = restoredFanout.items;
+    items = restoredFanout.items ?? [];
     // Preserve the logical step's original skipped count when present.
     skipped = fanoutMeta.skippedCount ?? 0;
   } else {

@@ -677,7 +677,7 @@ describe('listRuns', () => {
               prev: { agent: 'noop', step: 1 },
             };
           },
-          message: 'details.outputs[prev].text must be a string',
+          message: 'details.outputs[prev] must set exactly one of text or textRef',
         },
         {
           label: 'outputs entry bad step',

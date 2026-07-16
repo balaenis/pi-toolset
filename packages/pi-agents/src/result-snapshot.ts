@@ -480,7 +480,12 @@ export function snapshotSingleResult(result: SingleResult): SingleResult {
   );
 
   let structuredOutput: SingleResult['structuredOutput'];
-  if (result.structuredOutput !== undefined) {
+  let structuredOutputRef: SingleResult['structuredOutputRef'];
+  if (result.structuredOutputRef) {
+    // Copy ref shell without resolving or cloning payload.
+    structuredOutputRef = { ...result.structuredOutputRef };
+    structuredOutput = undefined;
+  } else if (result.structuredOutput !== undefined) {
     const cloned = structuredClone(result.structuredOutput);
     structuredOutput =
       cloned !== null && typeof cloned === 'object'
@@ -489,21 +494,43 @@ export function snapshotSingleResult(result: SingleResult): SingleResult {
   }
 
   const diagnostics = rebindDiagnostics(result);
-  return {
+  const snap: SingleResult = {
     ...result,
     messages: [],
     presentation,
-    finalOutput,
+    finalOutput: result.finalOutputRef ? undefined : finalOutput,
+    finalOutputRef: result.finalOutputRef ? { ...result.finalOutputRef } : undefined,
     usage: { ...result.usage },
     fanout: result.fanout ? { ...result.fanout } : undefined,
     worktreeChangedFiles: result.worktreeChangedFiles
       ? [...result.worktreeChangedFiles]
       : undefined,
     structuredOutput,
+    structuredOutputRef,
     stderr: diagnostics.stderr,
     errorMessage: diagnostics.errorMessage,
     errorStack: diagnostics.errorStack,
   };
+  if (snap.finalOutputRef) delete snap.finalOutput;
+  if (snap.structuredOutputRef) delete snap.structuredOutput;
+  return snap;
+}
+
+/**
+ * Running/provisional snapshot: strips all authoritative inline values and refs.
+ * Retains only bounded presentation, diagnostics, usage, identity, and status.
+ */
+export function snapshotProvisionalResult(result: SingleResult): SingleResult {
+  const base = snapshotSingleResult(result);
+  const provisional: SingleResult = {
+    ...base,
+    messages: [],
+  };
+  delete provisional.finalOutput;
+  delete provisional.finalOutputRef;
+  delete provisional.structuredOutput;
+  delete provisional.structuredOutputRef;
+  return provisional;
 }
 
 export function snapshotResults(results: SingleResult[]): SingleResult[] {

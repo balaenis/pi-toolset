@@ -540,7 +540,7 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
           fanouts: Object.fromEntries(
             Object.entries(record.workflowState.fanouts).map(([k, v]) => [
               k,
-              { step: v.step, items: v.items.slice(), unitIds: v.unitIds.slice() },
+              { step: v.step, items: (v.items ?? []).slice(), unitIds: v.unitIds.slice() },
             ])
           ),
         }
@@ -824,8 +824,19 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
     for (let i = 0; i < a.unitIds.length; i++) {
       if (a.unitIds[i] !== b.unitIds[i]) return false;
     }
-    if (a.items.length !== b.items.length) return false;
-    return JSON.stringify(a.items) === JSON.stringify(b.items);
+    const aItems = a.items ?? [];
+    const bItems = b.items ?? [];
+    if (aItems.length !== bItems.length) return false;
+    if (a.itemsRef || b.itemsRef) {
+      return (
+        !!a.itemsRef &&
+        !!b.itemsRef &&
+        a.itemsRef.sha256 === b.itemsRef.sha256 &&
+        a.itemsRef.mediaType === b.itemsRef.mediaType &&
+        a.itemsRef.bytes === b.itemsRef.bytes
+      );
+    }
+    return JSON.stringify(aItems) === JSON.stringify(bItems);
   }
 
   async function expandFanout(
@@ -952,7 +963,7 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
           expansion: existing
             ? {
                 step: existing.step,
-                items: existing.items.slice(),
+                items: (existing.items ?? []).slice(),
                 unitIds: existing.unitIds.slice(),
               }
             : undefined,
@@ -1040,7 +1051,7 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
           if (!live.workflowState) live.workflowState = { fanouts: {} };
           live.workflowState.fanouts[fanoutKey] = {
             step: captured.expansion.step,
-            items: captured.expansion.items.slice(),
+            items: (captured.expansion.items ?? []).slice(),
             unitIds: captured.expansion.unitIds.slice(),
           };
         } else if (live.workflowState?.fanouts) {

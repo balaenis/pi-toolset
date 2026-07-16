@@ -1592,7 +1592,7 @@ describe('durable chain fanout item lifecycle', () => {
       const result = {
         agent: 'worker',
         agentSource: 'builtin' as const,
-        task: expansion.items[i] as string,
+        task: (expansion.items ?? [])[i] as string,
         exitCode: 0,
         status: 'completed' as const,
         messages: [] as [],
@@ -1607,7 +1607,7 @@ describe('durable chain fanout item lifecycle', () => {
           turns: 1,
         },
         step: 1,
-        fanout: { index: i, count: 2, itemTask: expansion.items[i] as string },
+        fanout: { index: i, count: 2, itemTask: (expansion.items ?? [])[i] as string },
         finalOutput: `out-${i}`,
       };
       results.push(result);

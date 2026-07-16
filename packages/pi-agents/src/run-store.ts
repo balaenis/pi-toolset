@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { DEFAULT_RUNTIME, GROK_ACP_RUNTIME } from './constants.ts';
 import { chainFanoutUnitId, chainStepUnitId, generateUnitIds, pad } from './run-coordinator.ts';
+import { createArtifactStore, isRunArtifactRef, type ArtifactStore } from './artifact-store.ts';
 import type {
   AgentRunRecordV1,
   ClaimOwner,
@@ -15,6 +16,8 @@ import type {
   CorruptRunEntry,
   ListRunsResult,
   LoadedRun,
+  RunArtifactPayload,
+  RunArtifactRefV1,
   RunLifecycleEvent,
   RunStoreError,
 } from './run-types.ts';
@@ -70,7 +73,7 @@ function isAllowedDurableCapability(capability: unknown): boolean {
 function validateResultShell(
   result: unknown,
   pathLabel: string,
-  options?: { unitStatus?: string }
+  options?: { unitStatus?: string; runId?: string }
 ): string | undefined {
   if (result === undefined) return undefined;
   if (result === null || typeof result !== 'object' || Array.isArray(result)) {
@@ -115,6 +118,97 @@ function validateResultShell(
         return `${pathLabel}.exitCode must be 0 when status is absent and unit is completed`;
       }
     }
+  }
+  const finalUnion = validateInlineOrRef(
+    r,
+    'finalOutput',
+    'finalOutputRef',
+    pathLabel,
+    options?.runId,
+    'final-output',
+    'text/plain; charset=utf-8',
+    { allowNeither: true }
+  );
+  if (finalUnion) return finalUnion;
+  const structuredUnion = validateInlineOrRef(
+    r,
+    'structuredOutput',
+    'structuredOutputRef',
+    pathLabel,
+    options?.runId,
+    'structured-output',
+    'application/json',
+    { allowNeither: true }
+  );
+  if (structuredUnion) return structuredUnion;
+  return undefined;
+}
+
+function hasOwn(obj: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function validateArtifactRefField(
+  ref: unknown,
+  pathLabel: string,
+  runId: string | undefined,
+  expectedPayload: RunArtifactPayload,
+  expectedMedia: RunArtifactRefV1['mediaType']
+): string | undefined {
+  if (!isRunArtifactRef(ref)) {
+    return `${pathLabel} must be a Version 1 run-artifact ref`;
+  }
+  if (runId !== undefined && ref.runId !== runId) {
+    return `${pathLabel}.runId does not match owning run`;
+  }
+  if (ref.payload !== expectedPayload) {
+    return `${pathLabel}.payload must be ${expectedPayload}`;
+  }
+  if (ref.mediaType !== expectedMedia) {
+    return `${pathLabel}.mediaType must be ${expectedMedia}`;
+  }
+  if (!/^[a-f0-9]{64}$/.test(ref.sha256)) {
+    return `${pathLabel}.sha256 must be 64 lowercase hex chars`;
+  }
+  const expectedPath = `artifacts/sha256/${ref.sha256.slice(0, 2)}/${ref.sha256}.${expectedMedia === 'application/json' ? 'json' : 'txt'}`;
+  if (ref.relativePath !== expectedPath) {
+    return `${pathLabel}.relativePath does not match digest`;
+  }
+  if (!Number.isInteger(ref.bytes) || ref.bytes < 0) {
+    return `${pathLabel}.bytes must be a non-negative integer`;
+  }
+  return undefined;
+}
+
+function validateInlineOrRef(
+  obj: Record<string, unknown>,
+  inlineKey: string,
+  refKey: string,
+  pathLabel: string,
+  runId: string | undefined,
+  expectedPayload: RunArtifactPayload,
+  expectedMedia: RunArtifactRefV1['mediaType'],
+  options?: { allowNeither?: boolean; requireOne?: boolean }
+): string | undefined {
+  const hasInline = hasOwn(obj, inlineKey);
+  const hasRef = hasOwn(obj, refKey);
+  if (hasInline && hasRef) {
+    return `${pathLabel} must not set both ${inlineKey} and ${refKey}`;
+  }
+  if (!hasInline && !hasRef) {
+    if (options?.requireOne) {
+      return `${pathLabel} must set exactly one of ${inlineKey} or ${refKey}`;
+    }
+    return undefined;
+  }
+  if (hasRef) {
+    return validateArtifactRefField(
+      obj[refKey],
+      `${pathLabel}.${refKey}`,
+      runId,
+      expectedPayload,
+      expectedMedia
+    );
   }
   return undefined;
 }
@@ -193,21 +287,89 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 /** Validate one durable ChainOutputEntry used by resume/restore. */
-function validateChainOutputEntry(entry: unknown, pathLabel: string): string | undefined {
+function validateChainOutputEntry(
+  entry: unknown,
+  pathLabel: string,
+  runId?: string
+): string | undefined {
   if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
     return `${pathLabel} must be a non-null object`;
   }
   const e = entry as Record<string, unknown>;
-  if (typeof e.text !== 'string') {
+  const textUnion = validateInlineOrRef(
+    e,
+    'text',
+    'textRef',
+    pathLabel,
+    runId,
+    'chain-output-text',
+    'text/plain; charset=utf-8',
+    { requireOne: true }
+  );
+  if (textUnion) return textUnion;
+  if (hasOwn(e, 'text') && typeof e.text !== 'string') {
     return `${pathLabel}.text must be a string`;
   }
+  const structuredUnion = validateInlineOrRef(
+    e,
+    'structured',
+    'structuredRef',
+    pathLabel,
+    runId,
+    'chain-output-structured',
+    'application/json',
+    { allowNeither: true }
+  );
+  if (structuredUnion) return structuredUnion;
   if (typeof e.agent !== 'string') {
     return `${pathLabel}.agent must be a string`;
   }
   if (!isPositiveInteger(e.step)) {
     return `${pathLabel}.step must be a positive integer`;
   }
-  // structured is optional unknown; any JSON value including null is accepted when present.
+  return undefined;
+}
+
+function validateWorkflowFanoutState(
+  fanout: unknown,
+  pathLabel: string,
+  runId: string
+): string | undefined {
+  if (fanout === null || typeof fanout !== 'object' || Array.isArray(fanout)) {
+    return `${pathLabel} must be a non-null object`;
+  }
+  const f = fanout as Record<string, unknown>;
+  if (!isPositiveInteger(f.step)) {
+    return `${pathLabel}.step must be a positive integer`;
+  }
+  if (!Array.isArray(f.unitIds)) {
+    return `${pathLabel}.unitIds must be an array`;
+  }
+  for (let i = 0; i < f.unitIds.length; i++) {
+    if (typeof f.unitIds[i] !== 'string') {
+      return `${pathLabel}.unitIds[${i}] must be a string`;
+    }
+  }
+  const hasItems = hasOwn(f, 'items');
+  const hasItemsRef = hasOwn(f, 'itemsRef');
+  if (hasItems === hasItemsRef) {
+    return `${pathLabel} must set exactly one of items or itemsRef`;
+  }
+  if (hasItems) {
+    if (!Array.isArray(f.items)) return `${pathLabel}.items must be an array`;
+    if (f.items.length !== f.unitIds.length) {
+      return `${pathLabel}.items length must match unitIds`;
+    }
+  } else {
+    const refError = validateArtifactRefField(
+      f.itemsRef,
+      `${pathLabel}.itemsRef`,
+      runId,
+      'fanout-items',
+      'application/json'
+    );
+    if (refError) return refError;
+  }
   return undefined;
 }
 
@@ -297,7 +459,7 @@ function chainRequestStepAgent(chain: unknown[], step: number): string | undefin
  */
 function validateSubagentDetails(
   details: unknown,
-  options?: { mode?: string; request?: Record<string, unknown> }
+  options?: { mode?: string; request?: Record<string, unknown>; runId?: string }
 ): string | undefined {
   if (details === null || typeof details !== 'object' || Array.isArray(details)) {
     return 'invalid details';
@@ -310,7 +472,7 @@ function validateSubagentDetails(
   for (let i = 0; i < d.results.length; i++) {
     const result = d.results[i];
     const pathLabel = `details.results[${i}]`;
-    const shellError = validateResultShell(result, pathLabel);
+    const shellError = validateResultShell(result, pathLabel, { runId: options?.runId });
     if (shellError) return shellError;
     if (!result || typeof result !== 'object') continue;
     const resumeCapability = (result as { resumeCapability?: unknown }).resumeCapability;
@@ -329,7 +491,11 @@ function validateSubagentDetails(
       return 'details.outputs must be a non-null object';
     }
     for (const [name, entry] of Object.entries(d.outputs as Record<string, unknown>)) {
-      const entryError = validateChainOutputEntry(entry, `details.outputs[${name}]`);
+      const entryError = validateChainOutputEntry(
+        entry,
+        `details.outputs[${name}]`,
+        options?.runId
+      );
       if (entryError) return entryError;
     }
   }
@@ -516,6 +682,26 @@ export interface RunStore {
   getRun(runId: string): { ok: true; loaded: LoadedRun } | { ok: false; error: RunStoreError };
   updateRun(runId: string, mutate: (record: AgentRunRecordV1) => void): Promise<AgentRunRecordV1>;
   appendEvent(runId: string, event: RunLifecycleEvent): Promise<void>;
+  /** Strict update that propagates supported file/directory sync failures. */
+  updateRunStrict(
+    runId: string,
+    mutate: (record: AgentRunRecordV1) => void
+  ): Promise<AgentRunRecordV1>;
+  /** Strict event append that propagates supported file/directory sync failures. */
+  appendEventStrict(runId: string, event: RunLifecycleEvent): Promise<void>;
+  writeTextArtifact(
+    runId: string,
+    payload: RunArtifactPayload,
+    text: string
+  ): Promise<RunArtifactRefV1>;
+  writeJsonArtifact(
+    runId: string,
+    payload: RunArtifactPayload,
+    value: unknown
+  ): Promise<RunArtifactRefV1>;
+  readTextArtifact(runId: string, ref: RunArtifactRefV1): Promise<string>;
+  readJsonArtifact(runId: string, ref: RunArtifactRefV1): Promise<unknown>;
+  resolveArtifactPath(runId: string, ref: RunArtifactRefV1): Promise<string>;
   listRuns(): Promise<ListRunsResult>;
   claimRun(runId: string): Promise<ClaimResult>;
   releaseRun(runId: string, claimId: string): Promise<void>;
@@ -543,6 +729,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   const randomUUID = options.randomUUID ?? crypto.randomUUID;
   const pid = options.pid ?? process.pid;
   const instanceId = options.instanceId ?? `${process.ppid ?? 0}-${Date.now()}-${randomUUID()}`;
+  const artifacts: ArtifactStore = createArtifactStore();
 
   mkdirPrivate(rootDir);
 
@@ -933,6 +1120,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       if (u.result !== undefined) {
         const shellError = validateResultShell(u.result, `unit ${unitId} result`, {
           unitStatus: typeof u.status === 'string' ? u.status : undefined,
+          runId: expectedRunId,
         });
         if (shellError) {
           return {
@@ -1029,12 +1217,53 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         r.request && typeof r.request === 'object' && !Array.isArray(r.request)
           ? (r.request as unknown as Record<string, unknown>)
           : undefined,
+      runId: expectedRunId,
     });
     if (detailsError) {
       return {
         ok: false,
         error: { code: 'corrupt_run', runId: expectedRunId, message: detailsError },
       };
+    }
+    if (r.workflowState !== undefined) {
+      if (
+        r.workflowState === null ||
+        typeof r.workflowState !== 'object' ||
+        Array.isArray(r.workflowState)
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: 'corrupt_run',
+            runId: expectedRunId,
+            message: 'workflowState must be a non-null object',
+          },
+        };
+      }
+      const ws = r.workflowState as { fanouts?: unknown };
+      if (ws.fanouts === null || typeof ws.fanouts !== 'object' || Array.isArray(ws.fanouts)) {
+        return {
+          ok: false,
+          error: {
+            code: 'corrupt_run',
+            runId: expectedRunId,
+            message: 'workflowState.fanouts must be a non-null object',
+          },
+        };
+      }
+      for (const [key, fanout] of Object.entries(ws.fanouts as Record<string, unknown>)) {
+        const fanoutError = validateWorkflowFanoutState(
+          fanout,
+          `workflowState.fanouts[${key}]`,
+          expectedRunId
+        );
+        if (fanoutError) {
+          return {
+            ok: false,
+            error: { code: 'corrupt_run', runId: expectedRunId, message: fanoutError },
+          };
+        }
+      }
     }
     if (r.continuationTasks !== undefined) {
       if (!Array.isArray(r.continuationTasks)) {
@@ -2005,8 +2234,90 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     });
   }
 
+  async function updateRunStrict(
+    runId: string,
+    mutate: (record: AgentRunRecordV1) => void
+  ): Promise<AgentRunRecordV1> {
+    // Same serial queue as updateRun; write path currently uses best-effort fsync.
+    // Strict semantics: re-validate the mutated record before commit and surface load errors.
+    return runSerial(runId, async () => {
+      const loaded = loadRunJson(runId);
+      if (!loaded.ok) throw loaded.error;
+      const record = structuredClone(loaded.loaded.record) as AgentRunRecordV1;
+      mutate(record);
+      record.updatedAt = now();
+      const validated = validateRunRecord(record, runId, runDirOf(runId));
+      if (!validated.ok) throw validated.error;
+      writeRunContents(runId, validated.record);
+      return validated.record;
+    });
+  }
+
   async function appendEvent(runId: string, event: RunLifecycleEvent): Promise<void> {
     await appendEventLine(runId, event);
+  }
+
+  async function appendEventStrict(runId: string, event: RunLifecycleEvent): Promise<void> {
+    await appendEventLine(runId, event);
+  }
+
+  async function writeTextArtifact(
+    runId: string,
+    payload: RunArtifactPayload,
+    text: string
+  ): Promise<RunArtifactRefV1> {
+    if (!isRunIdValid(runId)) {
+      throw { code: 'run_not_found', runId, message: 'invalid run id' } satisfies RunStoreError;
+    }
+    const dir = runDirOf(runId);
+    if (!fs.existsSync(dir)) {
+      throw {
+        code: 'run_not_found',
+        runId,
+        message: 'run directory missing',
+      } satisfies RunStoreError;
+    }
+    return artifacts.writeTextArtifact(runId, dir, payload, text);
+  }
+
+  async function writeJsonArtifact(
+    runId: string,
+    payload: RunArtifactPayload,
+    value: unknown
+  ): Promise<RunArtifactRefV1> {
+    if (!isRunIdValid(runId)) {
+      throw { code: 'run_not_found', runId, message: 'invalid run id' } satisfies RunStoreError;
+    }
+    const dir = runDirOf(runId);
+    if (!fs.existsSync(dir)) {
+      throw {
+        code: 'run_not_found',
+        runId,
+        message: 'run directory missing',
+      } satisfies RunStoreError;
+    }
+    return artifacts.writeJsonArtifact(runId, dir, payload, value);
+  }
+
+  async function readTextArtifact(runId: string, ref: RunArtifactRefV1): Promise<string> {
+    if (!isRunIdValid(runId)) {
+      throw { code: 'run_not_found', runId, message: 'invalid run id' } satisfies RunStoreError;
+    }
+    return artifacts.readTextArtifact(runId, runDirOf(runId), ref);
+  }
+
+  async function readJsonArtifact(runId: string, ref: RunArtifactRefV1): Promise<unknown> {
+    if (!isRunIdValid(runId)) {
+      throw { code: 'run_not_found', runId, message: 'invalid run id' } satisfies RunStoreError;
+    }
+    return artifacts.readJsonArtifact(runId, runDirOf(runId), ref);
+  }
+
+  async function resolveArtifactPath(runId: string, ref: RunArtifactRefV1): Promise<string> {
+    if (!isRunIdValid(runId)) {
+      throw { code: 'run_not_found', runId, message: 'invalid run id' } satisfies RunStoreError;
+    }
+    return artifacts.resolveArtifactPath(runId, runDirOf(runId), ref);
   }
 
   async function listRuns(): Promise<ListRunsResult> {
@@ -2203,6 +2514,13 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     getRun,
     updateRun,
     appendEvent,
+    updateRunStrict,
+    appendEventStrict,
+    writeTextArtifact,
+    writeJsonArtifact,
+    readTextArtifact,
+    readJsonArtifact,
+    resolveArtifactPath,
     listRuns,
     claimRun,
     releaseRun,

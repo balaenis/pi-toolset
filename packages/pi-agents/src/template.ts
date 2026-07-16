@@ -37,7 +37,9 @@ export function renderTaskTemplate(template: string, context: TemplateContext): 
         if (unknown === undefined) unknown = name;
         return _match;
       }
-      return entry.text;
+      return (
+        entry.text ?? (entry.textRef ? `[artifact ${entry.textRef.sha256.slice(0, 12)}…]` : '')
+      );
     }
     return _match;
   });

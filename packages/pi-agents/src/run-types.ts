@@ -6,6 +6,27 @@ import type { ExecutionStatus, SingleResult, SubagentDetails } from './types.ts'
 
 export const RUN_RECORD_VERSION = 1;
 
+/** Semantic payload kind stored in a run-local artifact reference. */
+export type RunArtifactPayload =
+  | 'final-output'
+  | 'structured-output'
+  | 'chain-output-text'
+  | 'chain-output-structured'
+  | 'fanout-items'
+  | 'interactive-continuation';
+
+/** Immutable content-addressed run-local artifact reference (Version 1 additive). */
+export interface RunArtifactRefV1 {
+  kind: 'run-artifact';
+  version: 1;
+  runId: string;
+  payload: RunArtifactPayload;
+  relativePath: string;
+  sha256: string;
+  bytes: number;
+  mediaType: 'text/plain; charset=utf-8' | 'application/json';
+}
+
 /** Durable run-level status persisted in `run.json`. */
 export type RunStatus = 'queued' | 'running' | 'interrupted' | 'completed' | 'failed' | 'cancelled';
 
@@ -121,7 +142,19 @@ export interface RunUnitRecord {
  * `items` is the ordered, post-maxItems list that can actually be scheduled;
  * `unitIds[i]` is the canonical id for `items[i]` (`chain-NNNN-fanout-MMMM`).
  */
+/**
+ * Persisted fanout expansion. Exactly one of `items` / `itemsRef` must be present
+ * at validation time (legacy inline Version 1 records always have `items`).
+ */
 export interface WorkflowFanoutState {
+  step: number;
+  items?: unknown[];
+  itemsRef?: RunArtifactRefV1;
+  unitIds: string[];
+}
+
+/** Runtime-only fanout state with verified inline items (never serialized). */
+export interface ResolvedWorkflowFanoutState {
   step: number;
   items: unknown[];
   unitIds: string[];
