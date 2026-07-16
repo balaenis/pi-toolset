@@ -9,6 +9,8 @@ import {
   PI_AGENT_DEPTH,
   PI_AGENT_MAX_DEPTH,
   PI_AGENT_TOOL_AVAILABLE,
+  PI_AGENTS_RUN_ARTIFACT_DIR,
+  PI_AGENTS_RUN_ID,
 } from './constants.ts';
 
 type EnvLike = NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -76,6 +78,9 @@ export function assertDepthAllowed(env: EnvLike): void {
 
 export interface ChildEnvOptions {
   agent?: AgentConfig;
+  /** When set with runArtifactDir, inject private artifact-reader env for the child. */
+  runId?: string;
+  runArtifactDir?: string;
 }
 
 export function buildChildAgentEnv(
@@ -95,13 +100,18 @@ export function buildChildAgentEnv(
     parentAllowsDelegation &&
     childDepth < cappedMax &&
     (agent ? agentToolAllowedByConfig(agent) : true);
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...parentEnv,
     [PI_AGENT_CHILD]: '1',
     [PI_AGENT_DEPTH]: String(childDepth),
     [PI_AGENT_MAX_DEPTH]: String(cappedMax),
     [PI_AGENT_TOOL_AVAILABLE]: childCanDelegate ? '1' : '0',
-  } as NodeJS.ProcessEnv;
+  };
+  if (options.runId && options.runArtifactDir) {
+    env[PI_AGENTS_RUN_ID] = options.runId;
+    env[PI_AGENTS_RUN_ARTIFACT_DIR] = options.runArtifactDir;
+  }
+  return env;
 }
 
 export interface ToolCliArgsOptions {
