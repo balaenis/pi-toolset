@@ -101,13 +101,14 @@ and may contain sensitive information.
 
 ### Collapse titles
 
-Every mode accepts an optional `title` (max 30 characters) that replaces the
-task preview in the collapsed summary. Provide it on the top-level single
-call, on each parallel `tasks[]` item, on each sequential chain step, and on
-`parallel` inside a fanout step. Generate the title before the call and keep
-it concise (for example `探索结构`, `fix lint`). When omitted or blank, the
-task preview is used. The shown width is clamped to 30 terminal columns, so
-CJK and emoji titles never overflow the summary line.
+Every mode accepts an optional `title` that replaces the task preview in the
+collapsed summary. Aim for ~30 characters as guidance only — longer values are
+accepted and never block the call. Provide it on the top-level single call, on
+each parallel `tasks[]` item, on each sequential chain step, and on `parallel`
+inside a fanout step. Generate the title before the call and keep it concise
+(for example `探索结构`, `fix lint`). When omitted or blank, the task text is used
+as the preview. Either way, the shown width is clamped to 30 terminal columns,
+so CJK and emoji never overflow the summary line.
 
 ```json
 { "agent": "explore", "task": "Find all authentication code.", "title": "查认证" }

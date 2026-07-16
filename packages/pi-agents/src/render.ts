@@ -312,12 +312,7 @@ interface RenderResultInput {
   details?: SubagentDetails;
 }
 
-function truncateText(text: string, max: number): string {
-  if (max <= 0) return '';
-  return truncateToWidth(text, max, '...');
-}
-
-/** Max terminal columns for a collapsed-summary title. */
+/** Max terminal columns for collapsed-summary title / task preview. */
 const TITLE_MAX_COLUMNS = 30;
 
 /** Clamp a value to at most `maxColumns` terminal columns, ellipsis included. */
@@ -428,7 +423,7 @@ interface SummaryParts {
   glyph: string;
   label: string;
   task: string;
-  /** Short title (<=30 columns) shown in place of the task preview when present. */
+  /** Short title shown in place of the task preview when present (render-clamped to 30 columns). */
   titlePreview?: string;
   progress?: string;
   usage: string;
@@ -445,11 +440,12 @@ function formatSummaryLine(parts: SummaryParts, width: number, theme: Theme): st
   const parenOverhead = 3; // " ()"
 
   const buildPreview = (budget: number): string => {
-    if (parts.titlePreview) {
-      if (visibleWidth(parts.titlePreview) <= budget) return parts.titlePreview;
-      return truncateToWidth(parts.titlePreview, budget, '…');
-    }
-    return truncateText(parts.task.replace(/\s+/g, ' ').trim(), budget);
+    // Title is pre-clamped to TITLE_MAX_COLUMNS; no-title task uses the same cap.
+    const preview =
+      parts.titlePreview || clampToWidth(parts.task.replace(/\s+/g, ' '), TITLE_MAX_COLUMNS);
+    if (!preview) return '';
+    if (visibleWidth(preview) <= budget) return preview;
+    return truncateToWidth(preview, budget, '…');
   };
 
   const fixedWithoutTask = `${parts.glyph} ${parts.label}${progressPart}${usagePart}`;

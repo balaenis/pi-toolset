@@ -9,9 +9,8 @@ export const IsolationSchema = StringEnum(['none', 'worktree'] as const, {
 });
 
 export const TitleSchema = Type.String({
-  maxLength: 30,
   description:
-    'Short label (max 30 chars) shown in the collapsed summary instead of the task preview (e.g. "fix lint"). Omit to use the task preview.',
+    'Short label (aim for ~30 chars) shown in the collapsed summary instead of the task preview (e.g. "fix lint"). Longer values are accepted and clamped when rendered. Omit to use the task preview.',
 });
 
 export const RuntimeSchema = StringEnum(['pi', 'grok-acp'] as const, {

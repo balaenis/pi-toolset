@@ -427,7 +427,7 @@ describe('renderResult single', () => {
     );
     expect(text).toContain('Explore');
     expect(text).toContain('9 turns');
-    expect(text).toMatch(/\.\.\./);
+    expect(text).toMatch(/…/);
   });
 
   it('uses terminal column width for CJK task previews (not string.length)', async () => {
@@ -1324,6 +1324,29 @@ describe('renderResult title', () => {
       )
     );
     expect(text).toContain('missing title task');
+  });
+
+  it('clamps a long no-title task preview to at most 30 terminal columns', async () => {
+    const { visibleWidth } = await import('@earendil-works/pi-tui');
+    const { context } = makeContext();
+    const longTask =
+      'find all authentication and authorization code paths across the monorepo including middleware';
+    const r = singleResult({ status: 'completed', task: longTask });
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'done' }], details: singleDetails(r) },
+        { expanded: false },
+        theme,
+        context
+      ),
+      120
+    );
+    const firstLine = text.split('\n')[0] ?? '';
+    const paren = extractParenContent(firstLine);
+    expect(paren).toBeDefined();
+    expect(visibleWidth(paren!)).toBeLessThanOrEqual(30);
+    expect(paren).toContain('…');
+    expect(text).not.toContain(longTask);
   });
 
   it('clamps a CJK title to at most 30 terminal columns', async () => {

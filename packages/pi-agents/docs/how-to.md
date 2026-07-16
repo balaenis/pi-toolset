@@ -46,10 +46,10 @@ the parent model, capped at 50 KB.
 
 ## Give a step a short collapse title
 
-Add a `title` (max 30 characters) to any single call, parallel task, chain
-step, or fanout `parallel` block. The collapsed summary shows the title
-instead of the task preview, clamped to 30 terminal columns; the expanded
-view still shows the complete task.
+Add a `title` (aim for ~30 characters; not a hard limit) to any single call,
+parallel task, chain step, or fanout `parallel` block. The collapsed summary
+shows the title instead of the task text; both are clamped to 30 terminal
+columns. The expanded view still shows the complete task.
 
 ```json
 {
@@ -74,9 +74,10 @@ view still shows the complete task.
 }
 ```
 
-Generate the title before the call and keep it concise. When omitted or blank,
-the task preview is used. Background launches use the first item's title as
-the launch summary.
+Generate the title before the call and keep it concise. Length is guidance only —
+longer titles still run and are clamped at render time. When omitted or blank,
+the task text is used (also clamped to 30 columns). Background launches use the
+first item's title as the launch summary.
 
 ## Chain agents with template placeholders
 

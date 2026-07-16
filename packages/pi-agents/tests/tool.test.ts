@@ -285,35 +285,35 @@ describe('normalizeAgentArgs', () => {
 });
 
 describe('agent tool title parameter', () => {
-  it('enforces title maxLength 30 on single, task, chain, and fanout schemas', async () => {
+  it('accepts titles longer than 30 chars on single, task, chain, and fanout schemas', async () => {
     const { SubagentParams, TaskItem, SequentialChainItem, FanoutChainItem } =
       await import('../src/schema.ts');
     const { Value } = await import('typebox/value');
-    const validTitle = 'a'.repeat(30);
-    const invalidTitle = 'a'.repeat(31);
-    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y', title: validTitle })).toBe(true);
-    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y', title: invalidTitle })).toBe(false);
+    const shortTitle = 'a'.repeat(30);
+    const longTitle = 'a'.repeat(31);
+    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y', title: shortTitle })).toBe(true);
+    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y', title: longTitle })).toBe(true);
     expect(Value.Check(SubagentParams, { agent: 'x', task: 'y' })).toBe(true);
-    expect(Value.Check(TaskItem, { agent: 'x', task: 'y', title: validTitle })).toBe(true);
-    expect(Value.Check(TaskItem, { agent: 'x', task: 'y', title: invalidTitle })).toBe(false);
-    expect(Value.Check(SequentialChainItem, { agent: 'x', task: 'y', title: validTitle })).toBe(
+    expect(Value.Check(TaskItem, { agent: 'x', task: 'y', title: shortTitle })).toBe(true);
+    expect(Value.Check(TaskItem, { agent: 'x', task: 'y', title: longTitle })).toBe(true);
+    expect(Value.Check(SequentialChainItem, { agent: 'x', task: 'y', title: shortTitle })).toBe(
       true
     );
-    expect(Value.Check(SequentialChainItem, { agent: 'x', task: 'y', title: invalidTitle })).toBe(
-      false
+    expect(Value.Check(SequentialChainItem, { agent: 'x', task: 'y', title: longTitle })).toBe(
+      true
     );
     const fanout = {
       expand: { from: { output: 'o', path: '/p' } },
-      parallel: { agent: 'x', task: 'y', title: validTitle },
+      parallel: { agent: 'x', task: 'y', title: shortTitle },
       collect: { name: 'r' },
     };
     expect(Value.Check(FanoutChainItem, fanout)).toBe(true);
-    const fanoutBad = {
+    const fanoutLong = {
       expand: { from: { output: 'o', path: '/p' } },
-      parallel: { agent: 'x', task: 'y', title: invalidTitle },
+      parallel: { agent: 'x', task: 'y', title: longTitle },
       collect: { name: 'r' },
     };
-    expect(Value.Check(FanoutChainItem, fanoutBad)).toBe(false);
+    expect(Value.Check(FanoutChainItem, fanoutLong)).toBe(true);
   });
 
   it('passes the single title through to the workflow runner', async () => {

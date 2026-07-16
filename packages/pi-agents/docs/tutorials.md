@@ -40,9 +40,9 @@ Pi calls the `agent` tool, which spawns an isolated `pi` subprocess with the
 
 While the agent runs, the collapsed view is a compact live summary: status
 glyph, agent name, truncated task preview (or a short `title`), usage, and at
-most one latest activity line. Pass an optional `title` (max 30 characters) on
-a single call, parallel task, chain step, or fanout step to label it in the
-collapsed summary; see
+most one latest activity line. Pass an optional `title` (aim for ~30 characters;
+longer values are accepted and clamped when rendered) on a single call,
+parallel task, chain step, or fanout step to label it in the collapsed summary; see
 [How-to: collapse titles](./how-to.md#give-a-step-a-short-collapse-title).
 
 - **Collapsed view** (default): one status line (`✔`/`✗`/outline-fill spinner

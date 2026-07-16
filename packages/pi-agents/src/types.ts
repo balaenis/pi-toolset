@@ -37,7 +37,7 @@ export interface SingleResult {
   agent: string;
   agentSource: AgentSource | 'unknown';
   task: string;
-  /** Short collapsed-summary label; clamp to 30 terminal columns when rendering. */
+  /** Short collapsed-summary label (soft ~30 char guidance); clamped to 30 terminal columns when rendering. */
   title?: string;
   exitCode: number;
   /** Explicit status; older sessions may omit this and renderers fall back. */
