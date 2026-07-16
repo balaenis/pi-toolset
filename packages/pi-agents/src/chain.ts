@@ -28,11 +28,11 @@ import {
   type JsonSchemaSubset,
   type JsonValue,
 } from './structured-output.ts';
+import { emptyUsage } from './empty-usage.ts';
 import { renderTaskTemplate } from './template.ts';
 import {
   cloneResults,
   cloneSingleResult,
-  emptyUsage,
   type ChainExecutionDetails,
   type ChainFanoutStep,
   type ChainLogicalStep,

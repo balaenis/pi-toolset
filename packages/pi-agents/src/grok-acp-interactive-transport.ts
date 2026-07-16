@@ -24,7 +24,8 @@ import type {
   InteractiveTransportEvent,
   InteractiveTransportState,
 } from './interactive-transport.ts';
-import { emptyUsage, type UsageStats } from './types.ts';
+import { emptyUsage } from './empty-usage.ts';
+import type { UsageStats } from './types.ts';
 import { buildChildAgentEnv } from './security.ts';
 
 export interface GrokAcpInteractiveTransportOptions {

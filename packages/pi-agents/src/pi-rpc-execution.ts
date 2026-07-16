@@ -21,7 +21,8 @@ import { appendContinuationTasks, buildSessionContinuationPrompt } from './invoc
 import { applyTerminalStatus, getFinalOutput } from './output.ts';
 import { originToUnitStatus } from './run-lifecycle.ts';
 import type { RunAbortOrigin } from './run-types.ts';
-import { cloneSingleResult, emptyUsage, type SingleResult, type SubagentDetails } from './types.ts';
+import { emptyUsage } from './empty-usage.ts';
+import { cloneSingleResult, type SingleResult, type SubagentDetails } from './types.ts';
 
 /** Structured error codes from InteractiveAgentError / GrokAcpClientError / plain {code}. */
 function structuredErrorCode(err: unknown): string | undefined {

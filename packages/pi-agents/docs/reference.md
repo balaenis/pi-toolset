@@ -325,7 +325,7 @@ time; run `pi reload` (or restart) after adding/removing agent files.
 | `error`                   | LLM error propagated with an error message.                                                                                                               |
 | `aborted`                 | User abort (Ctrl+C) killed the subprocess.                                                                                                                |
 | `max_turns`               | Agent exceeded its `maxTurns` budget; child was `SIGTERM`'d. (`grok-acp` does not enforce this.)                                                          |
-| `context_error`           | Fork-context preparation failed before the child started.                                                                                                 |
+| `context_error`           | Context preparation failed before the child started (`prepareAgentContext` / fork or fresh session materialization). Generic throws use `error` instead. |
 | `cwd_error`               | The requested working directory is missing, inaccessible, or not a directory.                                                                             |
 | `isolation_error`         | Worktree isolation failed before the child started (e.g. not in a git repo).                                                                              |
 | `completion_check`        | Final message is missing a configured `completionCheck` heading. Result stays failed; parent-visible text is the warning plus the unchecked final output. |

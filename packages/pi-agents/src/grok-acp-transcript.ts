@@ -8,8 +8,8 @@ import type {
   StopReason as AcpStopReason,
 } from '@agentclientprotocol/sdk';
 import { mapGrokAcpStopReason } from './grok-acp-parser.ts';
+import { emptyUsage } from './empty-usage.ts';
 import type { UsageStats } from './types.ts';
-import { emptyUsage } from './types.ts';
 
 export type GrokAcpTranscriptPhase = 'load' | 'prompt' | 'idle';
 

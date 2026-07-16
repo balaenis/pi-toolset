@@ -15,7 +15,7 @@ import type {
   WorkflowFanoutState,
 } from './run-types.ts';
 import type { ExecutionStatus, SingleResult, SubagentDetails } from './types.ts';
-import { emptyUsage } from './types.ts';
+import { emptyUsage } from './empty-usage.ts';
 
 /**
  * Stable execution-unit identity for a workflow position. Passed into execution

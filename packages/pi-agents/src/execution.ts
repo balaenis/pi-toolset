@@ -40,7 +40,8 @@ import {
   releaseSessionLeaseWithCertainty,
   type DisposalCertainty,
 } from './session-lease.ts';
-import { cloneSingleResult, emptyUsage, type SingleResult, type SubagentDetails } from './types.ts';
+import { emptyUsage } from './empty-usage.ts';
+import { cloneSingleResult, type SingleResult, type SubagentDetails } from './types.ts';
 
 /** True when Grok ACP SingleResult is a successful matching-prompt completion. */
 function isGrokAcpSuccessfulCompletion(result: SingleResult): boolean {

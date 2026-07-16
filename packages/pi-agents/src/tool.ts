@@ -22,6 +22,8 @@ import {
   synthesizeFailure,
   type FanoutExpandRequest,
 } from './chain.ts';
+import { attachErrorStack, classifyEarlyFailureStopReason } from './early-failure.ts';
+import { emptyUsage } from './empty-usage.ts';
 import type { WorkflowFanoutState } from './run-types.ts';
 import { GROK_ACP_RUNTIME, MAX_CONCURRENCY, MAX_PARALLEL_TASKS } from './constants.ts';
 import { enforceCompletionCheck } from './completion-check.ts';
@@ -61,7 +63,6 @@ import { assertAgentDelegationAllowed } from './security.ts';
 import {
   cloneResults,
   cloneSingleResult,
-  emptyUsage,
   type ExecutionStatus,
   type IsolationMode,
   type SingleResult,
@@ -2091,14 +2092,9 @@ async function runStepWithContext(
   } catch (err) {
     // Pre-execution context failure: only remove owned-new clean worktrees.
     const message = err instanceof Error ? err.message : String(err);
-    const failure4 = synthesizeFailure(
-      agentName,
-      agent,
-      task,
-      step,
-      'context_error',
-      message,
-      options.title
+    const failure4 = attachErrorStack(
+      synthesizeFailure(agentName, agent, task, step, 'context_error', message, options.title),
+      err
     );
     if (worktree && !storedWorktreePath) {
       const status = getWorktreeDirtyStatus(worktree.path);
@@ -2293,14 +2289,17 @@ async function runStepWithContext(
           typeof (err as { code?: unknown }).code === 'string'
             ? (err as { code: string }).code
             : undefined;
-        const failure = synthesizeFailure(
-          agentName,
-          agent,
-          task,
-          step,
-          formalCode ?? 'context_error',
-          `Interactive link registration failed: ${message}`,
-          options.title
+        const failure = attachErrorStack(
+          synthesizeFailure(
+            agentName,
+            agent,
+            task,
+            step,
+            formalCode ?? 'error',
+            `Interactive link registration failed: ${message}`,
+            options.title
+          ),
+          err
         );
         if (formalCode) failure.errorCode = formalCode;
         maybeRemoveOwnedCleanWorktree(failure);
@@ -2514,6 +2513,7 @@ async function runStepWithContext(
       delete options.unitContext.sessionPromptEstablished;
     }
     const message = err instanceof Error ? err.message : String(err);
+    const failureCode = classifyEarlyFailureStopReason(err, message);
     const formalCode =
       err &&
       typeof err === 'object' &&
@@ -2521,23 +2521,9 @@ async function runStepWithContext(
       typeof (err as { code?: unknown }).code === 'string'
         ? (err as { code: string }).code
         : undefined;
-    const failureCode =
-      formalCode ??
-      (message.includes('session_file_conflict')
-        ? 'session_file_conflict'
-        : message.includes('session_file_unavailable')
-          ? 'session_file_unavailable'
-          : message.includes('session_prompt_unestablished')
-            ? 'session_prompt_unestablished'
-            : 'context_error');
-    const failure = synthesizeFailure(
-      agentName,
-      agent,
-      task,
-      step,
-      failureCode,
-      message,
-      options.title
+    const failure = attachErrorStack(
+      synthesizeFailure(agentName, agent, task, step, failureCode, message, options.title),
+      err
     );
     if (formalCode) failure.errorCode = formalCode;
     maybeRemoveOwnedCleanWorktree(failure);

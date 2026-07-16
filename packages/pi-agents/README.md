@@ -35,7 +35,7 @@ pi -e ./packages/pi-agents/dist/index.js
 
 ## Failure logging
 
-Failed `agent` tool invocations record the complete tool call parameters and failure details in `~/.pi/@balaenis/pi-agents/default.log`. Set `PI_AGENTS_LOG_FILE` to override the path. Because task prompts and continuation instructions may contain sensitive information, protect or remove this log as appropriate.
+Failed `agent` tool invocations record the complete tool call parameters, failure details, and any captured `Error.stack` / result `errorStack` in `~/.pi/@balaenis/pi-agents/default.log`. Set `PI_AGENTS_LOG_FILE` to override the path. Because task prompts and continuation instructions may contain sensitive information, protect or remove this log as appropriate.
 
 ## Durable runs and resume
 

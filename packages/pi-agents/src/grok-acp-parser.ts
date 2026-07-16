@@ -3,6 +3,7 @@
 
 import type { Message } from '@earendil-works/pi-ai';
 import type { SessionNotification, SessionUpdate, StopReason } from '@agentclientprotocol/sdk';
+import { emptyUsage } from './empty-usage.ts';
 import type { SingleResult } from './types.ts';
 
 export interface GrokAcpParserState {
@@ -32,18 +33,6 @@ export function createGrokAcpParserState(configuredModel?: string): GrokAcpParse
     toolStatuses: new Map(),
     structuredToolNames: new Set(),
     configuredModel: configuredModel,
-  };
-}
-
-function emptyUsage() {
-  return {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    cost: 0,
-    contextTokens: 0,
-    turns: 0,
   };
 }
 

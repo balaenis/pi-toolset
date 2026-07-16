@@ -55,6 +55,8 @@ export interface SingleResult {
    * Copied from InteractiveAgentError / GrokAcpClientError / endpoint snapshots.
    */
   errorCode?: string;
+  /** Captured `Error.stack` when a thrown error is turned into a failed result. */
+  errorStack?: string;
   step?: number;
   /** Present when this result is a fanout execution unit. */
   fanout?: FanoutIdentity;
@@ -186,17 +188,8 @@ export type DisplayItem =
   | { type: 'text'; text: string }
   | { type: 'toolCall'; name: string; args: Record<string, unknown> };
 
-export function emptyUsage(): UsageStats {
-  return {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    cost: 0,
-    contextTokens: 0,
-    turns: 0,
-  };
-}
+/** Re-export leaf factory so tests/callers can keep importing from types. */
+export { emptyUsage } from './empty-usage.ts';
 
 /**
  * Deep-clone a result for delivery snapshots.

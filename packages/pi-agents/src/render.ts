@@ -531,7 +531,7 @@ function appendExpandedResultSections(
     container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
   }
 
-  if (r.errorMessage || (status === 'failed' && r.stopReason)) {
+  if (r.errorMessage || r.errorStack || (status === 'failed' && r.stopReason)) {
     container.addChild(new Spacer(1));
     container.addChild(new Text(theme.fg('muted', '─── Error ───'), 0, 0));
     if (r.stopReason) {
@@ -539,6 +539,11 @@ function appendExpandedResultSections(
     }
     if (r.errorMessage) {
       container.addChild(new Text(theme.fg('error', r.errorMessage), 0, 0));
+    }
+    if (r.errorStack) {
+      for (const line of r.errorStack.split('\n')) {
+        container.addChild(new Text(theme.fg('dim', line), 0, 0));
+      }
     }
   }
 

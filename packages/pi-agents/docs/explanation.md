@@ -132,12 +132,20 @@ starting fresh:
 3. Spawns the child `pi` with `--session <branched-file>` (the parent's session
    file is never passed directly).
 
-Fork returns `stopReason: "context_error"` with one of these `stderr` messages
-when prerequisites are missing:
+Fork (and failed fresh session materialization) returns
+`stopReason: "context_error"` with one of these `stderr` messages when
+prerequisites are missing:
 
 - `Cannot fork parent context: parent session is not persisted`
 - `Cannot fork parent context: parent session file does not exist: <path>`
 - `Cannot fork parent context: current session has no leaf entry`
+- `Cannot create fresh context: …`
+- `Cannot resume context: …`
+
+Other pre-spawn failures (interactive registration, unexpected TypeErrors,
+etc.) use `stopReason: "error"` (or a structured code when present), not
+`context_error`. When a thrown `Error` is turned into a failed result, its
+`stack` is stored on `errorStack` and written to the failure log.
 
 In `--no-session` parent runs, `fork` does not silently fall back to fresh
 context.
