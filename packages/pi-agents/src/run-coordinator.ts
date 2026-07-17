@@ -3,7 +3,7 @@
 
 import * as crypto from 'node:crypto';
 import type { AgentConfig, Runtime } from './agents.ts';
-import { DEFAULT_RUNTIME } from './constants.ts';
+import { DEFAULT_RUNTIME, RESULT_INLINE_PAYLOAD_MAX_BYTES } from './constants.ts';
 import type { RunStore } from './run-store.ts';
 import type {
   AgentRunRecordV1,
@@ -15,6 +15,7 @@ import type {
   WorkflowFanoutState,
 } from './run-types.ts';
 import { externalizeTerminalResult } from './result-payload.ts';
+import { measureJsonArtifactBytes } from './artifact-store.ts';
 import { snapshotSingleResult } from './result-snapshot.ts';
 import type { ExecutionStatus, SingleResult, SubagentDetails } from './types.ts';
 import { emptyUsage } from './empty-usage.ts';
@@ -236,6 +237,7 @@ export function createUnitRecord(ctx: UnitExecutionContext, _now: number): RunUn
     worktreePath: ctx.worktreePath,
     ...(ctx.step !== undefined ? { step: ctx.step } : {}),
     ...(ctx.fanoutIndex !== undefined ? { fanoutIndex: ctx.fanoutIndex } : {}),
+    ...(ctx.requireArtifactReader ? { requireArtifactReader: true } : {}),
   };
 }
 
@@ -377,13 +379,18 @@ export interface RunCoordinator {
   ): Promise<SingleResult>;
   /** Persist `details` and `units` snapshots (coalesced except for flushNow). */
   persist(input: PersistUpdateInput): void;
-  /** Finalize a run: derive terminal status, flush, and publish the owner claim release. */
+  /**
+   * Strictly persist the terminal `run.json` clone and return its committed
+   * terminal status. Does NOT append `run_terminal`, unregister the run,
+   * release/abandon a claim, or fall back to coalesced/best-effort writes.
+   * The shared barrier in `run-persistence.ts` owns those follow-up steps.
+   */
   finalizeRun(
     runId: string,
     details: SubagentDetails,
     units: Record<string, RunUnitRecord>,
     options: { success?: boolean; cancelled?: boolean; interrupted?: boolean; lastError?: string }
-  ): Promise<void>;
+  ): Promise<RunStatus>;
   /** Drop an in-memory run registration. */
   unregisterRun(runId: string): void;
   /** Is this run registered as active right now? */
@@ -593,6 +600,12 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
       } else {
         delete liveUnit.sessionPromptEstablished;
       }
+      // requireArtifactReader: monotonic OR (disk true or live true yields true).
+      if (diskUnit.requireArtifactReader || liveUnit.requireArtifactReader) {
+        liveUnit.requireArtifactReader = true;
+      } else {
+        delete liveUnit.requireArtifactReader;
+      }
       if (diskUnit.result) {
         if (!liveUnit.result) {
           liveUnit.result = { ...diskUnit.result };
@@ -694,6 +707,12 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
           unit.sessionPromptEstablished = diskUnit.sessionPromptEstablished;
         } else {
           delete unit.sessionPromptEstablished;
+        }
+        // requireArtifactReader: monotonic OR (disk true or live true yields true).
+        if (diskUnit.requireArtifactReader || liveUnit.requireArtifactReader) {
+          unit.requireArtifactReader = true;
+        } else {
+          delete unit.requireArtifactReader;
         }
         // interactiveBindings: disk entries win on id conflict; live may only add.
         if (diskUnit.interactiveBindings || liveUnit.interactiveBindings) {
@@ -858,21 +877,27 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
 
     const fanoutKey = chainFanoutStepId(input.step);
     const unitIds = input.items.map((_, i) => chainFanoutUnitId(input.step, i));
-    // Reject individual fanout items above the inline payload budget.
+    // Reject individual fanout items above the inline payload budget using exact
+    // persisted JSON bytes (pretty JSON plus LF) so a compact-JSON item cannot
+    // exceed the persisted inline budget after spill.
     for (let i = 0; i < input.items.length; i++) {
-      const itemBytes = Buffer.byteLength(JSON.stringify(input.items[i]), 'utf8');
-      if (itemBytes > 256 * 1024) {
+      const itemBytes = measureJsonArtifactBytes(input.items[i]);
+      if (itemBytes > RESULT_INLINE_PAYLOAD_MAX_BYTES) {
         throw new Error(`fanout_item_too_large: item ${i} is ${itemBytes} bytes (max 256 KiB)`);
       }
     }
-    // Aggregate list may spill as itemsRef when above the inline budget.
+    // Aggregate list may spill as itemsRef when above the inline budget (exact
+    // pretty-JSON-plus-LF bytes).
     let expansion: WorkflowFanoutState = {
       step: input.step,
       items: input.items,
       unitIds,
     };
-    const aggregateBytes = Buffer.byteLength(JSON.stringify(input.items), 'utf8');
-    if (aggregateBytes > 256 * 1024 && typeof store.writeJsonArtifact === 'function') {
+    const aggregateBytes = measureJsonArtifactBytes(input.items);
+    if (
+      aggregateBytes > RESULT_INLINE_PAYLOAD_MAX_BYTES &&
+      typeof store.writeJsonArtifact === 'function'
+    ) {
       const itemsRef = await store.writeJsonArtifact(runId, 'fanout-items', input.items);
       expansion = { step: input.step, itemsRef, unitIds };
     }
@@ -1298,39 +1323,71 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
     }
     const live = ensureLiveRecord(runId);
     if (!live) return;
-    const unit = live.units[ctx.unitId];
-    if (unit) {
-      unit.status = 'running';
-      unit.attempt = ctx.attempt;
-      // sessionFile / acpSessionId identity: never write from ctx. Only strict
-      // persistence (persistSessionFile / persistAcpSessionId) may establish
-      // identity on the unit; full merge is disk-exact.
-      unit.worktreePath = ctx.worktreePath;
-      // Record a running attempt so finishUnit can finalize it with real timestamps.
-      unit.attempts.push({
-        attempt: ctx.attempt,
-        status: 'running',
-        startedAt: now(),
-      });
-    }
-    // Await durable unit_started + attempt history before callers stamp session
-    // paths or register interactive endpoints (crash-window safety).
-    await store.appendEvent(runId, {
-      version: 1,
-      event: 'unit_started',
-      runId,
-      timestamp: now(),
-      unitId: ctx.unitId,
+    const existingUnit = live.units[ctx.unitId];
+    if (!existingUnit) return;
+
+    // Local stage: build the pending started attempt without mutating live.
+    const stagedAttempt: RunUnitAttempt = {
       attempt: ctx.attempt,
-    });
-    cancelPendingTimer(runId);
-    await enqueueDurableWrite(runId, async () => {
-      await store.updateRun(runId, (record) => {
-        const liveRec = active.get(runId);
-        if (liveRec) {
-          mergeLiveIntoRecord(record, liveRec);
+      status: 'running',
+      startedAt: now(),
+    };
+    const stagedWorktreePath = ctx.worktreePath;
+    const stagedRequireReader = ctx.requireArtifactReader;
+
+    const applyStartToDisk = (record: AgentRunRecordV1): void => {
+      const diskUnit = record.units[ctx.unitId];
+      if (!diskUnit) return;
+      // Merge other accumulated live state first, then apply the staged start
+      // transition on top so disk-authoritative start fields are never downgraded.
+      const liveRec = active.get(runId);
+      if (liveRec) mergeLiveIntoRecord(record, liveRec);
+      const merged = record.units[ctx.unitId];
+      if (merged) {
+        merged.status = 'running';
+        merged.attempt = ctx.attempt;
+        merged.worktreePath = stagedWorktreePath;
+        merged.attempts.push({ ...stagedAttempt });
+        if (stagedRequireReader) {
+          merged.requireArtifactReader = true;
         }
+      }
+    };
+
+    const mirrorStartToLive = (): void => {
+      const liveRec = active.get(runId);
+      const liveUnit = liveRec?.units[ctx.unitId];
+      if (liveUnit) {
+        liveUnit.status = 'running';
+        liveUnit.attempt = ctx.attempt;
+        liveUnit.worktreePath = stagedWorktreePath;
+        liveUnit.attempts.push({ ...stagedAttempt });
+        if (stagedRequireReader) {
+          liveUnit.requireArtifactReader = true;
+        }
+      }
+    };
+
+    cancelPendingTimer(runId);
+
+    // Disk-first: persist staged start state via strict write on the durable
+    // queue. Only after the strict write succeeds do we append the event and
+    // mirror the committed state into live. If the strict write fails, no
+    // event is emitted, no live started state is exposed, and the error
+    // propagates before any spawn/RPC activation.
+    await enqueueDurableWrite(runId, async () => {
+      await store.updateRunStrict(runId, (record) => {
+        applyStartToDisk(record);
       });
+      await store.appendEvent(runId, {
+        version: 1,
+        event: 'unit_started',
+        runId,
+        timestamp: now(),
+        unitId: ctx.unitId,
+        attempt: ctx.attempt,
+      });
+      mirrorStartToLive();
     });
     lastPersist.set(runId, now());
   }
@@ -1434,15 +1491,7 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
     // Strict run.json (target unit only), then unit_terminal event, then mirror into live.
     // Live mutation happens only after disk commit succeeds so rejected authority
     // cannot leak to parent/coalesced paths.
-    const updateRunFn =
-      typeof store.updateRunStrict === 'function'
-        ? store.updateRunStrict.bind(store)
-        : store.updateRun.bind(store);
-    const appendEventFn =
-      typeof store.appendEventStrict === 'function'
-        ? store.appendEventStrict.bind(store)
-        : store.appendEvent.bind(store);
-    await updateRunFn(runId, (record) => {
+    await store.updateRunStrict(runId, (record) => {
       if (unitClone) {
         record.units[ctx.unitId] = unitClone;
       }
@@ -1455,7 +1504,7 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
       }
     });
     try {
-      await appendEventFn(runId, {
+      await store.appendEventStrict(runId, {
         version: 1,
         event: 'unit_terminal',
         runId,
@@ -1503,6 +1552,11 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
         if (unitClone.sessionPromptEstablished !== undefined) {
           liveUnit.sessionPromptEstablished = unitClone.sessionPromptEstablished;
         }
+        if (unitClone.requireArtifactReader) {
+          liveUnit.requireArtifactReader = true;
+        } else {
+          delete liveUnit.requireArtifactReader;
+        }
       } else if (unitClone) {
         liveRec.units[ctx.unitId] = unitClone;
       }
@@ -1527,87 +1581,54 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
       interrupted?: boolean;
       lastError?: string;
     }
-  ): Promise<void> {
-    const live = active.get(runId);
-    if (!live) {
-      // Same durable queue + field-level disk-first merge as active full flush.
-      // A late finalize snapshot must not wipe bindings/acpSessionId/delivery.
-      // Deep-clone so merge/mirror cannot share workflowState/request refs with disk.
-      await enqueueDurableWrite(runId, async () => {
-        try {
-          await store.updateRun(runId, (record) => {
-            const snapshot = structuredClone({
-              ...record,
-              details,
-              units,
-            });
-            mergeLiveIntoRecord(record, snapshot);
-            record.finishedAt = now();
-            record.updatedAt = now();
-            let status: RunStatus;
-            if (options.cancelled) status = 'cancelled';
-            else if (options.interrupted) status = 'interrupted';
-            else if (options.success === false) status = 'failed';
-            else status = deriveRunStatus(record.units, record.details);
-            record.status = status;
-            if (options.lastError !== undefined) record.lastError = options.lastError;
-          });
-        } catch {
-          /* best-effort */
-        }
-      });
-      return;
-    }
-    live.details = details;
-    live.units = units;
-    live.finishedAt = now();
-    live.updatedAt = now();
+  ): Promise<RunStatus> {
     let status: RunStatus;
     if (options.cancelled) status = 'cancelled';
     else if (options.interrupted) status = 'interrupted';
     else if (options.success === false) status = 'failed';
     else status = deriveRunStatus(units, details);
-    live.status = status;
-    if (options.lastError !== undefined) live.lastError = options.lastError;
 
-    // Wait for any pending coalesced write, then do one final flush and release.
-    cancelPendingTimer(runId);
-    // Prefer strict update when available (production RunStore); fall back to
-    // coalesced writeRun for older/test doubles.
-    if (typeof store.updateRunStrict === 'function') {
-      try {
-        await store.updateRunStrict(runId, (record) => {
+    const finishedAt = now();
+    const lastError = options.lastError;
+
+    // Serialize through the shared durable queue. Do not mutate live terminal
+    // fields before the strict disk write succeeds; mirror the committed record
+    // onto live only after success. No best-effort/coalesced fallback.
+    await enqueueDurableWrite(runId, async () => {
+      const live = active.get(runId);
+      await store.updateRunStrict(runId, (record) => {
+        if (live) {
           mergeLiveIntoRecord(record, {
             ...record,
             details,
             units,
             status,
-            finishedAt: live.finishedAt,
-            updatedAt: live.updatedAt,
-            ...(options.lastError !== undefined ? { lastError: options.lastError } : {}),
+            finishedAt,
+            updatedAt: finishedAt,
+            ...(lastError !== undefined ? { lastError } : {}),
           });
-        });
-        await (
-          typeof store.appendEventStrict === 'function'
-            ? store.appendEventStrict
-            : store.appendEvent
-        ).call(store, runId, {
-          version: 1,
-          event: 'run_terminal',
-          runId,
-          timestamp: now(),
-          status,
-        });
-      } catch {
-        await writeRun(runId);
+        } else {
+          // Inactive: deep-clone so merge/mirror cannot share refs with disk.
+          const snapshot = structuredClone({ ...record, details, units });
+          mergeLiveIntoRecord(record, snapshot);
+          record.finishedAt = finishedAt;
+          record.updatedAt = finishedAt;
+          record.status = status;
+          if (lastError !== undefined) record.lastError = lastError;
+        }
+      });
+      // Mirror committed terminal fields to live only after disk success.
+      if (live) {
+        live.details = details;
+        live.units = units;
+        live.status = status;
+        live.finishedAt = finishedAt;
+        live.updatedAt = finishedAt;
+        if (lastError !== undefined) live.lastError = lastError;
       }
-    } else {
-      await writeRun(runId);
-    }
-    lastPersist.set(runId, now());
-    // The run is settled; drop the in-memory registration so subsequent
-    // `isActive`/reconciliation can treat it as a past run.
-    unregisterRun(runId);
+      lastPersist.set(runId, finishedAt);
+    });
+    return status;
   }
 
   function aggregateRun(

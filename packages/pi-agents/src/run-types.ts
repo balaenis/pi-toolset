@@ -134,6 +134,8 @@ export interface RunUnitRecord {
   result?: SingleResult;
   /** Optional dual bindings for interactive TUI endpoints (Version 1 additive). */
   interactiveBindings?: Record<string, InteractiveAgentBindingV1>;
+  /** When true, Pi child launches receive the dedicated artifact reader extension (Version 1 additive). */
+  requireArtifactReader?: boolean;
 }
 
 /**

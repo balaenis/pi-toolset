@@ -298,6 +298,14 @@ class JsonRecordParser {
   private toolName?: string;
   private isError?: boolean;
 
+  // Bulk-field structural type tracking (token kind only, no payload retained).
+  // Keys are canonical top-level field names; values are the first JSON token
+  // kind observed for that field's value (object/array/string/number/boolean/null).
+  private readonly bulkFieldShapes = new Map<
+    string,
+    'object' | 'array' | 'string' | 'number' | 'boolean' | 'null'
+  >();
+
   // String state
   private stringKind: 'key' | 'value' = 'value';
   private stringCapture: 'shell' | 'role' | 'none' = 'none';
@@ -552,6 +560,8 @@ class JsonRecordParser {
   }
 
   private beginValue(ch: string): void {
+    // Track bulk-field structural type at the top level (token kind only).
+    this.recordBulkFieldShape(ch);
     if (ch === '{') {
       this.openContainer('object');
       return;
@@ -587,6 +597,49 @@ class JsonRecordParser {
     const topLevel = this.stack.length === 0 && kind === 'object';
     this.stack.push({ kind, topLevel, keys: [], elementCount: 0 });
     this.mode = kind === 'object' ? 'object_key' : 'array_value';
+  }
+
+  /** Canonical top-level bulk fields whose structural token kind is validated. */
+  private static readonly BULK_FIELD_KEYS = new Set([
+    'messages',
+    'toolResults',
+    'message',
+    'assistantMessageEvent',
+    'args',
+    'partialResult',
+    'result',
+  ]);
+
+  /** Top-level bulk fields that must be arrays. */
+  private static readonly ARRAY_BULK_FIELDS = new Set(['messages', 'toolResults']);
+
+  /** Top-level bulk fields that must be non-array objects. */
+  private static readonly OBJECT_BULK_FIELDS = new Set(['message', 'assistantMessageEvent']);
+
+  private recordBulkFieldShape(ch: string): void {
+    const frame = this.stack[this.stack.length - 1];
+    if (!frame || !frame.topLevel || frame.kind !== 'object') return;
+    const key = frame.currentKey;
+    if (!key || !JsonRecordParser.BULK_FIELD_KEYS.has(key)) return;
+    // Only record the first token kind observed for this field value.
+    if (this.bulkFieldShapes.has(key)) return;
+    let kind: 'object' | 'array' | 'string' | 'number' | 'boolean' | 'null' | undefined;
+    if (ch === '{') kind = 'object';
+    else if (ch === '[') kind = 'array';
+    else if (ch === '"') kind = 'string';
+    else if (ch === '-' || (ch >= '0' && ch <= '9')) kind = 'number';
+    else if (ch === 't' || ch === 'f') kind = 'boolean';
+    else if (ch === 'n') kind = 'null';
+    if (kind === undefined) return;
+    this.bulkFieldShapes.set(key, kind);
+    // Revoke projectability immediately on a constrained wrong kind so a scalar
+    // or wrong container cannot receive the 64 MiB projectable budget.
+    if (
+      (JsonRecordParser.ARRAY_BULK_FIELDS.has(key) && kind !== 'array') ||
+      (JsonRecordParser.OBJECT_BULK_FIELDS.has(key) && kind !== 'object')
+    ) {
+      this.revokeProjectability();
+    }
   }
 
   private closeContainer(): void {
@@ -816,6 +869,11 @@ class JsonRecordParser {
     if (this.topLevelKeys.length !== expected.length) return false;
     for (let i = 0; i < expected.length; i++) {
       if (this.topLevelKeys[i] !== expected[i]) return false;
+    }
+    // Validate bulk-field structural types.
+    for (const [key, shape] of this.bulkFieldShapes) {
+      if (JsonRecordParser.ARRAY_BULK_FIELDS.has(key) && shape !== 'array') return false;
+      if (JsonRecordParser.OBJECT_BULK_FIELDS.has(key) && shape !== 'object') return false;
     }
     switch (this.projectableType) {
       case 'agent_end':

@@ -186,6 +186,8 @@ export interface InteractiveLaunchSpec {
   isolation?: 'none' | 'worktree';
   agentScope: AgentScope;
   registrationKind: 'initial' | 'restore';
+  /** When true, Pi child launches receive the dedicated artifact reader extension. */
+  requireArtifactReader?: boolean;
 }
 
 export interface InteractiveAgentEndpoint {
@@ -224,10 +226,23 @@ export interface InteractiveAgentEndpoint {
   errorCode?: InteractiveErrorCode | string;
   client?: PiRpcTransport | InteractiveAgentTransport;
   /**
+   * Registry-unique monotonic incarnation. Incremented for every endpoint
+   * object creation; never reset or reused during the registry lifetime.
+   * Prevents remove/recreate ABA in relay epoch checks.
+   */
+  endpointIncarnation: number;
+  /**
    * Monotonic spawn generation. Handshake resolve/reject/events/dispose only
    * mutate this endpoint when the event's generation still matches.
    */
   transportGeneration: number;
+  /**
+   * Monotonic activation generation. Incremented whenever a new activation is
+   * created; never reset when an activation settles/clears. Persists across the
+   * clear window so a continuation captured before artifact I/O is suppressed
+   * when a newer activation has started and settled during that I/O.
+   */
+  activationGeneration: number;
   /**
    * Whether session transcript has been loaded into finalizedMessagesView.
    * Restore is metadata-only; hydrate on get / detail / activation reopen.
@@ -279,7 +294,9 @@ export type InteractiveEndpointSnapshot = Omit<
   | 'launchSpec'
   | 'finalizedMessagesView'
   | 'messages'
+  | 'endpointIncarnation'
   | 'transportGeneration'
+  | 'activationGeneration'
   | 'transcriptHydrated'
   | 'allowPlannedMissingSession'
   | 'finalizedMessageBytes'
@@ -1639,6 +1656,12 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
   /** Single cached shutdown promise — success and rejection are both reused. */
   let shutdownPromise: Promise<void> | undefined;
   let sequenceCounter = 0;
+  /**
+   * Registry-unique monotonic endpoint incarnation. Incremented for every
+   * endpoint object creation; never reset or reused during the registry
+   * lifetime. Prevents remove/recreate ABA in relay epoch checks.
+   */
+  let nextEndpointIncarnation = 1;
   /** Host-session link writer installed by the extension entrypoint. */
   let hostLinkAppender: ((link: InteractiveAgentLinkV1) => void) | undefined;
 
@@ -2585,7 +2608,9 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
         activeTools: new Map(),
         steeringQueue: [],
         followUpQueue: [],
+        endpointIncarnation: nextEndpointIncarnation++,
         transportGeneration: 0,
+        activationGeneration: 0,
         // Only mark hydrated when memory is authoritative. Non-empty fork/resume
         // session history must hydrate on get/detail/activate, not stay empty forever.
         transcriptHydrated: false,
@@ -3144,6 +3169,7 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
     runtimeOverride?: Runtime;
     isolation?: 'none' | 'worktree';
     title?: string;
+    requireArtifactReader?: boolean;
   }
 
   function resolveTrusted(
@@ -3276,6 +3302,7 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
         runtimeOverride: request.runtime ?? runtime,
         isolation: request.isolation,
         title: request.title,
+        ...(unit.requireArtifactReader ? { requireArtifactReader: true } : {}),
       },
     };
   }
@@ -3399,7 +3426,9 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
       followUpQueue: [],
       lastError: reason,
       errorCode: mapTrustReasonToErrorCode(reason),
+      endpointIncarnation: nextEndpointIncarnation++,
       transportGeneration: 0,
+      activationGeneration: 0,
       // Not authoritative empty — trusted restore may hydrate real history.
       transcriptHydrated: false,
       finalizedMessageBytes: [],
@@ -3443,6 +3472,7 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
       isolation: resolved.isolation,
       agentScope: resolved.agentScope,
       registrationKind: 'restore',
+      ...(resolved.requireArtifactReader ? { requireArtifactReader: true } : {}),
     };
     if (ep.status === 'unavailable') {
       ep.status = 'detached';
@@ -3598,7 +3628,9 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
         activeTools: new Map(),
         steeringQueue: [],
         followUpQueue: [],
+        endpointIncarnation: nextEndpointIncarnation++,
         transportGeneration: 0,
+        activationGeneration: 0,
         transcriptHydrated: false,
         finalizedMessageBytes: [],
         finalizedMessagesBytes: 0,
@@ -3620,6 +3652,7 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
           isolation: trust.resolved.isolation,
           agentScope: trust.resolved.agentScope,
           registrationKind: 'restore',
+          ...(trust.resolved.requireArtifactReader ? { requireArtifactReader: true } : {}),
         },
         usage: {
           turns: 0,
@@ -4443,9 +4476,7 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
         runtime: spec.runtimeOverride ?? spec.agent.runtime,
       };
       // Interactive child receives the artifact reader when launchSpec marks a handoff.
-      const unitRequiresReader = !!(
-        ep.launchSpec as { requireArtifactReader?: boolean } | undefined
-      )?.requireArtifactReader;
+      const unitRequiresReader = !!ep.launchSpec?.requireArtifactReader;
       const runArtifactDir =
         ep.sessionFile && ep.sessionFile.trim() !== ''
           ? path.dirname(path.dirname(ep.sessionFile))
@@ -4762,6 +4793,11 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
       if (!ep.activation) {
         // Invalidate any deferred idle retention scheduled for the prior settle.
         bumpIdleRetentionEpoch(key);
+        // Monotonic activation generation: increment on every new activation.
+        // Never reset when an activation settles/clears so a continuation
+        // captured before artifact I/O is suppressed when a newer activation
+        // has started and settled during that I/O.
+        ep.activationGeneration += 1;
         ep.activation = {
           id: activationId,
           endpointKey: key,
@@ -5515,6 +5551,32 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
     detach,
     shutdown,
     isOnActiveBranch,
+    /** Read-only transport generation for relay epoch checks (runtime-only). */
+    getEndpointTransportGeneration: (key: string): number | undefined =>
+      endpoints.get(key)?.transportGeneration,
+    /**
+     * Read-only relay epoch (incarnation + transport + activation generation).
+     * Returns undefined when the endpoint no longer exists so the relay can
+     * suppress after artifact I/O even when the endpoint reopened/disappeared.
+     * Full epoch comparison prevents remove/recreate ABA.
+     */
+    getEndpointEpoch: (
+      key: string
+    ):
+      | {
+          endpointIncarnation: number;
+          transportGeneration: number;
+          activationGeneration: number;
+        }
+      | undefined => {
+      const ep = endpoints.get(key);
+      if (!ep) return undefined;
+      return {
+        endpointIncarnation: ep.endpointIncarnation,
+        transportGeneration: ep.transportGeneration,
+        activationGeneration: ep.activationGeneration,
+      };
+    },
     setHostLinkAppender,
     appendHostLink,
     /** Test helper */

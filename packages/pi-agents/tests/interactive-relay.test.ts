@@ -93,14 +93,41 @@ function makeFakeRegistry(visibleKeys: string[] = ['r:u']): {
   visible: Set<string>;
   operable: Set<string>;
   registry: InteractiveAgentRegistry;
+  /** Test control: bump the activation generation (simulates a new activation). */
+  bumpActivationGeneration: (key: string) => void;
+  /** Test control: bump the transport generation (simulates endpoint reopen). */
+  bumpTransportGeneration: (key: string) => void;
+  /** Test control: remove the endpoint (simulates disappearance). */
+  removeEndpoint: (key: string) => void;
+  /** Remove then recreate the endpoint with a fresh incarnation (ABA simulation). */
+  removeAndRecreate: (key: string) => void;
 } {
   const listeners = new Set<(e: InteractiveRegistryEvent) => void>();
   const visible = new Set(visibleKeys);
+  /** Track last emitted snapshot per key so get() returns activation info. */
+  const snapshots = new Map<string, InteractiveEndpointSnapshot>();
+  /** Live endpoint existence + generations for epoch checks. */
+  const endpoints = new Map<
+    string,
+    { transportGeneration: number; activationGeneration: number; endpointIncarnation: number }
+  >();
+  let nextIncarnation = 1;
+  for (const k of visibleKeys)
+    endpoints.set(k, {
+      transportGeneration: 1,
+      activationGeneration: 1,
+      endpointIncarnation: nextIncarnation++,
+    });
   const reg = {
     emit(event: InteractiveRegistryEvent) {
+      if (event.type === 'activation_settled') {
+        snapshots.set(event.key, event.snapshot);
+      }
       for (const fn of [...listeners]) fn(event);
     },
     get(key: string) {
+      const tracked = snapshots.get(key);
+      if (tracked) return tracked;
       // Operable snapshot may still be returned for off-branch running units.
       if (!visible.has(key) && !operable.has(key)) return undefined;
       return makeSnapshot({
@@ -111,6 +138,18 @@ function makeFakeRegistry(visibleKeys: string[] = ['r:u']): {
         unitId: 'u',
         agent: 'explore',
       });
+    },
+    getEndpointTransportGeneration(key: string) {
+      return endpoints.get(key)?.transportGeneration;
+    },
+    getEndpointEpoch(key: string) {
+      const ep = endpoints.get(key);
+      if (!ep) return undefined;
+      return {
+        endpointIncarnation: ep.endpointIncarnation,
+        transportGeneration: ep.transportGeneration,
+        activationGeneration: ep.activationGeneration,
+      };
     },
     /** True active-branch membership (not merely operable). */
     isOnActiveBranch(key: string) {
@@ -128,6 +167,28 @@ function makeFakeRegistry(visibleKeys: string[] = ['r:u']): {
     visible,
     operable,
     registry: reg as unknown as InteractiveAgentRegistry,
+    bumpActivationGeneration: (key: string) => {
+      const ep = endpoints.get(key);
+      if (ep) ep.activationGeneration += 1;
+    },
+    bumpTransportGeneration: (key: string) => {
+      const ep = endpoints.get(key);
+      if (ep) ep.transportGeneration += 1;
+    },
+    removeEndpoint: (key: string) => {
+      endpoints.delete(key);
+      snapshots.delete(key);
+    },
+    /** Remove then recreate the endpoint with a fresh incarnation. */
+    removeAndRecreate: (key: string) => {
+      endpoints.delete(key);
+      snapshots.delete(key);
+      endpoints.set(key, {
+        transportGeneration: 1,
+        activationGeneration: 1,
+        endpointIncarnation: nextIncarnation++,
+      });
+    },
   };
 }
 
@@ -639,6 +700,242 @@ describe('createInteractiveRelayCoordinator', () => {
 
     await relay.waitForIdle();
     expect(sent.length).toBe(0);
+    relay.dispose();
+  });
+});
+
+describe('createInteractiveRelayCoordinator monotonic epoch after artifact I/O', () => {
+  /**
+   * Fake runStore whose writeTextArtifact blocks on a gate the test releases,
+   * simulating a slow artifact spill so the epoch can change mid-I/O.
+   */
+  function makeGatedRunStore() {
+    let gateResolve: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      gateResolve = resolve;
+    });
+    const store = {
+      async writeTextArtifact(
+        _runId: string,
+        _payload: string,
+        _text: string
+      ): Promise<import('../src/run-types.ts').RunArtifactRefV1> {
+        await gate;
+        return {
+          kind: 'run-artifact',
+          version: 1,
+          runId: 'r',
+          payload: 'interactive-continuation',
+          relativePath: 'artifacts/sha256/aa/aaaaaaaa.json',
+          sha256: 'a'.repeat(64),
+          bytes: 1024,
+          mediaType: 'text/plain; charset=utf-8',
+        };
+      },
+    };
+    return {
+      store: store as unknown as import('../src/run-store.ts').RunStore,
+      release: () => gateResolve?.(),
+    };
+  }
+
+  function armInterruptedToolCall(registry: ReturnType<typeof makeFakeRegistry>) {
+    const tcSnap = snapshotWithActivation(
+      makeSnapshot({
+        key: 'r:u',
+        hostSessionId: 'host-1',
+        bindingId: 'b-1',
+        runId: 'r',
+        unitId: 'u',
+        agent: 'explore',
+        status: 'error',
+      }),
+      makeActivation('tool_call', { id: 'tc-epoch', terminalOverride: 'cancelled', settled: true })
+    );
+    registry.emit(settledEvent('r:u', 'tc-epoch', tcSnap));
+  }
+
+  function emitOversizedView(registry: ReturnType<typeof makeFakeRegistry>, id = 'v-epoch') {
+    // Oversized output forces a real spill await in buildContinuationMessageContent.
+    const big = 'z'.repeat(300 * 1024);
+    const viewSnap = snapshotWithActivation(
+      makeSnapshot({
+        key: 'r:u',
+        hostSessionId: 'host-1',
+        bindingId: 'b-1',
+        runId: 'r',
+        unitId: 'u',
+        agent: 'explore',
+        status: 'idle',
+        messages: [
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: big }],
+          } as never,
+        ],
+      }),
+      makeActivation('view', { id, baselineMessageCount: 0, settled: true })
+    );
+    registry.emit(settledEvent('r:u', id, viewSnap));
+  }
+
+  it('suppresses when a newer activation starts and remains active during spill I/O', async () => {
+    const registry = makeFakeRegistry();
+    const { pi, sent } = makeFakePi();
+    const { store, release } = makeGatedRunStore();
+    const suppressed: string[] = [];
+    const relay = createInteractiveRelayCoordinator({
+      registry: registry.registry,
+      pi,
+      getCtx: () => makeCtx('host-1'),
+      runStore: store,
+      onSuppressed: (reason) => suppressed.push(reason),
+    });
+    armInterruptedToolCall(registry);
+    emitOversizedView(registry);
+    // While spill I/O is blocked, a newer activation starts (generation bumps).
+    registry.bumpActivationGeneration('r:u');
+    release();
+    await relay.waitForIdle();
+    expect(sent.length).toBe(0);
+    expect(suppressed).toContain('epoch_changed_after_io');
+    relay.dispose();
+  });
+
+  it('suppresses when a newer activation starts then settles/clears during spill I/O', async () => {
+    const registry = makeFakeRegistry();
+    const { pi, sent } = makeFakePi();
+    const { store, release } = makeGatedRunStore();
+    const suppressed: string[] = [];
+    const relay = createInteractiveRelayCoordinator({
+      registry: registry.registry,
+      pi,
+      getCtx: () => makeCtx('host-1'),
+      runStore: store,
+      onSuppressed: (reason) => suppressed.push(reason),
+    });
+    armInterruptedToolCall(registry);
+    emitOversizedView(registry);
+    // Newer activation starts then settles; activationGeneration stays bumped.
+    registry.bumpActivationGeneration('r:u');
+    release();
+    await relay.waitForIdle();
+    expect(sent.length).toBe(0);
+    expect(suppressed).toContain('epoch_changed_after_io');
+    relay.dispose();
+  });
+
+  it('suppresses when the endpoint reopens (transport generation changes) during spill I/O', async () => {
+    const registry = makeFakeRegistry();
+    const { pi, sent } = makeFakePi();
+    const { store, release } = makeGatedRunStore();
+    const suppressed: string[] = [];
+    const relay = createInteractiveRelayCoordinator({
+      registry: registry.registry,
+      pi,
+      getCtx: () => makeCtx('host-1'),
+      runStore: store,
+      onSuppressed: (reason) => suppressed.push(reason),
+    });
+    armInterruptedToolCall(registry);
+    emitOversizedView(registry);
+    registry.bumpTransportGeneration('r:u');
+    release();
+    await relay.waitForIdle();
+    expect(sent.length).toBe(0);
+    expect(suppressed).toContain('epoch_changed_after_io');
+    relay.dispose();
+  });
+
+  it('suppresses when the endpoint disappears during spill I/O', async () => {
+    const registry = makeFakeRegistry();
+    const { pi, sent } = makeFakePi();
+    const { store, release } = makeGatedRunStore();
+    const suppressed: string[] = [];
+    const relay = createInteractiveRelayCoordinator({
+      registry: registry.registry,
+      pi,
+      getCtx: () => makeCtx('host-1'),
+      runStore: store,
+      onSuppressed: (reason) => suppressed.push(reason),
+    });
+    armInterruptedToolCall(registry);
+    emitOversizedView(registry);
+    registry.removeEndpoint('r:u');
+    release();
+    await relay.waitForIdle();
+    expect(sent.length).toBe(0);
+    expect(suppressed).toContain('epoch_changed_after_io');
+    relay.dispose();
+  });
+
+  it('sends once when the epoch is unchanged across spill I/O', async () => {
+    const registry = makeFakeRegistry();
+    const { pi, sent } = makeFakePi();
+    const { store, release } = makeGatedRunStore();
+    const relay = createInteractiveRelayCoordinator({
+      registry: registry.registry,
+      pi,
+      getCtx: () => makeCtx('host-1'),
+      runStore: store,
+    });
+    armInterruptedToolCall(registry);
+    emitOversizedView(registry);
+    release();
+    await relay.waitForIdle();
+    expect(sent.length).toBe(1);
+    expect(sent[0]!.details.activationId).toBe('v-epoch');
+    relay.dispose();
+  });
+
+  it('suppresses when endpoint is removed and recreated during spill I/O (ABA incarnation)', async () => {
+    const registry = makeFakeRegistry();
+    const { pi, sent } = makeFakePi();
+    const { store, release } = makeGatedRunStore();
+    const suppressed: string[] = [];
+    const relay = createInteractiveRelayCoordinator({
+      registry: registry.registry,
+      pi,
+      getCtx: () => makeCtx('host-1'),
+      runStore: store,
+      onSuppressed: (reason) => suppressed.push(reason),
+    });
+    armInterruptedToolCall(registry);
+    emitOversizedView(registry);
+    // Remove and recreate: transport/activation values cycle back to 1 but
+    // incarnation is fresh. Old continuation must be suppressed.
+    registry.removeAndRecreate('r:u');
+    release();
+    await relay.waitForIdle();
+    expect(sent.length).toBe(0);
+    expect(suppressed).toContain('epoch_changed_after_io');
+    relay.dispose();
+  });
+
+  it('suppresses when transport/activation reach same values but incarnation differs (ABA control)', async () => {
+    // Simulate the ABA window where transport + activation both reach the same
+    // numeric values as the captured relay epoch after a remove/recreate.
+    const registry = makeFakeRegistry();
+    const { pi, sent } = makeFakePi();
+    const { store, release } = makeGatedRunStore();
+    const suppressed: string[] = [];
+    const relay = createInteractiveRelayCoordinator({
+      registry: registry.registry,
+      pi,
+      getCtx: () => makeCtx('host-1'),
+      runStore: store,
+      onSuppressed: (reason) => suppressed.push(reason),
+    });
+    armInterruptedToolCall(registry);
+    emitOversizedView(registry);
+    // Remove endpoint so transportGeneration + activationGeneration reset to 1.
+    registry.removeAndRecreate('r:u');
+    // Bump activation to match the original epoch's value (1).
+    // Now incarnation alone differs — must suppress.
+    release();
+    await relay.waitForIdle();
+    expect(sent.length).toBe(0);
+    expect(suppressed).toContain('epoch_changed_after_io');
     relay.dispose();
   });
 });

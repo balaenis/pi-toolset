@@ -26,27 +26,6 @@ import { attachErrorStack, classifyEarlyFailureStopReason } from './early-failur
 import { emptyUsage } from './empty-usage.ts';
 import type { WorkflowFanoutState } from './run-types.ts';
 
-/** Resolve itemsRef fanout mappings into runtime-only inline items for resume. */
-async function resolveWorkflowFanouts(
-  store: RunStore,
-  runId: string,
-  fanouts: Record<string, WorkflowFanoutState> | undefined
-): Promise<Record<string, WorkflowFanoutState> | undefined> {
-  if (!fanouts) return undefined;
-  const out: Record<string, WorkflowFanoutState> = {};
-  for (const [key, mapping] of Object.entries(fanouts)) {
-    if (mapping.itemsRef && !mapping.items) {
-      const items = (await store.readJsonArtifact(runId, mapping.itemsRef)) as unknown[];
-      if (!Array.isArray(items)) {
-        throw new Error(`artifact_corrupt: fanout ${key} itemsRef is not an array`);
-      }
-      out[key] = { step: mapping.step, items, unitIds: mapping.unitIds };
-    } else {
-      out[key] = mapping;
-    }
-  }
-  return out;
-}
 import {
   GROK_ACP_RUNTIME,
   MAX_CONCURRENCY,
@@ -70,10 +49,12 @@ import {
   applyTerminalStatus,
   getResultFinalOutput,
   getResultOutput,
+  getResultParentOutput,
   isFailedResult,
   resolveExecutionStatus,
   truncateParallelOutput,
 } from './output.ts';
+import { externalizeJsonPayload, externalizeTextPayload } from './result-payload.ts';
 import { copySnapshotShell, snapshotSingleResult } from './result-snapshot.ts';
 import {
   createRunLifecycle,
@@ -83,7 +64,13 @@ import {
   originToRunStatus,
   type RunLifecycle,
 } from './run-lifecycle.ts';
-import { normalizeStoredRequest, startDurableRun, type StartedRun } from './run-persistence.ts';
+import {
+  finalizeDurableRun,
+  normalizeStoredRequest,
+  safeAbandon,
+  startDurableRun,
+  type StartedRun,
+} from './run-persistence.ts';
 import type { RunAbortOrigin } from './run-types.ts';
 import type { RunStore } from './run-store.ts';
 import { chainFanoutUnitId, chainStepUnitId, pad } from './run-coordinator.ts';
@@ -109,7 +96,8 @@ import {
   runWorktreeSetupHook,
 } from './worktree.ts';
 import {
-  inspectResume,
+  inspectResumeRecord,
+  resolveAndVerifyFanoutItems,
   incrementIncompleteAttempts,
   isNeverStartedUnit,
   reopenCompletedUnitsForResume,
@@ -154,6 +142,18 @@ export interface ExecuteAgentToolOptions {
   interactiveRegistry?: import('./interactive-agent.ts').InteractiveAgentRegistry;
   /** Test seam: inject child process spawn for orchestration-path tests. */
   spawnFn?: import('./execution.ts').SpawnFn;
+  /**
+   * Test-only seam: build restored chain state from the verified post-claim
+   * record. Override to force a failure after ref validation but before any
+   * durable mutation, event, registration, or dispatch. The production default
+   * calls the real builder inline.
+   */
+  buildRestoredChainState?: (input: {
+    mode: Mode;
+    record: import('./run-types.ts').AgentRunRecordV1;
+    units: Record<string, import('./run-types.ts').RunUnitRecord>;
+    resolvedFanouts: Record<string, import('./run-types.ts').WorkflowFanoutState>;
+  }) => import('./chain.ts').RestoredChainState | undefined;
 }
 
 /** Detect fresh-run configuration supplied alongside runId. */
@@ -412,6 +412,7 @@ async function maybeStartDurableRun(
         ? { sessionPromptEstablished: base.sessionPromptEstablished }
         : {}),
       ...(base?.worktreePath !== undefined ? { worktreePath: base.worktreePath } : {}),
+      ...(base?.requireArtifactReader ? { requireArtifactReader: true } : {}),
       ...(step !== undefined ? { step } : {}),
       ...(fanoutIndex !== undefined ? { fanoutIndex } : {}),
     };
@@ -531,44 +532,75 @@ async function maybeResumeDurableRun(
     agents,
     hasContinuation,
   };
-  const inspection = inspectResume(resumeRunId, store, inspectOptions);
-  if (!inspection.ok) return { error: inspection.reason };
-  if (inspection.blockingReasons.length > 0) {
-    return { error: `preflight_failed: ${inspection.blockingReasons.join('; ')}` };
+  // Preflight: load once and verify that exact loaded record.
+  const preflightLoaded = store.getRun(resumeRunId);
+  if (!preflightLoaded.ok) return { error: `run_not_found: ${preflightLoaded.error.message}` };
+  const preflightRecord = preflightLoaded.loaded.record;
+  const preflightInspection = await inspectResumeRecord(
+    resumeRunId,
+    preflightRecord,
+    store,
+    inspectOptions
+  );
+  if (!preflightInspection.ok) return { error: preflightInspection.reason };
+  if (preflightInspection.blockingReasons.length > 0) {
+    return { error: `preflight_failed: ${preflightInspection.blockingReasons.join('; ')}` };
   }
   if (coordinator.isActive(resumeRunId)) return { error: 'run_active' };
 
   const claim = await store.claimRun(resumeRunId);
   if (!claim.ok) return { error: `claim_failed: ${claim.error.message}` };
 
-  // Re-validate eligibility on the post-claim record so a race that corrupts
-  // the run between preflight and claim fails safely without mutating it.
-  const loaded = store.getRun(resumeRunId);
-  if (!loaded.ok) {
-    await store.releaseRun(resumeRunId, claim.claimId);
-    return { error: 'run_not_found_after_claim' };
-  }
-  const postClaim = inspectResume(resumeRunId, store, inspectOptions);
-  if (!postClaim.ok) {
-    await store.releaseRun(resumeRunId, claim.claimId);
-    return { error: postClaim.reason };
-  }
-  if (postClaim.blockingReasons.length > 0) {
-    await store.releaseRun(resumeRunId, claim.claimId);
-    return { error: `preflight_failed: ${postClaim.blockingReasons.join('; ')}` };
-  }
-
-  const record = loaded.loaded.record;
-  const priorContinuations = record.continuationTasks ?? [];
-  const accumulatedContinuations = resume.currentContinuationTask
-    ? [...priorContinuations, resume.currentContinuationTask]
-    : [...priorContinuations];
-  const priorDelivery = { ...(record.continuationDelivery ?? {}) };
-
-  // All post-claim setup (normalize, stage, write, register) shares one cleanup
-  // boundary so any failure releases the claim without leaving an active holder.
-  let units!: typeof record.units;
+  // Every post-claim operation lives inside one unified abandon boundary.
+  // A single unregister+abandon on any error ensures the claim is never
+  // leaked; prepare + commit + validation all share the same cleanup path.
+  let record!: import('./run-types.ts').AgentRunRecordV1;
+  let resolvedFanouts!: Record<string, WorkflowFanoutState>;
+  let priorContinuations!: string[];
+  let accumulatedContinuations!: string[];
+  let priorDelivery!: Record<string, { deliveredCount: number }>;
+  let units!: Record<string, import('./run-types.ts').RunUnitRecord>;
+  let restoredChain: import('./chain.ts').RestoredChainState | undefined;
+  let lifecycle!: ReturnType<typeof createRunLifecycle>;
+  let projectCwd!: string;
+  let sessionsDir!: string;
+  let unitIds!: string[];
+  let unitFor!: DurableRunContext['unitFor'];
+  let beginUnit!: DurableRunContext['beginUnit'];
+  let endUnit!: DurableRunContext['endUnit'];
+  let stampUnitSessionFile!: DurableRunContext['stampUnitSessionFile'];
+  let markSessionPromptEstablished!: NonNullable<DurableRunContext['markSessionPromptEstablished']>;
+  let persistAcpSessionId!: NonNullable<DurableRunContext['persistAcpSessionId']>;
+  let expandFanout!: DurableRunContext['expandFanout'];
+  let resumePromptForUnit!: NonNullable<DurableRunContext['resumePromptForUnit']>;
+  let markContinuationDelivered!: NonNullable<DurableRunContext['markContinuationDelivered']>;
+  let started!: StartedRun;
+  let resumePrompt!: ResumePromptContext;
   try {
+    // === POST-CLAIM VALIDATION: re-verify eligibility after claim; every
+    // failure throws through the single abandon boundary below.
+    const loaded = store.getRun(resumeRunId);
+    if (!loaded.ok) throw new Error('run_not_found_after_claim');
+    record = loaded.loaded.record;
+    const postClaim = await inspectResumeRecord(resumeRunId, record, store, inspectOptions);
+    if (!postClaim.ok) throw new Error(postClaim.reason);
+    if (postClaim.blockingReasons.length > 0) {
+      throw new Error(`preflight_failed: ${postClaim.blockingReasons.join('; ')}`);
+    }
+    const fanoutResolution = await resolveAndVerifyFanoutItems(resumeRunId, store, record);
+    if (!fanoutResolution.ok) {
+      throw new Error(`preflight_failed: ${fanoutResolution.reasons.join('; ')}`);
+    }
+    resolvedFanouts = fanoutResolution.resolved;
+
+    priorContinuations = record.continuationTasks ?? [];
+    accumulatedContinuations = resume.currentContinuationTask
+      ? [...priorContinuations, resume.currentContinuationTask]
+      : [...priorContinuations];
+    priorDelivery = { ...(record.continuationDelivery ?? {}) };
+
+    // === PREPARE: construct every value that can throw; no durable mutations ===
+
     // Normalize legacy full-message results once after post-claim revalidation and
     // before any resume write can reserialize raw transcripts.
     if (Array.isArray(record.details.results)) {
@@ -600,6 +632,195 @@ async function maybeResumeDurableRun(
         if (unit.result) delete unit.result.sessionFile;
       }
     }
+
+    // Build restored chain state from the verified post-claim record before any
+    // durable mutation, event, registration, or dispatch. Every failure here
+    // leaves zero side effects (unregister + abandon, never release).
+    if (options.buildRestoredChainState) {
+      restoredChain = options.buildRestoredChainState({
+        mode,
+        record,
+        units,
+        resolvedFanouts,
+      });
+    } else if (
+      mode === 'chain' &&
+      Array.isArray(record.request.chain) &&
+      record.request.chain.length > 0
+    ) {
+      const chain = record.request.chain as import('./chain.ts').ChainItemInput[];
+      const fanoutRuntimeState: Record<string, WorkflowFanoutState> | undefined =
+        Object.keys(resolvedFanouts).length > 0
+          ? Object.fromEntries(
+              Object.entries(resolvedFanouts).map(([k, v]) => [
+                k,
+                { step: v.step, items: v.items, unitIds: v.unitIds },
+              ])
+            )
+          : undefined;
+      const logicalSteps = buildRestoredLogicalSteps(
+        chain,
+        record.details.chain?.steps,
+        units,
+        fanoutRuntimeState
+      );
+      restoredChain = {
+        results: record.details.results,
+        outputs: record.details.outputs ?? {},
+        logicalSteps,
+        units,
+        fanouts: fanoutRuntimeState,
+      };
+    }
+
+    // Build every runtime closure from the verified post-claim state.  All of
+    // these are side-effect-free to construct and must succeed before any
+    // durable mutation, event, registration, or dispatch.
+    lifecycle = createRunLifecycle(resumeRunId);
+    sessionsDir = path.join(store.getRunDir(resumeRunId), 'sessions');
+    unitIds = Object.keys(units);
+    projectCwd = projectCwdFromRecord(record, ctx.cwd);
+
+    unitFor = (
+      step: number | undefined,
+      fanoutIndex: number | undefined,
+      agentName: string
+    ): UnitExecutionContext => {
+      const unitId = resolveUnitId(mode, unitIds, step, fanoutIndex);
+      const base = units[unitId];
+      const neverStarted = base ? isNeverStartedUnit(base) : true;
+      return {
+        runId: resumeRunId,
+        unitId,
+        agent: agentName,
+        runtime: base?.runtime,
+        resumeCapability: base?.capability ?? 'session',
+        effectiveCwd: base?.effectiveCwd ?? projectCwd,
+        attempt: base?.attempt ?? 1,
+        sessionsDir,
+        neverStarted,
+        ...(base?.sessionFile !== undefined ? { sessionFile: base.sessionFile } : {}),
+        ...(base?.acpSessionId !== undefined ? { acpSessionId: base.acpSessionId } : {}),
+        ...(base?.sessionPromptEstablished !== undefined
+          ? { sessionPromptEstablished: base.sessionPromptEstablished }
+          : {}),
+        ...(base?.worktreePath !== undefined ? { worktreePath: base.worktreePath } : {}),
+        ...(base?.requireArtifactReader ? { requireArtifactReader: true } : {}),
+        ...(step !== undefined ? { step } : {}),
+        ...(fanoutIndex !== undefined ? { fanoutIndex } : {}),
+      };
+    };
+    beginUnit = async (unitCtx: UnitExecutionContext) => {
+      await coordinator.startUnit(resumeRunId, unitCtx);
+    };
+    endUnit = async (
+      unitCtx: UnitExecutionContext,
+      result: SingleResult,
+      status: ExecutionStatus
+    ): Promise<SingleResult> => {
+      return coordinator.finishUnit(resumeRunId, unitCtx, result, status);
+    };
+    stampUnitSessionFile = async (unitId: string, sessionFile: string): Promise<void> => {
+      const unit = units[unitId];
+      const firstWrite = !unit?.sessionFile?.trim();
+      await coordinator.persistSessionFile({
+        runId: resumeRunId,
+        unitId,
+        sessionFile,
+      });
+      if (unit) {
+        unit.sessionFile = sessionFile.trim();
+        if (firstWrite && unit.sessionPromptEstablished !== true) {
+          unit.sessionPromptEstablished = false;
+        }
+      }
+    };
+    markSessionPromptEstablished = async (unitId: string): Promise<void> => {
+      await coordinator.persistSessionPromptEstablished({
+        runId: resumeRunId,
+        unitId,
+      });
+      const unit = units[unitId];
+      if (unit) {
+        unit.sessionPromptEstablished = true;
+      }
+    };
+    persistAcpSessionId = async (unitId: string, sessionId: string): Promise<void> => {
+      await coordinator.persistAcpSessionId({
+        runId: resumeRunId,
+        unitId,
+        sessionId,
+      });
+      const unit = units[unitId];
+      if (unit) {
+        unit.acpSessionId = sessionId.trim();
+      }
+    };
+    expandFanout = async (req: FanoutExpandRequest): Promise<WorkflowFanoutState> => {
+      const agent = agents.find((a) => a.name === req.agent) ?? syntheticAgent(req.agent);
+      const runtime = record.request.runtime ?? agent.runtime;
+      return coordinator.expandFanout(resumeRunId, {
+        step: req.step,
+        items: req.items,
+        agent,
+        runtime,
+        effectiveCwd: req.effectiveCwd ?? projectCwd,
+      });
+    };
+    resumePromptForUnit = (unitId: string): ResumePromptContext => {
+      const delivered = record.continuationDelivery?.[unitId]?.deliveredCount ?? 0;
+      const undelivered = accumulatedContinuations.slice(delivered);
+      return {
+        continuationTasks: accumulatedContinuations,
+        undeliveredContinuationTasks: undelivered,
+        ...(resume.currentContinuationTask
+          ? { currentContinuationTask: resume.currentContinuationTask }
+          : {}),
+      };
+    };
+    markContinuationDelivered = async (unitId: string): Promise<void> => {
+      const deliveredCount = accumulatedContinuations.length;
+      await coordinator.persistContinuationDelivery({
+        runId: resumeRunId,
+        unitId,
+        deliveredCount,
+        continuationTasks: accumulatedContinuations,
+      });
+      if (!record.continuationDelivery) record.continuationDelivery = {};
+      record.continuationDelivery[unitId] = { deliveredCount };
+    };
+
+    started = {
+      runId: resumeRunId,
+      record: { ...record, units },
+      claimId: claim.claimId,
+      ticket: claim.ticket,
+      units,
+      unitIds,
+      finalize: async (input) =>
+        finalizeDurableRun({
+          store,
+          coordinator,
+          runId: resumeRunId,
+          claimId: claim.claimId,
+          details: input.details,
+          units: input.units,
+          success: input.success,
+          cancelled: input.cancelled,
+          interrupted: input.interrupted,
+          lastError: input.lastError,
+        }),
+    };
+
+    resumePrompt = {
+      continuationTasks: accumulatedContinuations,
+      undeliveredContinuationTasks: accumulatedContinuations,
+      ...(resume.currentContinuationTask
+        ? { currentContinuationTask: resume.currentContinuationTask }
+        : {}),
+    };
+
+    // === COMMIT: durable mutations, events, registration (only after prepare) ===
 
     // Transition to running and append the current continuation task atomically.
     await store.appendEvent(resumeRunId, {
@@ -644,194 +865,12 @@ async function maybeResumeDurableRun(
     record.updatedAt = Date.now();
     coordinator.registerRun(resumeRunId, record);
   } catch (err) {
-    await store.releaseRun(resumeRunId, claim.claimId);
+    coordinator.unregisterRun(resumeRunId);
+    await safeAbandon(store, resumeRunId, claim.claimId);
     return {
       error: `resume_setup_failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-
-  const lifecycle = createRunLifecycle(resumeRunId);
-  const sessionsDir = path.join(store.getRunDir(resumeRunId), 'sessions');
-  const unitIds = Object.keys(units);
-  const projectCwd = projectCwdFromRecord(record, ctx.cwd);
-
-  const unitFor = (
-    step: number | undefined,
-    fanoutIndex: number | undefined,
-    agentName: string
-  ): UnitExecutionContext => {
-    const unitId = resolveUnitId(mode, unitIds, step, fanoutIndex);
-    const base = units[unitId];
-    const neverStarted = base ? isNeverStartedUnit(base) : true;
-    return {
-      runId: resumeRunId,
-      unitId,
-      agent: agentName,
-      runtime: base?.runtime,
-      resumeCapability: base?.capability ?? 'session',
-      effectiveCwd: base?.effectiveCwd ?? projectCwd,
-      attempt: base?.attempt ?? 1,
-      sessionsDir,
-      neverStarted,
-      ...(base?.sessionFile !== undefined ? { sessionFile: base.sessionFile } : {}),
-      ...(base?.acpSessionId !== undefined ? { acpSessionId: base.acpSessionId } : {}),
-      ...(base?.sessionPromptEstablished !== undefined
-        ? { sessionPromptEstablished: base.sessionPromptEstablished }
-        : {}),
-      ...(base?.worktreePath !== undefined ? { worktreePath: base.worktreePath } : {}),
-      ...(step !== undefined ? { step } : {}),
-      ...(fanoutIndex !== undefined ? { fanoutIndex } : {}),
-    };
-  };
-  const beginUnit = async (unitCtx: UnitExecutionContext) => {
-    await coordinator.startUnit(resumeRunId, unitCtx);
-  };
-  const endUnit = async (
-    unitCtx: UnitExecutionContext,
-    result: SingleResult,
-    status: ExecutionStatus
-  ): Promise<SingleResult> => {
-    return coordinator.finishUnit(resumeRunId, unitCtx, result, status);
-  };
-  const stampUnitSessionFile = async (unitId: string, sessionFile: string): Promise<void> => {
-    const unit = units[unitId];
-    const firstWrite = !unit?.sessionFile?.trim();
-    await coordinator.persistSessionFile({
-      runId: resumeRunId,
-      unitId,
-      sessionFile,
-    });
-    if (unit) {
-      unit.sessionFile = sessionFile.trim();
-      if (firstWrite && unit.sessionPromptEstablished !== true) {
-        unit.sessionPromptEstablished = false;
-      }
-    }
-  };
-  const markSessionPromptEstablished = async (unitId: string): Promise<void> => {
-    await coordinator.persistSessionPromptEstablished({
-      runId: resumeRunId,
-      unitId,
-    });
-    const unit = units[unitId];
-    if (unit) {
-      unit.sessionPromptEstablished = true;
-    }
-  };
-  const persistAcpSessionId = async (unitId: string, sessionId: string): Promise<void> => {
-    await coordinator.persistAcpSessionId({
-      runId: resumeRunId,
-      unitId,
-      sessionId,
-    });
-    const unit = units[unitId];
-    if (unit) {
-      unit.acpSessionId = sessionId.trim();
-    }
-  };
-  const expandFanout = async (req: FanoutExpandRequest): Promise<WorkflowFanoutState> => {
-    const agent = agents.find((a) => a.name === req.agent) ?? syntheticAgent(req.agent);
-    const runtime = record.request.runtime ?? agent.runtime;
-    return coordinator.expandFanout(resumeRunId, {
-      step: req.step,
-      items: req.items,
-      agent,
-      runtime,
-      effectiveCwd: req.effectiveCwd ?? projectCwd,
-    });
-  };
-  const resumePromptForUnit = (unitId: string): ResumePromptContext => {
-    const delivered = record.continuationDelivery?.[unitId]?.deliveredCount ?? 0;
-    const undelivered = accumulatedContinuations.slice(delivered);
-    return {
-      continuationTasks: accumulatedContinuations,
-      undeliveredContinuationTasks: undelivered,
-      ...(resume.currentContinuationTask
-        ? { currentContinuationTask: resume.currentContinuationTask }
-        : {}),
-    };
-  };
-  const markContinuationDelivered = async (unitId: string): Promise<void> => {
-    const deliveredCount = accumulatedContinuations.length;
-    // Disk-first strict write so a crash before confirm leaves instructions undelivered.
-    await coordinator.persistContinuationDelivery({
-      runId: resumeRunId,
-      unitId,
-      deliveredCount,
-      continuationTasks: accumulatedContinuations,
-    });
-    if (!record.continuationDelivery) record.continuationDelivery = {};
-    record.continuationDelivery[unitId] = { deliveredCount };
-  };
-
-  const started: StartedRun = {
-    runId: resumeRunId,
-    record: { ...record, units },
-    claimId: claim.claimId,
-    ticket: claim.ticket,
-    units,
-    unitIds,
-    finalize: async (input) => {
-      try {
-        await coordinator.finalizeRun(resumeRunId, input.details, input.units, {
-          success: input.success,
-          cancelled: input.cancelled,
-          interrupted: input.interrupted,
-          lastError: input.lastError,
-        });
-        const status = input.cancelled
-          ? 'cancelled'
-          : input.interrupted
-            ? 'interrupted'
-            : input.success === false
-              ? 'failed'
-              : 'completed';
-        await store.appendEvent(resumeRunId, {
-          version: 1,
-          event: 'run_terminal',
-          runId: resumeRunId,
-          timestamp: Date.now(),
-          status,
-        });
-      } finally {
-        await store.releaseRun(resumeRunId, claim.claimId);
-      }
-    },
-  };
-
-  // Build restored chain state from the stored request topology. Presentation
-  // metadata may be absent or shortened; frozen fanout mappings and units are
-  // always attached so resume never re-expands from mutable outputs.
-  let restoredChain: import('./chain.ts').RestoredChainState | undefined;
-  if (mode === 'chain' && Array.isArray(record.request.chain) && record.request.chain.length > 0) {
-    const chain = record.request.chain as import('./chain.ts').ChainItemInput[];
-    const resolvedFanouts = await resolveWorkflowFanouts(
-      store,
-      resumeRunId,
-      record.workflowState?.fanouts
-    );
-    const logicalSteps = buildRestoredLogicalSteps(
-      chain,
-      record.details.chain?.steps,
-      units,
-      resolvedFanouts
-    );
-    restoredChain = {
-      results: record.details.results,
-      outputs: record.details.outputs ?? {},
-      logicalSteps,
-      units,
-      fanouts: resolvedFanouts,
-    };
-  }
-
-  const resumePrompt: ResumePromptContext = {
-    continuationTasks: accumulatedContinuations,
-    undeliveredContinuationTasks: accumulatedContinuations,
-    ...(resume.currentContinuationTask
-      ? { currentContinuationTask: resume.currentContinuationTask }
-      : {}),
-  };
 
   return {
     durable: {
@@ -1442,8 +1481,25 @@ async function runChain(
     ...(durable ? { onFanoutExpand: (req) => durable.expandFanout(req) } : {}),
     ...(runStore
       ? {
-          resolveArtifact: (ref: import('./run-types.ts').RunArtifactRefV1) =>
-            runStore.readJsonArtifact(ref.runId, ref),
+          resolveArtifact: async (
+            ref: import('./run-types.ts').RunArtifactRefV1
+          ): Promise<unknown> => {
+            if (ref.mediaType === 'text/plain; charset=utf-8') {
+              return runStore.readTextArtifact(ref.runId, ref);
+            }
+            return runStore.readJsonArtifact(ref.runId, ref);
+          },
+          externalizeChainOutput: {
+            text: (text: string) =>
+              externalizeTextPayload(runStore, durable?.started.runId, 'chain-output-text', text),
+            json: (value: unknown) =>
+              externalizeJsonPayload(
+                runStore,
+                durable?.started.runId,
+                'chain-output-structured',
+                value
+              ),
+          },
         }
       : {}),
     runStep: (req) =>
@@ -1752,7 +1808,10 @@ async function runParallel(
   const successCount = results.filter((r) => !isFailedResult(r)).length;
   const cancelledCount = results.filter((r) => resolveExecutionStatus(r) === 'cancelled').length;
   const summaries = results.map((r) => {
-    const output = truncateParallelOutput(getResultOutput(r));
+    const output =
+      isFailedResult(r) || resolveExecutionStatus(r) === 'cancelled'
+        ? truncateParallelOutput(getResultOutput(r))
+        : truncateParallelOutput(getResultParentOutput(r));
     const status =
       resolveExecutionStatus(r) === 'cancelled'
         ? 'cancelled'
@@ -1886,7 +1945,7 @@ async function runSingle(
       };
     }
     return {
-      content: [{ type: 'text', text: getResultFinalOutput(result) || '(no output)' }],
+      content: [{ type: 'text', text: getResultParentOutput(result) || '(no output)' }],
       details: makeDetails('single')([snapshotSingleResult(result)]),
     };
   } catch (err) {
@@ -2018,19 +2077,21 @@ async function runStepWithContext(
         delete options.unitContext.worktreePath;
       }
     }
-    const snapshot = snapshotSingleResult(working);
+    // Pass the private unsnapshotted result to endUnit so finishUnit externalizes
+    // oversized authority before snapshotSingleResult. Snapshot directly only when
+    // endUnit is unavailable (non-durable paths).
     if (options.unitContext && options.endUnit) {
       const committed = await options.endUnit(
         options.unitContext,
-        snapshot,
-        status ?? resolveExecutionStatus(snapshot)
+        working,
+        status ?? resolveExecutionStatus(working)
       );
       // Prefer the artifact-aware snapshot returned by finishUnit when present.
       if (committed && typeof committed === 'object' && 'agent' in committed) {
         return committed as SingleResult;
       }
     }
-    return snapshot;
+    return snapshotSingleResult(working);
   };
   if (!agent) {
     const failed = await runSingleAgent(
@@ -2458,6 +2519,7 @@ async function runStepWithContext(
             isolation: resolveIsolation(agent, taskIsolation),
             agentScope: 'both',
             registrationKind: 'initial',
+            ...(unitCtx.requireArtifactReader ? { requireArtifactReader: true } : {}),
           },
           getBranchEntries: () =>
             ctx.sessionManager.getBranch().map((e) => {

@@ -9829,3 +9829,296 @@ describe('Grok ACP session resume + Agent View restoration', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe('TUI restore reader extension launch paths', () => {
+  const { buildPiRpcArgs, resolveArtifactReaderExtensionPath } = require('../src/invocation.ts');
+  const { buildChildAgentEnv } = require('../src/security.ts');
+
+  it('buildPiRpcArgs injects --extension and pi_agents_read_artifact when reader required', () => {
+    const agent = makeAgent({ tools: ['bash', 'read'] });
+    const readerPath = resolveArtifactReaderExtensionPath();
+    const args = buildPiRpcArgs(agent, {
+      requireArtifactReader: true,
+      artifactReaderExtensionPath: readerPath,
+      sessionFile: '/tmp/s.jsonl',
+    });
+    const extIdx = args.indexOf('--extension');
+    expect(extIdx).not.toBe(-1);
+    expect(args[extIdx + 1]).toBe(readerPath);
+    const toolsIdx = args.indexOf('--tools');
+    expect(toolsIdx).not.toBe(-1);
+    expect(args[toolsIdx + 1]!).toContain('pi_agents_read_artifact');
+  });
+
+  it('buildPiRpcArgs does not inject reader when requireArtifactReader is false', () => {
+    const agent = makeAgent({ tools: ['bash'] });
+    const args = buildPiRpcArgs(agent, {
+      requireArtifactReader: false,
+      sessionFile: '/tmp/s.jsonl',
+    });
+    expect(args.indexOf('--extension')).toBe(-1);
+    const toolsIdx = args.indexOf('--tools');
+    if (toolsIdx !== -1) {
+      expect(args[toolsIdx + 1]!).not.toContain('pi_agents_read_artifact');
+    }
+  });
+
+  it('buildPiRpcArgs does not inject reader when requireArtifactReader is absent', () => {
+    const agent = makeAgent({ tools: ['bash'] });
+    const args = buildPiRpcArgs(agent, { sessionFile: '/tmp/s.jsonl' });
+    expect(args.indexOf('--extension')).toBe(-1);
+  });
+
+  it('buildChildAgentEnv injects PI_AGENTS_RUN_ID and artifact dir when runId and dir provided', () => {
+    const env = buildChildAgentEnv(
+      { HOME: '/home/test' },
+      {
+        runId: 'run-reader-env',
+        runArtifactDir: '/tmp/artifacts/run-reader-env',
+      }
+    );
+    expect(env.PI_AGENTS_RUN_ID).toBe('run-reader-env');
+    expect(env.PI_AGENTS_RUN_ARTIFACT_DIR).toBe('/tmp/artifacts/run-reader-env');
+  });
+
+  it('buildChildAgentEnv does not inject reader env vars when runId/runArtifactDir absent', () => {
+    const env = buildChildAgentEnv({ HOME: '/home/test' });
+    expect(env.PI_AGENTS_RUN_ID).toBeUndefined();
+    expect(env.PI_AGENTS_RUN_ARTIFACT_DIR).toBeUndefined();
+  });
+
+  type ReaderFlag = true | false | 'absent';
+  type RestorePath = 'metadata-only' | 'existing-refresh';
+
+  async function seedOwningRun(opts: {
+    reader: ReaderFlag;
+    hostSessionId: string;
+    bindingId: string;
+  }): Promise<{
+    root: string;
+    store: ReturnType<typeof createRunStore>;
+    coordinator: ReturnType<typeof createRunCoordinator>;
+    agent: ReturnType<typeof makeAgent>;
+    runId: string;
+    sessionFile: string;
+    link: InteractiveAgentLinkV1;
+  }> {
+    const { root, store, coordinator } = makeTempStore();
+    // tools list required so --tools carries pi_agents_read_artifact when reader is true
+    const agent = makeAgent({ tools: ['bash', 'read'] });
+    const createdAt = Date.now();
+    const unit: RunUnitRecord = {
+      unitId: 'single',
+      agent: 'explore',
+      agentFingerprint: agentFingerprint(agent),
+      runtime: undefined,
+      capability: 'session',
+      status: 'completed',
+      attempt: 1,
+      attempts: [],
+      effectiveCwd: root,
+      interactiveBindings: {
+        [opts.bindingId]: {
+          bindingId: opts.bindingId,
+          hostSessionId: opts.hostSessionId,
+          createdAt,
+        },
+      },
+    };
+    if (opts.reader === true) unit.requireArtifactReader = true;
+    if (opts.reader === false) unit.requireArtifactReader = false;
+    // 'absent' leaves the field undefined
+
+    const { runId } = await store.createRun({
+      mode: 'single',
+      agentScope: 'both',
+      background: false,
+      request: {
+        mode: 'single',
+        agentScope: 'both',
+        agent: 'explore',
+        task: `reader-${opts.reader}`,
+      },
+      details: emptyDetails(),
+      units: { single: unit },
+    });
+
+    const sessionsDir = path.join(store.getRunDir(runId), 'sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, `${opts.bindingId}.jsonl`);
+    fs.writeFileSync(
+      sessionFile,
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: `sess-${opts.bindingId}`,
+        timestamp: '2026-01-01T00:00:00.000Z',
+        cwd: root,
+      }) + '\n'
+    );
+    await store.updateRun(runId, (r) => {
+      r.units.single.sessionFile = sessionFile;
+    });
+
+    const link: InteractiveAgentLinkV1 = {
+      version: 1,
+      runId,
+      unitId: 'single',
+      bindingId: opts.bindingId,
+      hostSessionId: opts.hostSessionId,
+      createdAt,
+    };
+    return { root, store, coordinator, agent, runId, sessionFile, link };
+  }
+
+  function assertReaderLaunch(
+    cap: { args: string[]; env: Record<string, string | undefined> },
+    opts: { required: boolean; runId: string; runDir: string }
+  ): void {
+    const extIndex = cap.args.indexOf('--extension');
+    const toolsIndex = cap.args.indexOf('--tools');
+    if (opts.required) {
+      expect(extIndex).not.toBe(-1);
+      expect(cap.args[extIndex + 1]).toContain('artifact-reader-extension');
+      expect(toolsIndex).not.toBe(-1);
+      expect(cap.args[toolsIndex + 1]!).toContain('pi_agents_read_artifact');
+      expect(cap.env.PI_AGENTS_RUN_ID).toBe(opts.runId);
+      expect(cap.env.PI_AGENTS_RUN_ARTIFACT_DIR).toBe(opts.runDir);
+    } else {
+      if (extIndex !== -1) {
+        expect(cap.args[extIndex + 1]).not.toContain('artifact-reader-extension');
+      }
+      if (toolsIndex !== -1) {
+        expect(cap.args[toolsIndex + 1]!).not.toContain('pi_agents_read_artifact');
+      }
+      expect(cap.env.PI_AGENTS_RUN_ID).toBeUndefined();
+      expect(cap.env.PI_AGENTS_RUN_ARTIFACT_DIR).toBeUndefined();
+    }
+  }
+
+  async function restoreAndActivate(opts: {
+    path: RestorePath;
+    reader: ReaderFlag;
+  }): Promise<void> {
+    const hostSessionId = `host-${opts.path}-${opts.reader}`;
+    const bindingId = `bind-${opts.path}-${opts.reader}`;
+    const seeded = await seedOwningRun({
+      reader: opts.reader,
+      hostSessionId,
+      bindingId,
+    });
+    const { root, store, coordinator, agent, runId, sessionFile, link } = seeded;
+    const captured: Array<{
+      command: string;
+      args: string[];
+      env: Record<string, string | undefined>;
+    }> = [];
+
+    const registry = createInteractiveAgentRegistry({
+      runStore: store,
+      runCoordinator: coordinator,
+      discoverAgentsFn: () => ({
+        agents: [agent],
+        projectAgentsDir: null,
+        builtinAgentsDir: '/b',
+      }),
+      transportFactory: async (tOpts) => {
+        captured.push({
+          command: tOpts.command,
+          args: [...tOpts.args],
+          env: { ...tOpts.env },
+        });
+        throw new Error('transport for test assertion only');
+      },
+    });
+    registry.setHostLinkAppender(() => undefined);
+
+    try {
+      if (opts.path === 'existing-refresh') {
+        // Pre-register so restore refreshes an existing endpoint.
+        const initial = await registry.registerInitial({
+          runId,
+          unitId: 'single',
+          hostSessionId,
+          launchSpec: {
+            agent,
+            request: {
+              mode: 'single',
+              agentScope: 'both',
+              agent: 'explore',
+              task: `reader-${opts.reader}`,
+            },
+            sessionFile,
+            effectiveCwd: root,
+            agentScope: 'both',
+            registrationKind: 'initial',
+            ...(opts.reader === true
+              ? { requireArtifactReader: true }
+              : opts.reader === false
+                ? { requireArtifactReader: false }
+                : {}),
+          },
+          getBranchEntries: () => [
+            { type: 'custom', customType: INTERACTIVE_LINK_TYPE, data: link },
+          ],
+        });
+        expect(initial.status).toBe('registered');
+      }
+
+      const restored = registry.restoreActiveBranch({
+        sessionManager: {
+          getSessionId: () => hostSessionId,
+          getBranch: () => [{ type: 'custom', customType: INTERACTIVE_LINK_TYPE, data: link }],
+        } as never,
+        cwd: root,
+      });
+      expect(restored.length).toBe(1);
+      const snap = restored[0]!;
+      // Must not be unavailable before activate.
+      expect(snap.status).not.toBe('unavailable');
+      expect(snap.runId).toBe(runId);
+      expect(snap.unitId).toBe('single');
+
+      try {
+        await registry.activate(snap.key, 'matrix activate', 'prompt', undefined, 'tool_call');
+      } catch {
+        // transportFactory throws by design
+      }
+
+      expect(captured.length).toBeGreaterThanOrEqual(1);
+      assertReaderLaunch(captured[0]!, {
+        required: opts.reader === true,
+        runId,
+        runDir: store.getRunDir(runId),
+      });
+    } finally {
+      await registry.shutdown();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // Full 2×3 matrix: restore path × requireArtifactReader true/false/absent
+  it('metadata-only restore + requireArtifactReader true: extension/tools/run env exact', async () => {
+    await restoreAndActivate({ path: 'metadata-only', reader: true });
+  });
+
+  it('metadata-only restore + requireArtifactReader false: no reader extension/tools/env', async () => {
+    await restoreAndActivate({ path: 'metadata-only', reader: false });
+  });
+
+  it('metadata-only restore + requireArtifactReader absent: no reader extension/tools/env', async () => {
+    await restoreAndActivate({ path: 'metadata-only', reader: 'absent' });
+  });
+
+  it('existing-refresh + requireArtifactReader true: extension/tools/run env exact', async () => {
+    await restoreAndActivate({ path: 'existing-refresh', reader: true });
+  });
+
+  it('existing-refresh + requireArtifactReader false: no reader extension/tools/env', async () => {
+    await restoreAndActivate({ path: 'existing-refresh', reader: false });
+  });
+
+  it('existing-refresh + requireArtifactReader absent: no reader extension/tools/env', async () => {
+    await restoreAndActivate({ path: 'existing-refresh', reader: 'absent' });
+  });
+});

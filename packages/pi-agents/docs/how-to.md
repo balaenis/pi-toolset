@@ -436,11 +436,20 @@ The below-editor chrome (when any agent is `starting`/`running`) lists only thos
 
 ## Inspect run artifacts
 
-After a unit spills oversized output, `run.json` carries `finalOutputRef` / `structuredOutputRef` with `relativePath`, `sha256`, and `bytes`. On the parent host, resolve the validated absolute path under the run directory and inspect with ordinary tools:
+After a unit spills oversized output, `run.json` carries `finalOutputRef` / `structuredOutputRef`
+with `sha256`, `bytes`, and `mediaType`. Resolve the artifact path from the run metadata
+(run ID + store root), not from a parent descriptor — parent descriptors are metadata-only,
+bounded to 2 KiB, and never contain absolute paths or artifact content.
 
 ```sh
-# Example: pretty-print a JSON artifact (path shown in parent descriptors)
-jq . ~/.pi/agent/@balaenis/pi-agents/runs/<run-id>/artifacts/sha256/<ab>/<sha>.json
+# Resolve the store root and derive the canonical digest path:
+STORE="$HOME/.pi/agent/@balaenis/pi-agents/runs"
+RUN_ID="<run-id>"
+SHA="<sha256>"
+# Path: <store>/<run-id>/artifacts/sha256/<first-2-chars>/<sha>.<txt|json>
+PREFIX="${SHA:0:2}"
+FILE="${STORE}/${RUN_ID}/artifacts/sha256/${PREFIX}/${SHA}.json"
+jq . "$FILE"
 ```
 
 ## Read a handed-off artifact from a child agent

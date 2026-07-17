@@ -2,9 +2,12 @@
 // ABOUTME: Asserts raw tool-result bodies stay out of parent details while final output is preserved.
 
 import { describe, expect, it } from 'bun:test';
+import * as crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { Readable, Writable } from 'node:stream';
 import {
   INTERACTIVE_IDLE_TRANSCRIPT_MAX_BYTES,
   RESULT_UPDATE_INTERVAL_MS,
@@ -1245,4 +1248,544 @@ describe('memory regressions', () => {
     handler?.();
     expect(emitted).toEqual([999]);
   });
+
+  it('finishUnit spills oversized structuredOutput to artifact and returns ref-only snapshot', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-mem-fu-spill-'));
+    try {
+      const store = createRunStore({ rootDir: root });
+      const coordinator = createRunCoordinator({ store });
+      const sentinel = 'OVERSIZE_STRUCTURED_SENTINEL_FINISHUNIT';
+      const large = sentinel + 'Z'.repeat(300 * 1024);
+
+      const { runId, record } = await store.createRun({
+        mode: 'single',
+        agentScope: 'both',
+        background: false,
+        request: {
+          mode: 'single',
+          agentScope: 'both',
+          agent: 'explore',
+          task: 'spill-finish',
+        },
+        details: {
+          mode: 'single',
+          agentScope: 'both',
+          projectAgentsDir: null,
+          builtinAgentsDir: '/b',
+          results: [],
+        },
+        units: {
+          single: {
+            unitId: 'single',
+            agent: 'explore',
+            agentFingerprint: 'fp',
+            runtime: undefined,
+            capability: 'session',
+            status: 'queued',
+            attempt: 1,
+            attempts: [],
+            effectiveCwd: root,
+          },
+        },
+      });
+      record.status = 'running';
+      coordinator.registerRun(runId, record);
+
+      const ctx = {
+        runId,
+        unitId: 'single',
+        agent: 'explore',
+        runtime: undefined,
+        resumeCapability: 'session' as const,
+        effectiveCwd: root,
+        attempt: 1,
+      };
+      await coordinator.startUnit(runId, ctx);
+
+      const raw: SingleResult = {
+        agent: 'explore',
+        agentSource: 'user',
+        task: 'spill-finish',
+        exitCode: 0,
+        status: 'completed',
+        messages: [],
+        stderr: '',
+        usage: emptyUsage(),
+        finalOutput: large,
+        structuredOutput: { body: large, marker: sentinel },
+      };
+
+      const committed = await coordinator.finishUnit(runId, ctx, raw, 'completed');
+
+      expect(committed.structuredOutput).toBeUndefined();
+      expect(committed.structuredOutputRef).toBeDefined();
+      expect(committed.structuredOutputRef!.payload).toBe('structured-output');
+      expect(committed.finalOutput).toBeUndefined();
+      expect(committed.finalOutputRef).toBeDefined();
+      expect(committed.finalOutputRef!.payload).toBe('final-output');
+
+      const json = JSON.stringify(committed);
+      expect(json).not.toContain(sentinel);
+      expect(json.length).toBeLessThan(1 * 1024 * 1024);
+
+      const readBack = await store.readJsonArtifact(runId, committed.structuredOutputRef!);
+      expect(readBack).toEqual({ body: large, marker: sentinel });
+
+      const textBack = await store.readTextArtifact(runId, committed.finalOutputRef!);
+      expect(textBack.startsWith(sentinel)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('structuredClone observer catches early clone before spill in finishUnit', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-mem-sc-obs-'));
+    const orig = globalThis.structuredClone;
+    let earlyCloneCaught = false;
+    try {
+      const store = createRunStore({ rootDir: root });
+      const coordinator = createRunCoordinator({ store });
+      const sentinel = 'SC_OBSERVER_SENTINEL_' + crypto.randomUUID();
+      const large = sentinel + 'Y'.repeat(300 * 1024);
+
+      globalThis.structuredClone = ((value: unknown, options?: StructuredSerializeOptions) => {
+        const s = JSON.stringify(value);
+        if (s.includes(sentinel)) {
+          earlyCloneCaught = true;
+          throw new Error(`structuredClone observed sentinel before spill: ${s.slice(0, 80)}`);
+        }
+        return orig(value, options);
+      }) as typeof structuredClone;
+
+      const { runId, record } = await store.createRun({
+        mode: 'single',
+        agentScope: 'both',
+        background: false,
+        request: {
+          mode: 'single',
+          agentScope: 'both',
+          agent: 'explore',
+          task: 'sc-obs',
+        },
+        details: {
+          mode: 'single',
+          agentScope: 'both',
+          projectAgentsDir: null,
+          builtinAgentsDir: '/b',
+          results: [],
+        },
+        units: {
+          single: {
+            unitId: 'single',
+            agent: 'explore',
+            agentFingerprint: 'fp',
+            runtime: undefined,
+            capability: 'session',
+            status: 'queued',
+            attempt: 1,
+            attempts: [],
+            effectiveCwd: root,
+          },
+        },
+      });
+      record.status = 'running';
+      coordinator.registerRun(runId, record);
+
+      const ctx = {
+        runId,
+        unitId: 'single',
+        agent: 'explore',
+        runtime: undefined,
+        resumeCapability: 'session' as const,
+        effectiveCwd: root,
+        attempt: 1,
+      };
+      await coordinator.startUnit(runId, ctx);
+
+      const raw: SingleResult = {
+        agent: 'explore',
+        agentSource: 'user',
+        task: 'sc-obs',
+        exitCode: 0,
+        status: 'completed',
+        messages: [],
+        stderr: '',
+        usage: emptyUsage(),
+        finalOutput: large,
+        structuredOutput: { body: large, marker: sentinel },
+      };
+
+      const committed = await coordinator.finishUnit(runId, ctx, raw, 'completed');
+
+      expect(earlyCloneCaught).toBe(false);
+      expect(committed.structuredOutputRef).toBeDefined();
+      expect(committed.structuredOutput).toBeUndefined();
+    } finally {
+      globalThis.structuredClone = orig;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('finishUnit externalization failure produces failed snapshot without sentinel', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-mem-fu-fail-'));
+    try {
+      const baseStore = createRunStore({ rootDir: root });
+      const sentinel = 'FAIL_EXT_SENTINEL_';
+      const large = sentinel + 'W'.repeat(300 * 1024);
+
+      // Wrap store so writeJsonArtifact throws after writeTextArtifact succeeds.
+      let textSpilled = false;
+      const failingStore: typeof baseStore = {
+        ...baseStore,
+        writeJsonArtifact: async (...args) => {
+          if (textSpilled) throw new Error('simulated artifact write failure');
+          return baseStore.writeJsonArtifact(...args);
+        },
+        writeTextArtifact: async (...args) => {
+          textSpilled = true;
+          return baseStore.writeTextArtifact(...args);
+        },
+      };
+      const coordinator = createRunCoordinator({ store: failingStore });
+
+      const { runId, record } = await failingStore.createRun({
+        mode: 'single',
+        agentScope: 'both',
+        background: false,
+        request: {
+          mode: 'single',
+          agentScope: 'both',
+          agent: 'explore',
+          task: 'fail-ext',
+        },
+        details: {
+          mode: 'single',
+          agentScope: 'both',
+          projectAgentsDir: null,
+          builtinAgentsDir: '/b',
+          results: [],
+        },
+        units: {
+          single: {
+            unitId: 'single',
+            agent: 'explore',
+            agentFingerprint: 'fp',
+            runtime: undefined,
+            capability: 'session',
+            status: 'queued',
+            attempt: 1,
+            attempts: [],
+            effectiveCwd: root,
+          },
+        },
+      });
+      record.status = 'running';
+      // Use real coordinator (not the failing store wrapper) for proper lifecycle.
+      coordinator.registerRun(runId, record);
+
+      const ctx = {
+        runId,
+        unitId: 'single',
+        agent: 'explore',
+        runtime: undefined,
+        resumeCapability: 'session' as const,
+        effectiveCwd: root,
+        attempt: 1,
+      };
+      await coordinator.startUnit(runId, ctx);
+
+      const raw: SingleResult = {
+        agent: 'explore',
+        agentSource: 'user',
+        task: 'fail-ext',
+        exitCode: 0,
+        status: 'completed',
+        messages: [],
+        stderr: '',
+        usage: emptyUsage(),
+        finalOutput: large,
+        structuredOutput: { body: large, marker: sentinel },
+      };
+
+      // Must not throw; externalization failure produces a failed snapshot.
+      const committed = await coordinator.finishUnit(runId, ctx, raw, 'completed');
+      expect(committed.status).toBe('failed');
+      expect(committed.exitCode).toBe(1);
+      expect(committed.structuredOutput).toBeUndefined();
+      expect(committed.structuredOutputRef).toBeUndefined();
+      // finalOutput may be '' (empty) or undefined after snapshot; neither contains sentinel.
+      if (typeof committed.finalOutput === 'string') {
+        expect(committed.finalOutput).not.toContain(sentinel);
+      }
+      expect(committed.finalOutputRef).toBeUndefined();
+      const json = JSON.stringify(committed);
+      expect(json).not.toContain(sentinel);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('executeAgentTool single mode spills oversized finalOutput via finishUnit and returns bounded tool content', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-mem-eat-single-'));
+    try {
+      const store = createRunStore({ rootDir: root });
+      const coordinator = createRunCoordinator({ store });
+      const sentinel = 'EAT_SINGLE_SENTINEL_';
+      const oversized = sentinel + 'X'.repeat(300 * 1024);
+
+      const result = await executeAgentTool(
+        { agent: 'general', task: 'eat-single', agentScope: 'user' },
+        undefined,
+        undefined,
+        {
+          cwd: root,
+          mode: 'tui',
+          hasUI: false,
+          ui: {
+            confirm: async () => true,
+            select: async () => undefined,
+            input: async () => undefined,
+            notify: () => {},
+          },
+        } as never,
+        {
+          runStore: store,
+          runCoordinator: coordinator,
+          spawnFn: ((_command: string, _args: string[]) => {
+            const child = new (class extends EventEmitter {
+              stdout = new Readable({ read() {} });
+              stderr = new Readable({ read() {} });
+              stdin = new Writable({
+                write: (_c: unknown, _e: unknown, cb: () => void) => cb(),
+              });
+              kill() {
+                this.stdout.push(null);
+                this.stderr.push(null);
+                setImmediate(() => this.emit('close', 0));
+                return true;
+              }
+            })();
+            setImmediate(() => {
+              child.stdout.push(
+                JSON.stringify({
+                  type: 'message_end',
+                  message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: oversized }],
+                    usage: { input: 1, output: 1, totalTokens: 2 },
+                  },
+                }) + '\n'
+              );
+              child.kill();
+            });
+            return child;
+          }) as unknown as import('../src/execution.ts').SpawnFn,
+        }
+      );
+
+      const text = Array.isArray(result.content)
+        ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+        : String(result.content);
+
+      // Tool content must be bounded artifact metadata, not raw sentinel or (no output).
+      expect(text).not.toContain(sentinel);
+      expect(text).not.toBe('(no output)');
+      expect(text).toMatch(/^\[run-artifact /);
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(2048);
+
+      // Detail records must use refs only, no inline payload.
+      const details = result.details;
+      expect(details).toBeDefined();
+      const results = details?.results ?? [];
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      const r = results[0]!;
+      expect(r.finalOutput).toBeUndefined();
+      expect(r.finalOutputRef).toBeDefined();
+      const detailJson = JSON.stringify(details);
+      expect(detailJson).not.toContain(sentinel);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('executeAgentTool parallel mode spills oversized finalOutput and returns bounded tool content', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-mem-eat-par-'));
+    try {
+      const store = createRunStore({ rootDir: root });
+      const coordinator = createRunCoordinator({ store });
+      const sentinel = 'EAT_PAR_SENTINEL_';
+      const oversized = sentinel + 'P'.repeat(300 * 1024);
+
+      const result = await executeAgentTool(
+        {
+          tasks: [
+            { agent: 'general', task: 'eat-par-1' },
+            { agent: 'general', task: 'eat-par-2' },
+          ],
+          agentScope: 'user',
+        },
+        undefined,
+        undefined,
+        {
+          cwd: root,
+          mode: 'tui',
+          hasUI: false,
+          ui: {
+            confirm: async () => true,
+            select: async () => undefined,
+            input: async () => undefined,
+            notify: () => {},
+          },
+        } as never,
+        {
+          runStore: store,
+          runCoordinator: coordinator,
+          spawnFn: ((_command: string, _args: string[]) => {
+            const child = new (class extends EventEmitter {
+              stdout = new Readable({ read() {} });
+              stderr = new Readable({ read() {} });
+              stdin = new Writable({
+                write: (_c: unknown, _e: unknown, cb: () => void) => cb(),
+              });
+              kill() {
+                this.stdout.push(null);
+                this.stderr.push(null);
+                setImmediate(() => this.emit('close', 0));
+                return true;
+              }
+            })();
+            setImmediate(() => {
+              child.stdout.push(
+                JSON.stringify({
+                  type: 'message_end',
+                  message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: oversized }],
+                    usage: { input: 1, output: 1, totalTokens: 2 },
+                  },
+                }) + '\n'
+              );
+              child.kill();
+            });
+            return child;
+          }) as unknown as import('../src/execution.ts').SpawnFn,
+        }
+      );
+
+      const text = Array.isArray(result.content)
+        ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+        : String(result.content);
+
+      // Parallel content is an aggregate status line, not the raw output.
+      expect(text).not.toContain(sentinel);
+      expect(text).toMatch(/Parallel:/);
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(2048);
+
+      // Detail records must use refs.
+      const details = result.details;
+      expect(details).toBeDefined();
+      const results = details?.results ?? [];
+      expect(results.length).toBeGreaterThanOrEqual(2);
+      for (const r of results) {
+        if (r.finalOutputRef) {
+          const refJson = JSON.stringify(r);
+          expect(refJson).not.toContain(sentinel);
+        }
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('executeAgentTool real Chain orchestration spills oversized handoff and bounds final content', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-mem-eat-chain-'));
+    try {
+      const store = createRunStore({ rootDir: root });
+      const coordinator = createRunCoordinator({ store });
+      const sentinel = 'EAT_CHAIN_SENTINEL_';
+      const oversized = sentinel + 'C'.repeat(300 * 1024);
+      let spawnIndex = 0;
+
+      // Real production chain path — no runWorkflow shortcut.
+      const result = await executeAgentTool(
+        {
+          chain: [
+            { agent: 'general', task: 'generate-oversize', name: 'seed' },
+            { agent: 'general', task: 'use {previous}' },
+          ],
+          agentScope: 'user',
+        },
+        undefined,
+        undefined,
+        {
+          cwd: root,
+          mode: 'tui',
+          hasUI: false,
+          ui: {
+            confirm: async () => true,
+            select: async () => undefined,
+            input: async () => undefined,
+            notify: () => {},
+          },
+        } as never,
+        {
+          runStore: store,
+          runCoordinator: coordinator,
+          spawnFn: ((_command: string, _args: string[]) => {
+            spawnIndex += 1;
+            const child = new (class extends EventEmitter {
+              stdout = new Readable({ read() {} });
+              stderr = new Readable({ read() {} });
+              stdin = new Writable({
+                write: (_c: unknown, _e: unknown, cb: () => void) => cb(),
+              });
+              kill() {
+                this.stdout.push(null);
+                this.stderr.push(null);
+                setImmediate(() => this.emit('close', 0));
+                return true;
+              }
+            })();
+            const text = spawnIndex === 1 ? oversized : 'chain-step2-done';
+            setImmediate(() => {
+              child.stdout.push(
+                JSON.stringify({
+                  type: 'message_end',
+                  message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text }],
+                    usage: { input: 1, output: 1, totalTokens: 2 },
+                  },
+                }) + '\n'
+              );
+              child.kill();
+            });
+            return child;
+          }) as unknown as import('../src/execution.ts').SpawnFn,
+        }
+      );
+
+      const text = Array.isArray(result.content)
+        ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+        : String(result.content);
+
+      expect(text).not.toContain(sentinel);
+      expect(text).not.toBe('(no output)');
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(2048);
+
+      const details = result.details;
+      expect(details).toBeDefined();
+      const results = details?.results ?? [];
+      expect(results.length).toBeGreaterThanOrEqual(2);
+      // Step 1 spilled to a ref; step 2 task carries the descriptor, not raw sentinel.
+      expect(results[0]!.finalOutputRef).toBeDefined();
+      expect(results[0]!.finalOutput).toBeUndefined();
+      expect(results[1]!.task).toContain('run-artifact');
+      expect(results[1]!.task).not.toContain(sentinel);
+      // Durable details use refs only for spilled authority.
+      expect(JSON.stringify(details)).not.toContain(sentinel);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

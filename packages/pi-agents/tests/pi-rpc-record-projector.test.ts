@@ -405,4 +405,210 @@ describe('PiRpcRecordProjector classification and projection', () => {
       ]);
     }
   });
+
+  // Bulk-field structural type validation
+  it('revokes projectability when messages is an object instead of array', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'agent_end',
+      messages: { notAnArray: true },
+      willRetry: false,
+    });
+    const out = projectAll([`${record}\n`], limits);
+    expect(out).toEqual([{ kind: 'ordinary', line: record, bytes: Buffer.byteLength(record) }]);
+  });
+
+  it('fails at ordinary cap when messages is an object and exceeds budget', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'agent_end',
+      messages: { notAnArray: true },
+      willRetry: false,
+      oversized: 'X'.repeat(200),
+    });
+    expectOverflow(() => projectAll([`${record}\n`], limits));
+  });
+
+  it('revokes projectability when toolResults is not an array', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'turn_end',
+      message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      toolResults: 'not-an-array',
+    });
+    const out = projectAll([`${record}\n`], limits);
+    expect(out).toEqual([{ kind: 'ordinary', line: record, bytes: Buffer.byteLength(record) }]);
+  });
+
+  it('revokes projectability when message is an array instead of object', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'message_end',
+      message: [{ role: 'assistant', content: [{ type: 'text', text: 'hi' }] }],
+    });
+    const out = projectAll([`${record}\n`], limits);
+    expect(out).toEqual([{ kind: 'ordinary', line: record, bytes: Buffer.byteLength(record) }]);
+  });
+
+  it('revokes projectability when assistantMessageEvent is an array instead of object', () => {
+    const limits = { ordinaryMaxBytes: 200, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: ['not-an-object'],
+      message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
+    });
+    const out = projectAll([`${record}\n`], limits);
+    expect(out).toEqual([{ kind: 'ordinary', line: record, bytes: Buffer.byteLength(record) }]);
+  });
+
+  // Scalar/wrong-kind regressions for constrained bulk fields
+  it('fails at ordinary cap when messages is an oversized string', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'agent_end',
+      messages: 'X'.repeat(200),
+      willRetry: false,
+    });
+    expectOverflow(() => projectAll([`${record}\n`], limits));
+  });
+
+  it('fails at ordinary cap when messages is an oversized number', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'agent_end',
+      messages: Number.MAX_SAFE_INTEGER,
+      willRetry: false,
+      pad: 'X'.repeat(120),
+    });
+    expectOverflow(() => projectAll([`${record}\n`], limits));
+  });
+
+  it('fails at ordinary cap when messages is an oversized boolean', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'agent_end',
+      messages: true,
+      willRetry: false,
+      pad: 'X'.repeat(120),
+    });
+    expectOverflow(() => projectAll([`${record}\n`], limits));
+  });
+
+  it('fails at ordinary cap when messages is an oversized null', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'agent_end',
+      messages: null,
+      willRetry: false,
+      pad: 'X'.repeat(120),
+    });
+    expectOverflow(() => projectAll([`${record}\n`], limits));
+  });
+
+  it('fails at ordinary cap when toolResults is an oversized string', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'turn_end',
+      message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      toolResults: 'Y'.repeat(200),
+    });
+    expectOverflow(() => projectAll([`${record}\n`], limits));
+  });
+
+  it('fails at ordinary cap when message is an oversized string', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'message_end',
+      message: 'Z'.repeat(200),
+    });
+    expectOverflow(() => projectAll([`${record}\n`], limits));
+  });
+
+  it('fails at ordinary cap when assistantMessageEvent is an oversized string', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: 'W'.repeat(200),
+      message: { role: 'assistant', content: [] },
+    });
+    expectOverflow(() => projectAll([`${record}\n`], limits));
+  });
+
+  it('keeps a small scalar wrong-kind messages record ordinary (at/below 8 MiB)', () => {
+    const limits = { ordinaryMaxBytes: 128, projectableMaxBytes: 1024 };
+    const record = JSON.stringify({
+      type: 'agent_end',
+      messages: 'small-string',
+      willRetry: false,
+    });
+    const out = projectAll([`${record}\n`], limits);
+    expect(out).toEqual([{ kind: 'ordinary', line: record, bytes: Buffer.byteLength(record) }]);
+  });
+
+  // Positive controls for any-typed fields (args, partialResult, result)
+  it('still projects tool_execution_start with any-typed args as array', () => {
+    const record = JSON.stringify({
+      type: 'tool_execution_start',
+      toolCallId: 't1',
+      toolName: 'echo',
+      args: ['an', 'array', 'of', 'args'],
+    });
+    const out = projectAll([`${record}\n`]);
+    expect(out).toEqual([{ kind: 'ordinary', line: record, bytes: Buffer.byteLength(record) }]);
+  });
+
+  it('still projects tool_execution_start with any-typed args as null', () => {
+    const record = JSON.stringify({
+      type: 'tool_execution_start',
+      toolCallId: 't1',
+      toolName: 'echo',
+      args: null,
+    });
+    const out = projectAll([`${record}\n`]);
+    expect(out).toEqual([{ kind: 'ordinary', line: record, bytes: Buffer.byteLength(record) }]);
+  });
+
+  it('still projects tool_execution_end with any-typed result as scalar', () => {
+    const record = JSON.stringify({
+      type: 'tool_execution_end',
+      toolCallId: 't1',
+      toolName: 'echo',
+      result: 42,
+      isError: false,
+    });
+    const out = projectAll([`${record}\n`]);
+    expect(out).toEqual([{ kind: 'ordinary', line: record, bytes: Buffer.byteLength(record) }]);
+  });
+
+  it('still projects oversized tool_execution_start with any-typed args as array', () => {
+    const limits = { ordinaryMaxBytes: 60, projectableMaxBytes: 2048 };
+    const oversizedArgs = Array.from({ length: 30 }, (_, i) => `item-${i}`);
+    const record = JSON.stringify({
+      type: 'tool_execution_start',
+      toolCallId: 't1',
+      toolName: 'echo',
+      args: oversizedArgs,
+    });
+    const out = projectAll([`${record}\n`], limits);
+    expect(out[0]!.kind).toBe('projected');
+    if (out[0]!.kind === 'projected') {
+      expect(out[0]!.event.type).toBe('tool_execution_start');
+    }
+  });
+
+  it('still projects oversized tool_execution_update with any-typed partialResult as object', () => {
+    const limits = { ordinaryMaxBytes: 60, projectableMaxBytes: 2048 };
+    const record = JSON.stringify({
+      type: 'tool_execution_update',
+      toolCallId: 't1',
+      toolName: 'echo',
+      args: { key: 'val' },
+      partialResult: { items: Array.from({ length: 40 }, (_, i) => ({ n: i })) },
+    });
+    const out = projectAll([`${record}\n`], limits);
+    expect(out[0]!.kind).toBe('projected');
+    if (out[0]!.kind === 'projected') {
+      expect(out[0]!.event.type).toBe('tool_execution_update');
+    }
+  });
 });

@@ -1151,6 +1151,17 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           },
         };
       }
+      // requireArtifactReader is an additive Version 1 boolean.
+      if (u.requireArtifactReader !== undefined && typeof u.requireArtifactReader !== 'boolean') {
+        return {
+          ok: false,
+          error: {
+            code: 'corrupt_run',
+            runId: expectedRunId,
+            message: `unit ${unitId} requireArtifactReader must be a boolean when present`,
+          },
+        };
+      }
       if (u.result !== undefined) {
         const shellError = validateResultShell(u.result, `unit ${unitId} result`, {
           unitStatus: typeof u.status === 'string' ? u.status : undefined,

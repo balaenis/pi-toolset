@@ -39,39 +39,181 @@ function retreatToUtf8Boundary(buf: Buffer, end: number): number {
   return i;
 }
 
-function readArtifactFile(runId: string, sha256: string, mediaType: 'text' | 'json'): Buffer {
-  const root = envArtifactDir();
-  const envId = envRunId();
-  if (!root || !envId || envId !== runId) unavailable();
-  if (!SHA256_HEX.test(sha256)) unavailable();
-
-  const ext = mediaType === 'json' ? 'json' : 'txt';
-  const relative = path.join('artifacts', 'sha256', sha256.slice(0, 2), `${sha256}.${ext}`);
-  const absolute = path.resolve(root, relative);
-  const rootReal = fs.realpathSync(root);
-  let st: fs.Stats;
-  try {
-    st = fs.lstatSync(absolute);
-  } catch {
-    unavailable();
-  }
-  if (st.isSymbolicLink() || !st.isFile()) unavailable();
-  let real: string;
-  try {
-    real = fs.realpathSync(absolute);
-  } catch {
-    unavailable();
-  }
-  const rel = path.relative(rootReal, real);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) unavailable();
-
-  const buf = fs.readFileSync(absolute);
-  const digest = crypto.createHash('sha256').update(buf).digest('hex');
-  if (digest !== sha256) unavailable();
-  return buf;
+/** Narrow filesystem operations dependency injected at registration time. */
+export interface ArtifactReaderFs {
+  fstatSync: (fd: number) => fs.Stats;
+  lstatSync: (path: string) => fs.Stats;
+  openSync: (path: string, flags: number) => number;
+  readFileSync: (fd: number) => Buffer;
+  closeSync: (fd: number) => void;
+  realpathSync: (path: string) => string;
 }
 
-export default function registerArtifactReaderExtension(pi: ExtensionAPI): void {
+const defaultFs: ArtifactReaderFs = {
+  fstatSync: (fd: number) => fs.fstatSync(fd),
+  lstatSync: (p: string) => fs.lstatSync(p),
+  openSync: (p: string, flags: number) => fs.openSync(p, flags),
+  readFileSync: (fd: number) => fs.readFileSync(fd),
+  closeSync: (fd: number) => fs.closeSync(fd),
+  realpathSync: (p: string) => fs.realpathSync(p),
+};
+
+/**
+ * Open the digest-derived artifact with no-follow semantics, verify the
+ * inode against a trusted root, then read/hash/chunk against the same
+ * file descriptor. Every filesystem and security error collapses to
+ * `artifact_unavailable` without path-existence details.
+ */
+function readArtifactFile(
+  afs: ArtifactReaderFs,
+  runId: string,
+  sha256: string,
+  mediaType: 'text' | 'json'
+): Buffer {
+  const fstatSync = afs.fstatSync;
+  const lstatSync = afs.lstatSync;
+
+  // All path work happens inside the single error-collapse boundary so no
+  // filesystem/security error can leak a path or native message.
+  let fd: number | undefined;
+  let securityError = false;
+  try {
+    const root = envArtifactDir();
+    const envId = envRunId();
+    if (!root || !envId || envId !== runId) unavailable();
+    if (!SHA256_HEX.test(sha256)) unavailable();
+
+    const ext = mediaType === 'json' ? 'json' : 'txt';
+    const relative = path.join('artifacts', 'sha256', sha256.slice(0, 2), `${sha256}.${ext}`);
+    const absolute = path.resolve(root, relative);
+
+    // Resolve the trusted root once; every containment check uses this real path.
+    const rootReal = afs.realpathSync(root);
+    const rel = path.relative(rootReal, absolute);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) unavailable();
+
+    // Validate every intermediate component from the trusted root through
+    // artifacts/sha256/<prefix> with lstat before open; reject symlinks and
+    // non-directories.
+    validateIntermediateComponents(afs, rootReal, relative);
+
+    // Open the final file with O_NOFOLLOW where supported. On targets that
+    // lack O_NOFOLLOW, fail closed rather than falling back to pathname reads.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const noFollowFlag: number | undefined = (fs.constants as any).O_NOFOLLOW;
+    if (noFollowFlag === undefined) unavailable();
+    fd = afs.openSync(absolute, fs.constants.O_RDONLY | noFollowFlag);
+
+    // Pre-read stat: must be a regular file.
+    const preStat = fstatSync(fd);
+    if (!preStat.isFile()) unavailable();
+
+    // Compare fstat identity (dev/ino where available) with a post-open lstat
+    // of the digest-derived path so a pathname swap after open is detected.
+    const postOpenLstat = lstatSync(absolute);
+    if (!postOpenLstat.isFile()) unavailable();
+    if (!sameFileIdentity(preStat, postOpenLstat)) unavailable();
+
+    // Resolve the opened path after open and require its real path to be
+    // contained under the real run root and to correspond to the expected
+    // digest-derived location.
+    const openedReal = afs.realpathSync(absolute);
+    const openedRel = path.relative(rootReal, openedReal);
+    if (openedRel.startsWith('..') || path.isAbsolute(openedRel)) unavailable();
+    if (openedRel !== relative.split(path.sep).join(path.posix.sep)) unavailable();
+
+    const expectedSize = preStat.size;
+
+    // Read the entire file through the same fd.
+    const buf = afs.readFileSync(fd);
+
+    // Verify digest.
+    const digest = crypto.createHash('sha256').update(buf).digest('hex');
+    if (digest !== sha256) unavailable();
+
+    // Post-read stat: size must match and fd must still be a regular file.
+    const postStat = fstatSync(fd);
+    if (!postStat.isFile() || postStat.size !== expectedSize) unavailable();
+
+    // Repeat path identity and intermediate-component checks after read so a
+    // swap or symlink insertion during read cannot go undetected.
+    const postReadLstat = lstatSync(absolute);
+    if (!postReadLstat.isFile()) unavailable();
+    if (!sameFileIdentity(postStat, postReadLstat)) unavailable();
+    validateIntermediateComponents(afs, rootReal, relative);
+
+    return buf;
+  } catch (err) {
+    if (err instanceof Error && err.message === 'artifact_unavailable') {
+      securityError = true;
+      throw err;
+    }
+    // Collapse every unexpected filesystem/permission/IO error.
+    if (!securityError) unavailable();
+    throw err;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        afs.closeSync(fd);
+      } catch {
+        // Close error must not replace a security error.
+        if (!securityError) unavailable();
+      }
+    }
+  }
+}
+
+/**
+ * Validate every intermediate component from the trusted real root through the
+ * digest-derived parent directory. Rejects symlinks and non-directories.
+ * Each component is lstat'd; a symlink or non-directory anywhere on the path
+ * fails closed.
+ */
+function validateIntermediateComponents(
+  afs: ArtifactReaderFs,
+  rootReal: string,
+  relative: string
+): void {
+  const parts = relative.split(path.sep).filter((p) => p.length > 0);
+  let current = rootReal;
+  // The final component is the artifact file itself (validated by open+lstat);
+  // only validate intermediate directories here.
+  for (let i = 0; i < parts.length - 1; i++) {
+    current = path.join(current, parts[i]!);
+    let st: fs.Stats;
+    try {
+      st = afs.lstatSync(current);
+    } catch {
+      unavailable();
+    }
+    if (st.isSymbolicLink()) unavailable();
+    if (!st.isDirectory()) unavailable();
+  }
+}
+
+/**
+ * Compare two stats for file identity.
+ * Requires stable dev and ino on both stats and exact equality.
+ * If either identity is unavailable or unusable, fail closed (return false).
+ * Size equality is never a substitute for missing identity.
+ */
+function sameFileIdentity(a: fs.Stats, b: fs.Stats): boolean {
+  if (
+    typeof a.dev !== 'number' ||
+    typeof b.dev !== 'number' ||
+    typeof a.ino !== 'number' ||
+    typeof b.ino !== 'number'
+  ) {
+    return false;
+  }
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+export default function registerArtifactReaderExtension(
+  pi: ExtensionAPI,
+  fsOps?: ArtifactReaderFs
+): void {
+  const afs: ArtifactReaderFs = fsOps ?? defaultFs;
   pi.registerTool({
     name: 'pi_agents_read_artifact',
     label: 'Read run artifact',
@@ -97,7 +239,7 @@ export default function registerArtifactReaderExtension(pi: ExtensionAPI): void 
         ARTIFACT_READER_CHUNK_MAX_BYTES
       );
 
-      const buf = readArtifactFile(runId, sha256, mediaType);
+      const buf = readArtifactFile(afs, runId, sha256, mediaType);
       if (!Number.isInteger(offsetBytes) || offsetBytes < 0 || offsetBytes > buf.length) {
         invalidOffset();
       }

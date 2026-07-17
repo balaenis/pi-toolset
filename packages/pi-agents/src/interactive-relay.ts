@@ -458,6 +458,13 @@ export function createInteractiveRelayCoordinator(options: InteractiveRelayOptio
     const activationId = activation.id;
     // Reserve activation before async artifact I/O so duplicates cannot double-send.
     if (inFlight.has(activationId)) return;
+
+    // Capture relay epoch (transport + monotonic activation generation) before async
+    // artifact I/O. The activation generation persists across the clear window so
+    // a continuation is suppressed when a newer activation started and settled.
+    const relayEpoch = registry.getEndpointEpoch?.(key);
+    const activationSequence = activation.sequence;
+
     inFlight.add(activationId);
     trackWork(
       (async () => {
@@ -481,6 +488,35 @@ export function createInteractiveRelayCoordinator(options: InteractiveRelayOptio
           }
           if (!liveBranchHasMatchingLink(snap) || !isActiveBranchMember(key)) {
             options.onSuppressed?.('branch_stale_after_io', key);
+            lastToolCallTerminal.delete(key);
+            return;
+          }
+          // Require the endpoint to still exist with an exactly equal epoch
+          // (incarnation + transport + activation generation) after async
+          // artifact I/O. Full epoch comparison prevents remove/recreate ABA.
+          const postEpoch = registry.getEndpointEpoch?.(key);
+          if (
+            !postEpoch ||
+            !relayEpoch ||
+            postEpoch.endpointIncarnation !== relayEpoch.endpointIncarnation ||
+            postEpoch.transportGeneration !== relayEpoch.transportGeneration ||
+            postEpoch.activationGeneration !== relayEpoch.activationGeneration
+          ) {
+            options.onSuppressed?.('epoch_changed_after_io', key);
+            lastToolCallTerminal.delete(key);
+            return;
+          }
+          // Re-fetch the endpoint snapshot to verify activation is still current
+          // when one is present. A settled activation clears ep.activation, so
+          // absence alone is not a suppressor; the monotonic activationGeneration
+          // epoch check above is the authoritative staleness guard.
+          const postSnap = registry.get(key);
+          if (
+            postSnap?.activation &&
+            (postSnap.activation.id !== activationId ||
+              postSnap.activation.sequence !== activationSequence)
+          ) {
+            options.onSuppressed?.('activation_changed_after_io', key);
             lastToolCallTerminal.delete(key);
             return;
           }
