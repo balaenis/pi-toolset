@@ -164,8 +164,17 @@ function validateFanoutMapping(record: AgentRunRecordV1, key: string, mapping: u
     reasons.push(`stored_fanout_state_unavailable: ${key} invalid step ${String(raw.step)}`);
     return reasons;
   }
-  if (!Array.isArray(raw.items) || !Array.isArray(raw.unitIds)) {
-    reasons.push(`stored_fanout_state_unavailable: ${key} items/unitIds must be arrays`);
+  if (!Array.isArray(raw.unitIds)) {
+    reasons.push(`stored_fanout_state_unavailable: ${key} unitIds must be an array`);
+    return reasons;
+  }
+  const hasItems = Array.isArray(raw.items);
+  const hasItemsRef =
+    raw.itemsRef !== null && typeof raw.itemsRef === 'object' && !Array.isArray(raw.itemsRef);
+  if (hasItems === hasItemsRef) {
+    reasons.push(
+      `stored_fanout_state_unavailable: ${key} must set exactly one of items or itemsRef`
+    );
     return reasons;
   }
   // Only string unit ids participate in bijection checks; reject non-strings.
@@ -175,7 +184,9 @@ function validateFanoutMapping(record: AgentRunRecordV1, key: string, mapping: u
   }
 
   const step = raw.step;
-  const items = raw.items as unknown[];
+  // For itemsRef, item count is taken from unitIds (bijection); full content is
+  // re-verified at resolve time after claim.
+  const items = hasItems ? (raw.items as unknown[]) : new Array(raw.unitIds.length).fill(null);
   const unitIds = raw.unitIds as string[];
 
   // mapping.step must name an actual fanout entry in the stored request chain.

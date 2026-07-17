@@ -31,6 +31,7 @@ import {
 } from './structured-output.ts';
 import { emptyUsage } from './empty-usage.ts';
 import { renderTaskTemplate } from './template.ts';
+import { formatChildArtifactDescriptor } from './result-payload.ts';
 import { copySnapshotShell, snapshotSingleResult } from './result-snapshot.ts';
 import {
   cloneSingleResult,
@@ -232,11 +233,41 @@ function hasEmptyFanoutCompletionEvidence(
 /** Copy an output entry and isolate structured payload from shared mutable sources. */
 function isolateOutputEntry(entry: ChainOutputEntry): ChainOutputEntry {
   return {
-    text: entry.text,
-    structured: entry.structured !== undefined ? structuredClone(entry.structured) : undefined,
+    ...(entry.text !== undefined ? { text: entry.text } : {}),
+    ...(entry.textRef ? { textRef: { ...entry.textRef } } : {}),
+    ...(entry.structured !== undefined ? { structured: structuredClone(entry.structured) } : {}),
+    ...(entry.structuredRef ? { structuredRef: { ...entry.structuredRef } } : {}),
     agent: entry.agent,
     step: entry.step,
   };
+}
+
+/** Build chain previous/named output from a terminal unit result (inline or ref). */
+function chainOutputFromResult(
+  result: SingleResult,
+  agent: string,
+  step: number
+): ChainOutputEntry {
+  const entry: ChainOutputEntry = { agent, step };
+  if (result.finalOutputRef)
+    entry.textRef = { ...result.finalOutputRef, payload: 'chain-output-text' };
+  else entry.text = getResultFinalOutput(result);
+  if (result.structuredOutputRef) {
+    entry.structuredRef = { ...result.structuredOutputRef, payload: 'chain-output-structured' };
+  } else if (result.structuredOutput !== undefined) {
+    entry.structured = result.structuredOutput;
+  }
+  return entry;
+}
+
+function previousTextFromResult(result: SingleResult): string {
+  if (result.finalOutputRef) {
+    return formatChildArtifactDescriptor({
+      ...result.finalOutputRef,
+      payload: 'chain-output-text',
+    });
+  }
+  return getResultFinalOutput(result);
 }
 
 /**
@@ -440,6 +471,7 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
   const { chain, signal, onUpdate, makeDetails, runStep, restored, onFanoutExpand } = options;
   let results: SingleResult[];
   let previousOutput = '';
+  let previousRef: ChainOutputEntry['textRef'] | undefined;
   const outputs = new Map<string, ChainOutputEntry>();
   let logicalSteps: ChainLogicalStep[];
 
@@ -552,6 +584,7 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
           results,
           outputs,
           previousOutput,
+          previousRef,
           signal,
           onUpdate,
           makeDetails,
@@ -565,6 +598,7 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
         });
         if (fanout.done) return fanout.result;
         previousOutput = fanout.previousOutput;
+        previousRef = undefined;
         continue;
       }
 
@@ -597,6 +631,7 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
         results,
         outputs,
         previousOutput,
+        previousRef,
         signal,
         onUpdate,
         makeDetails,
@@ -609,6 +644,7 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
       });
       if (sequential.done) return sequential.result;
       previousOutput = sequential.previousOutput;
+      previousRef = sequential.previousRef;
     }
 
     return {
@@ -718,6 +754,7 @@ interface StepShared {
   results: SingleResult[];
   outputs: Map<string, ChainOutputEntry>;
   previousOutput: string;
+  previousRef?: ChainOutputEntry['textRef'];
   signal: AbortSignal | undefined;
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined;
   makeDetails: DetailsFactory;
@@ -737,7 +774,10 @@ async function runSequentialStep(
     stepIndex: number;
     taskIndex: number;
   }
-): Promise<{ done: false; previousOutput: string } | { done: true; result: ChainResult }> {
+): Promise<
+  | { done: false; previousOutput: string; previousRef?: ChainOutputEntry['textRef'] }
+  | { done: true; result: ChainResult }
+> {
   const {
     step,
     stepNumber,
@@ -754,7 +794,11 @@ async function runSequentialStep(
   logicalSteps[stepIndex].status = 'running';
   emit(`Chain step ${stepNumber}/${logicalSteps.length} running...`);
 
-  const rendered = renderTaskTemplate(step.task, { previous: previousOutput, outputs });
+  const rendered = renderTaskTemplate(step.task, {
+    previous: previousOutput,
+    outputs,
+    ...(opts.previousRef ? { previousRef: opts.previousRef } : {}),
+  });
   if (!rendered.ok) {
     const failure = synthesizeFailure(
       step.agent,
@@ -926,19 +970,20 @@ async function runSequentialStep(
   }
 
   logicalSteps[stepIndex].status = 'completed';
-  const nextPreviousOutput = getResultFinalOutput(result);
+  const nextPreviousOutput = previousTextFromResult(result);
   if (step.name) {
     outputs.set(
       step.name,
-      isolateOutputEntry({
-        text: nextPreviousOutput,
-        structured: result.structuredOutput,
-        agent: step.agent,
-        step: stepNumber,
-      })
+      isolateOutputEntry(chainOutputFromResult(result, step.agent, stepNumber))
     );
   }
-  return { done: false, previousOutput: nextPreviousOutput };
+  return {
+    done: false,
+    previousOutput: nextPreviousOutput,
+    ...(result.finalOutputRef
+      ? { previousRef: { ...result.finalOutputRef, payload: 'chain-output-text' as const } }
+      : {}),
+  };
 }
 
 async function runFanoutStep(
@@ -1412,9 +1457,25 @@ async function runFanoutStep(
   }
 
   fanoutMeta.status = 'completed';
-  const collected = slots.map(
-    (result) => (result.structuredOutput ?? getResultFinalOutput(result)) as JsonValue
-  );
+  const collected = slots.map((result) => {
+    if (result.structuredOutputRef) {
+      // Descriptor only in live previous text; structured authority stays as ref on the entry.
+      return {
+        __runArtifact: true,
+        sha256: result.structuredOutputRef.sha256,
+        bytes: result.structuredOutputRef.bytes,
+      } as JsonValue;
+    }
+    if (result.structuredOutput !== undefined) return result.structuredOutput as JsonValue;
+    if (result.finalOutputRef) {
+      return {
+        __runArtifact: true,
+        sha256: result.finalOutputRef.sha256,
+        bytes: result.finalOutputRef.bytes,
+      } as JsonValue;
+    }
+    return getResultFinalOutput(result) as JsonValue;
+  });
   const maxItemsNote =
     typeof step.expand.maxItems === 'number' ? Math.floor(step.expand.maxItems) : undefined;
   const text = `${JSON.stringify(collected, null, 2)}${
@@ -1424,6 +1485,8 @@ async function runFanoutStep(
         }]`
       : ''
   }`;
+  // Prefer structured refs from first spilled child when all share the same pattern;
+  // otherwise keep inline collected array (may contain descriptors).
   outputs.set(
     step.collect.name,
     isolateOutputEntry({

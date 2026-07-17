@@ -15,7 +15,12 @@ import {
   INTERACTIVE_IDLE_TRANSCRIPT_MAX_BYTES,
   INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES,
 } from './constants.ts';
-import { getPiInvocation, buildPiRpcArgs, writePromptToTempFile } from './invocation.ts';
+import {
+  getPiInvocation,
+  buildPiRpcArgs,
+  resolveArtifactReaderExtensionPath,
+  writePromptToTempFile,
+} from './invocation.ts';
 import {
   isPiRpcTransportExitEvent,
   PiRpcTransport,
@@ -4437,13 +4442,32 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
         thinking: spec.thinkingOverride ?? spec.agent.thinking,
         runtime: spec.runtimeOverride ?? spec.agent.runtime,
       };
-      const childEnv = buildChildAgentEnv(process.env, { agent: effectiveAgent });
+      // Interactive child receives the artifact reader when launchSpec marks a handoff.
+      const unitRequiresReader = !!(
+        ep.launchSpec as { requireArtifactReader?: boolean } | undefined
+      )?.requireArtifactReader;
+      const runArtifactDir =
+        ep.sessionFile && ep.sessionFile.trim() !== ''
+          ? path.dirname(path.dirname(ep.sessionFile))
+          : undefined;
+      const childEnv = buildChildAgentEnv(process.env, {
+        agent: effectiveAgent,
+        ...(unitRequiresReader && ep.runId && runArtifactDir
+          ? { runId: ep.runId, runArtifactDir }
+          : {}),
+      });
       const disableAgentTool = !isAgentDelegationAllowed(childEnv);
       const args = buildPiRpcArgs(effectiveAgent, {
         tmpPromptPath,
         sessionFile: ep.sessionFile,
         resolvedSkillPaths: spec.resolvedSkillPaths,
         disableAgentTool,
+        ...(unitRequiresReader
+          ? {
+              requireArtifactReader: true,
+              artifactReaderExtensionPath: resolveArtifactReaderExtensionPath(),
+            }
+          : {}),
       });
       const invocation = getPiInvocation(args);
       const factory =

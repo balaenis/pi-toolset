@@ -2274,6 +2274,26 @@ async function runStepWithContext(
     Boolean(acpSessionId);
   // Whether a worktree was created for this invocation (vs reopened stored path).
   const createdNewWorktree = Boolean(worktree && !storedWorktreePath);
+  // Artifact handoffs require the Pi-only reader extension; reject Grok ACP early.
+  if (options.unitContext?.requireArtifactReader && isGrokAcp) {
+    const failure = {
+      agent: agentName,
+      agentSource: agent.source ?? ('unknown' as const),
+      task,
+      title: options.title,
+      exitCode: 1,
+      status: 'failed' as const,
+      messages: [] as SingleResult['messages'],
+      stderr: 'artifact_handoff_unsupported',
+      usage: emptyUsage(),
+      stopReason: 'error',
+      errorCode: 'artifact_handoff_unsupported',
+      errorMessage:
+        'Artifact handoffs are not supported for runtime grok-acp; use pi runtime for oversized chain outputs.',
+    };
+    return await finalizeTerminalResult(failure, 'failed');
+  }
+
   // True once beginUnit has been called (spawn may have side effects).
   let beganUnit = false;
   // True once runSingleAgent is entered (child may have modified the worktree).
