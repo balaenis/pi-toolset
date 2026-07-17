@@ -395,12 +395,27 @@ const EMPTY_FINALIZED: readonly AgentMessage[] = Object.freeze([]);
  */
 const projectedMessageOwnership = new WeakSet<object>();
 
+/**
+ * Module-private ownership of projected tool activities and nested payloads.
+ * Snapshot publication structure-shares these instead of re-serializing/cloning.
+ */
+const projectedToolOwnership = new WeakSet<object>();
+
 function isProjectedMessage(msg: unknown): msg is AgentMessage {
   return typeof msg === 'object' && msg !== null && projectedMessageOwnership.has(msg);
 }
 
 function markProjectedMessage<T extends object>(value: T): T {
   projectedMessageOwnership.add(value);
+  return value;
+}
+
+function isProjectedToolPayload(value: unknown): value is object {
+  return typeof value === 'object' && value !== null && projectedToolOwnership.has(value);
+}
+
+function markProjectedToolPayload<T extends object>(value: T): T {
+  projectedToolOwnership.add(value);
   return value;
 }
 
@@ -422,15 +437,31 @@ function utf8JsonBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
+/** Truncate a string to at most `maxBytes` UTF-8 bytes (prefix), on a code-point boundary. */
 function truncateUtf8(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
   if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
-  let end = Math.min(value.length, maxBytes);
-  let slice = value.slice(0, end);
-  while (end > 0 && Buffer.byteLength(slice, 'utf8') > maxBytes) {
-    end -= 1;
-    slice = value.slice(0, end);
+  let lo = 0;
+  let hi = value.length;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    // Avoid splitting a surrogate pair at the midpoint.
+    const end =
+      mid > 0 &&
+      mid < value.length &&
+      value.charCodeAt(mid - 1) >= 0xd800 &&
+      value.charCodeAt(mid - 1) <= 0xdbff
+        ? mid - 1
+        : mid;
+    if (Buffer.byteLength(value.slice(0, end), 'utf8') <= maxBytes) {
+      best = end;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
-  return slice;
+  return value.slice(0, best);
 }
 
 function boundStringToBudget(value: string, label: string, maxBytes: number): string {
@@ -453,26 +484,30 @@ function boundStringField(value: string, label: string): string {
 }
 
 function boundUnknownPayload(value: unknown, label: string): unknown {
+  // Already projected + frozen payloads are safe to structure-share.
+  if (isProjectedToolPayload(value) && Object.isFrozen(value)) return value;
   const size = utf8JsonBytes(value);
   if (size <= INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
     // Always clone under-budget objects/arrays so freeze never mutates transport-owned data.
-    if (value !== null && typeof value === 'object') return structuredClone(value);
+    if (value !== null && typeof value === 'object') {
+      return markProjectedToolPayload(structuredClone(value) as object);
+    }
     return value;
   }
-  return {
+  return markProjectedToolPayload({
     _omitted: true,
     omittedBytes: size,
     message: `${label} exceeded interactive budget; inspect child session history.`,
-  };
+  });
 }
 
 /** Force an omission marker regardless of payload size (used when complete entry exceeds budget). */
 function omitPayloadMarker(value: unknown, label: string): Record<string, unknown> {
-  return {
+  return markProjectedToolPayload({
     _omitted: true,
     omittedBytes: utf8JsonBytes(value),
     message: `${label} exceeded interactive budget; inspect child session history.`,
-  };
+  });
 }
 
 /** Identity-ish keys kept on content parts; everything else is size-bounded. */
@@ -820,32 +855,48 @@ function projectTransientDisplayMessage(msg: AgentMessage): AgentMessage {
 
 function projectToolArgs(args: unknown): Record<string, unknown> {
   if (args === null || args === undefined) return {};
+  // Reuse already-projected frozen args (common on tool_execution_update).
+  if (
+    isProjectedToolPayload(args) &&
+    Object.isFrozen(args) &&
+    typeof args === 'object' &&
+    !Array.isArray(args)
+  ) {
+    return args as Record<string, unknown>;
+  }
   if (typeof args !== 'object' || Array.isArray(args)) {
     // Clone under-budget arrays/primitives into a private shell before freeze.
     const size = utf8JsonBytes(args);
     if (size <= INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
       const cloned = args !== null && typeof args === 'object' ? structuredClone(args) : args;
-      return Array.isArray(cloned) || (cloned !== null && typeof cloned === 'object')
-        ? { value: cloned }
-        : { value: cloned };
+      return markProjectedToolPayload(
+        Array.isArray(cloned) || (cloned !== null && typeof cloned === 'object')
+          ? { value: cloned }
+          : { value: cloned }
+      );
     }
     const bounded = boundUnknownPayload(args, 'tool-call arguments');
     return typeof bounded === 'object' && bounded !== null && !Array.isArray(bounded)
       ? (bounded as Record<string, unknown>)
-      : { value: bounded };
+      : markProjectedToolPayload({ value: bounded });
   }
   const size = utf8JsonBytes(args);
   if (size <= INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
-    return structuredClone(args) as Record<string, unknown>;
+    return markProjectedToolPayload(structuredClone(args) as Record<string, unknown>);
   }
   return boundUnknownPayload(args, 'tool-call arguments') as Record<string, unknown>;
 }
 
 function projectToolPartialResult(value: unknown): unknown {
   if (value === undefined) return undefined;
+  // Reuse already-projected frozen results (common when re-emitting end with same payload).
+  if (isProjectedToolPayload(value) && Object.isFrozen(value)) return value;
   const size = utf8JsonBytes(value);
   if (size <= INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
-    return value !== null && typeof value === 'object' ? structuredClone(value) : value;
+    if (value !== null && typeof value === 'object') {
+      return markProjectedToolPayload(structuredClone(value) as object);
+    }
+    return value;
   }
   return boundUnknownPayload(value, 'tool result');
 }
@@ -906,36 +957,45 @@ function projectActiveToolEntry(input: {
   };
 
   let entry = build();
+  // Measure once; remeasure only after a mutation. Most entries fit on the first check.
+  let size = utf8JsonBytes(entry);
+  if (size <= INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
+    return markProjectedToolPayload(freezeDeep(entry));
+  }
+
   // Deterministically shrink until the entire serialized entry fits the cap.
   // Order: omit partialResult → bound oversized identity → omit args → drop
   // partialResult → minimal args → further identity shrink. Identity is bounded
   // before args are dropped so small nested payloads survive when only id/name
   // made the complete entry exceed the budget.
-  if (utf8JsonBytes(entry) > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
-    if (partialResult !== undefined) {
-      partialResult = omitPayloadMarker(partialResult, 'tool result');
-      entry = build();
-    }
+  if (partialResult !== undefined) {
+    partialResult = omitPayloadMarker(partialResult, 'tool result');
+    entry = build();
+    size = utf8JsonBytes(entry);
   }
-  if (utf8JsonBytes(entry) > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
+  if (size > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
     toolCallId = boundStringToBudget(toolCallId, 'toolCallId', 256);
     toolName = boundStringToBudget(toolName, 'toolName', 256);
     entry = build();
+    size = utf8JsonBytes(entry);
   }
-  if (utf8JsonBytes(entry) > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
+  if (size > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
     args = omitPayloadMarker(args, 'tool-call arguments');
     entry = build();
+    size = utf8JsonBytes(entry);
   }
-  if (utf8JsonBytes(entry) > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
+  if (size > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
     partialResult = undefined;
     entry = build();
+    size = utf8JsonBytes(entry);
   }
-  if (utf8JsonBytes(entry) > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
-    args = { _omitted: true, message: 'exceeded interactive budget' };
+  if (size > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
+    args = markProjectedToolPayload({ _omitted: true, message: 'exceeded interactive budget' });
     entry = build();
+    size = utf8JsonBytes(entry);
   }
   // Last resort: shrink identity until the complete entry fits (always terminates).
-  while (utf8JsonBytes(entry) > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
+  while (size > INTERACTIVE_NON_AUTHORITATIVE_ITEM_MAX_BYTES) {
     const idBytes = Buffer.byteLength(toolCallId, 'utf8');
     const nameBytes = Buffer.byteLength(toolName, 'utf8');
     if (idBytes > 1) {
@@ -949,12 +1009,18 @@ function projectActiveToolEntry(input: {
       break;
     }
     entry = build();
+    size = utf8JsonBytes(entry);
   }
-  return freezeDeep(entry);
+  return markProjectedToolPayload(freezeDeep(entry));
 }
 
-/** Clone+freeze an active-tool row for public snapshot isolation. */
+/**
+ * Isolate an active-tool row for public snapshot publication.
+ * Ingest already deep-freezes via projectActiveToolEntry — structure-share that
+ * owned entry so high-frequency publish paths do not re-serialize/clone.
+ */
 function isolateActiveToolForSnapshot(t: InteractiveToolActivity): InteractiveToolActivity {
+  if (isProjectedToolPayload(t) && Object.isFrozen(t)) return t;
   return projectActiveToolEntry({
     toolCallId: t.toolCallId,
     toolName: t.toolName,
@@ -1184,9 +1250,8 @@ function snapshotOf(ep: InteractiveAgentEndpoint): InteractiveEndpointSnapshot {
     messages: ep.finalizedMessagesView,
     messagesRevision: ep.messagesRevision,
     streamRevision: ep.streamRevision,
-    streamingMessage: ep.streamingMessage
-      ? freezeDeep(structuredClone(ep.streamingMessage))
-      : undefined,
+    // Streaming message is already projected+frozen at ingest — structure-share.
+    streamingMessage: ep.streamingMessage,
     activeTools: [...ep.activeTools.values()].map(isolateActiveToolForSnapshot),
     steeringQueue: projectQueueEntries(ep.steeringQueue),
     followUpQueue: projectQueueEntries(ep.followUpQueue),
