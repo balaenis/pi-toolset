@@ -25,6 +25,28 @@ import {
 import { attachErrorStack, classifyEarlyFailureStopReason } from './early-failure.ts';
 import { emptyUsage } from './empty-usage.ts';
 import type { WorkflowFanoutState } from './run-types.ts';
+
+/** Resolve itemsRef fanout mappings into runtime-only inline items for resume. */
+async function resolveWorkflowFanouts(
+  store: RunStore,
+  runId: string,
+  fanouts: Record<string, WorkflowFanoutState> | undefined
+): Promise<Record<string, WorkflowFanoutState> | undefined> {
+  if (!fanouts) return undefined;
+  const out: Record<string, WorkflowFanoutState> = {};
+  for (const [key, mapping] of Object.entries(fanouts)) {
+    if (mapping.itemsRef && !mapping.items) {
+      const items = (await store.readJsonArtifact(runId, mapping.itemsRef)) as unknown[];
+      if (!Array.isArray(items)) {
+        throw new Error(`artifact_corrupt: fanout ${key} itemsRef is not an array`);
+      }
+      out[key] = { step: mapping.step, items, unitIds: mapping.unitIds };
+    } else {
+      out[key] = mapping;
+    }
+  }
+  return out;
+}
 import {
   GROK_ACP_RUNTIME,
   MAX_CONCURRENCY,
@@ -779,18 +801,23 @@ async function maybeResumeDurableRun(
   let restoredChain: import('./chain.ts').RestoredChainState | undefined;
   if (mode === 'chain' && Array.isArray(record.request.chain) && record.request.chain.length > 0) {
     const chain = record.request.chain as import('./chain.ts').ChainItemInput[];
+    const resolvedFanouts = await resolveWorkflowFanouts(
+      store,
+      resumeRunId,
+      record.workflowState?.fanouts
+    );
     const logicalSteps = buildRestoredLogicalSteps(
       chain,
       record.details.chain?.steps,
       units,
-      record.workflowState?.fanouts
+      resolvedFanouts
     );
     restoredChain = {
       results: record.details.results,
       outputs: record.details.outputs ?? {},
       logicalSteps,
       units,
-      fanouts: record.workflowState?.fanouts,
+      fanouts: resolvedFanouts,
     };
   }
 
