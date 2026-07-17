@@ -24,6 +24,7 @@ import {
 } from './chain.ts';
 import { attachErrorStack, classifyEarlyFailureStopReason } from './early-failure.ts';
 import { emptyUsage } from './empty-usage.ts';
+import { startProfile, stopProfile } from './profiler.ts';
 import type { WorkflowFanoutState } from './run-types.ts';
 import {
   GROK_ACP_RUNTIME,
@@ -1082,6 +1083,8 @@ export async function executeAgentTool(
       details: makeDetails('single')([]),
     };
   }
+
+  startProfile(mode ?? 'agent');
 
   // Start a durable run before launching the workflow (persistence optional).
   // When resumeDescriptor is set, resume the stored run instead of creating new.
@@ -2656,6 +2659,11 @@ async function runStepWithContext(
     // Compact even non-durable early failures so raw transcripts never escape.
     return finalizeTerminalResult(failure, 'failed');
   } finally {
+    const profilePath = await stopProfile();
+    if (profilePath) {
+      // eslint-disable-next-line no-console
+      console.error(`[pi-agents] CPU profile written to ${profilePath}`);
+    }
     await agentContext.cleanup();
   }
 }
