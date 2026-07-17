@@ -856,11 +856,24 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
 
     const fanoutKey = chainFanoutStepId(input.step);
     const unitIds = input.items.map((_, i) => chainFanoutUnitId(input.step, i));
-    const expansion: WorkflowFanoutState = {
+    // Reject individual fanout items above the inline payload budget.
+    for (let i = 0; i < input.items.length; i++) {
+      const itemBytes = Buffer.byteLength(JSON.stringify(input.items[i]), 'utf8');
+      if (itemBytes > 256 * 1024) {
+        throw new Error(`fanout_item_too_large: item ${i} is ${itemBytes} bytes (max 256 KiB)`);
+      }
+    }
+    // Aggregate list may spill as itemsRef when above the inline budget.
+    let expansion: WorkflowFanoutState = {
       step: input.step,
       items: input.items,
       unitIds,
     };
+    const aggregateBytes = Buffer.byteLength(JSON.stringify(input.items), 'utf8');
+    if (aggregateBytes > 256 * 1024 && typeof store.writeJsonArtifact === 'function') {
+      const itemsRef = await store.writeJsonArtifact(runId, 'fanout-items', input.items);
+      expansion = { step: input.step, itemsRef, unitIds };
+    }
     const fingerprint = agentFingerprint(input.agent);
     const expectedRuntime = input.runtime ?? DEFAULT_RUNTIME;
 
