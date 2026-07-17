@@ -96,4 +96,29 @@ describe('result-payload', () => {
 
     fs.rmSync(root, { recursive: true, force: true });
   });
+
+  it('provisional snapshots contain no authoritative inline or ref fields', async () => {
+    const { snapshotProvisionalResult } = await import('../src/result-snapshot.ts');
+    const provisional = snapshotProvisionalResult(
+      baseResult({
+        finalOutput: 'secret',
+        structuredOutput: { x: 1 },
+        finalOutputRef: {
+          kind: 'run-artifact',
+          version: 1,
+          runId: 'run-x',
+          payload: 'final-output',
+          relativePath: 'artifacts/sha256/ab/ab' + '0'.repeat(62) + '.txt',
+          sha256: 'ab' + '0'.repeat(62),
+          bytes: 6,
+          mediaType: 'text/plain; charset=utf-8',
+        },
+      })
+    );
+    expect(provisional.finalOutput).toBeUndefined();
+    expect(provisional.finalOutputRef).toBeUndefined();
+    expect(provisional.structuredOutput).toBeUndefined();
+    expect(provisional.structuredOutputRef).toBeUndefined();
+    expect(provisional.messages).toEqual([]);
+  });
 });

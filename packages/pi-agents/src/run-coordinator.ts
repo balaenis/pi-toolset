@@ -1371,28 +1371,34 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
     stampResultMetadata(stored, ctx);
     stored.status = status;
 
-    // Build a private clone of latest live/disk authority; mutate only after strict write.
     const live = ensureLiveRecord(runId);
     if (!live) return stored;
 
-    const privateUnits = structuredClone(live.units) as Record<string, RunUnitRecord>;
-    const unit = privateUnits[ctx.unitId];
-    if (unit) {
-      const last = unit.attempts[unit.attempts.length - 1];
+    // Cancel coalesced ordinary flushes so a mid-flight write cannot merge a
+    // still-running live unit over the terminal disk commit below.
+    cancelPendingTimer(runId);
+
+    // Mutate only this unit on a private clone; never replace the whole units map
+    // (concurrent finishUnit for another unit must not be clobbered).
+    const unitClone = live.units[ctx.unitId]
+      ? (structuredClone(live.units[ctx.unitId]) as RunUnitRecord)
+      : undefined;
+    if (unitClone) {
+      const last = unitClone.attempts[unitClone.attempts.length - 1];
       if (last && last.attempt === ctx.attempt && last.status === 'running') {
         last.status = status;
         last.finishedAt = now();
         if (stored.stopReason !== undefined) last.stopReason = stored.stopReason;
         if (stored.errorMessage !== undefined) last.errorMessage = stored.errorMessage;
       } else {
-        recordAttempt(unit, status, last?.startedAt ?? now(), now(), {
+        recordAttempt(unitClone, status, last?.startedAt ?? now(), now(), {
           stopReason: stored.stopReason,
           errorMessage: stored.errorMessage,
         });
       }
       const unitSession =
-        unit.sessionFile !== undefined && unit.sessionFile.trim() !== ''
-          ? unit.sessionFile
+        unitClone.sessionFile !== undefined && unitClone.sessionFile.trim() !== ''
+          ? unitClone.sessionFile
           : undefined;
       if (unitSession !== undefined) {
         stored.sessionFile = unitSession;
@@ -1402,7 +1408,9 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
         delete ctx.sessionFile;
       }
       const unitAcp =
-        unit.acpSessionId !== undefined && unit.acpSessionId !== '' ? unit.acpSessionId : undefined;
+        unitClone.acpSessionId !== undefined && unitClone.acpSessionId !== ''
+          ? unitClone.acpSessionId
+          : undefined;
       if (unitAcp !== undefined) {
         stored.acpSessionId = unitAcp;
         ctx.acpSessionId = unitAcp;
@@ -1410,21 +1418,47 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
         delete stored.acpSessionId;
         delete ctx.acpSessionId;
       }
-      stored.resumeCapability = unit.capability;
-      ctx.resumeCapability = unit.capability;
+      stored.resumeCapability = unitClone.capability;
+      ctx.resumeCapability = unitClone.capability;
       if (stored.worktreePath !== undefined && stored.worktreePath.trim() !== '') {
-        unit.worktreePath = stored.worktreePath;
+        unitClone.worktreePath = stored.worktreePath;
         ctx.worktreePath = stored.worktreePath;
       } else {
-        delete unit.worktreePath;
+        delete unitClone.worktreePath;
         delete ctx.worktreePath;
       }
-      unit.status = status;
-      unit.result = stored;
+      unitClone.status = status;
+      unitClone.result = stored;
     }
 
-    // Strict run.json first, then unit_terminal event, then mirror into live.
-    // Fall back to best-effort APIs for partial test doubles that predate strict methods.
+    // Mirror live to terminal first so any residual flush merges terminal authority.
+    const liveUnit = live.units[ctx.unitId];
+    if (liveUnit && unitClone) {
+      liveUnit.status = unitClone.status;
+      liveUnit.attempt = unitClone.attempt;
+      liveUnit.attempts = unitClone.attempts;
+      liveUnit.result = unitClone.result;
+      if (unitClone.sessionFile !== undefined) liveUnit.sessionFile = unitClone.sessionFile;
+      else delete liveUnit.sessionFile;
+      if (unitClone.acpSessionId !== undefined) liveUnit.acpSessionId = unitClone.acpSessionId;
+      else delete liveUnit.acpSessionId;
+      if (unitClone.worktreePath !== undefined) liveUnit.worktreePath = unitClone.worktreePath;
+      else delete liveUnit.worktreePath;
+      if (unitClone.sessionPromptEstablished !== undefined) {
+        liveUnit.sessionPromptEstablished = unitClone.sessionPromptEstablished;
+      }
+    } else if (unitClone) {
+      live.units[ctx.unitId] = unitClone;
+    }
+    if (Array.isArray(live.details.results)) {
+      const idx = live.details.results.findIndex(
+        (r) => r.unitId === ctx.unitId || (r.agent === stored.agent && r.task === stored.task)
+      );
+      if (idx >= 0) live.details.results[idx] = stored;
+      else live.details.results.push(stored);
+    }
+
+    // Strict run.json (target unit only), then unit_terminal event.
     const updateRunFn =
       typeof store.updateRunStrict === 'function'
         ? store.updateRunStrict.bind(store)
@@ -1434,13 +1468,15 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
         ? store.appendEventStrict.bind(store)
         : store.appendEvent.bind(store);
     await updateRunFn(runId, (record) => {
-      record.units = privateUnits;
-      // Keep details.results in sync for single-result modes when present.
+      if (unitClone) {
+        record.units[ctx.unitId] = unitClone;
+      }
       if (Array.isArray(record.details.results)) {
         const idx = record.details.results.findIndex(
-          (r) => r.unitId === ctx.unitId && r.attempt === ctx.attempt
+          (r) => r.unitId === ctx.unitId || (r.agent === stored.agent && r.task === stored.task)
         );
         if (idx >= 0) record.details.results[idx] = stored;
+        else record.details.results.push(stored);
       }
     });
     try {
@@ -1459,7 +1495,10 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
       if (disk.ok) {
         const liveRec = active.get(runId);
         if (liveRec) {
-          liveRec.units = structuredClone(disk.loaded.record.units);
+          const diskUnit = disk.loaded.record.units[ctx.unitId];
+          if (diskUnit && liveRec.units[ctx.unitId]) {
+            liveRec.units[ctx.unitId] = structuredClone(diskUnit);
+          }
           liveRec.details = structuredClone(disk.loaded.record.details);
         }
       }
@@ -1470,37 +1509,6 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
       };
     }
 
-    // Mirror committed authority into the existing live unit objects in place so
-    // DurableRunContext.started.units (same references) observes the terminal state.
-    const liveRec = active.get(runId);
-    if (liveRec) {
-      const liveUnit = liveRec.units[ctx.unitId];
-      const committed = privateUnits[ctx.unitId];
-      if (liveUnit && committed) {
-        liveUnit.status = committed.status;
-        liveUnit.attempt = committed.attempt;
-        liveUnit.attempts = committed.attempts;
-        liveUnit.result = committed.result;
-        if (committed.sessionFile !== undefined) liveUnit.sessionFile = committed.sessionFile;
-        else delete liveUnit.sessionFile;
-        if (committed.acpSessionId !== undefined) liveUnit.acpSessionId = committed.acpSessionId;
-        else delete liveUnit.acpSessionId;
-        if (committed.worktreePath !== undefined) liveUnit.worktreePath = committed.worktreePath;
-        else delete liveUnit.worktreePath;
-        if (committed.sessionPromptEstablished !== undefined) {
-          liveUnit.sessionPromptEstablished = committed.sessionPromptEstablished;
-        }
-      } else if (committed) {
-        liveRec.units[ctx.unitId] = committed;
-      }
-      if (Array.isArray(liveRec.details.results)) {
-        const idx = liveRec.details.results.findIndex(
-          (r) => r.unitId === ctx.unitId || (r.agent === stored.agent && r.task === stored.task)
-        );
-        if (idx >= 0) liveRec.details.results[idx] = stored;
-        else liveRec.details.results.push(stored);
-      }
-    }
     return stored;
   }
 

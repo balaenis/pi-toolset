@@ -30,7 +30,34 @@ export class ArtifactStoreError extends Error {
   }
 }
 
+function assertJsonValue(value: unknown, pathLabel = 'value'): void {
+  if (value === undefined) {
+    throw new ArtifactStoreError('artifact_invalid', `${pathLabel} cannot be undefined`);
+  }
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    throw new ArtifactStoreError('artifact_invalid', `${pathLabel} must be a finite number`);
+  }
+  if (typeof value === 'bigint' || typeof value === 'function' || typeof value === 'symbol') {
+    throw new ArtifactStoreError(
+      'artifact_invalid',
+      `${pathLabel} has unsupported type ${typeof value}`
+    );
+  }
+  if (value === null || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) assertJsonValue(value[i], `${pathLabel}[${i}]`);
+    return;
+  }
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v === undefined) {
+      throw new ArtifactStoreError('artifact_invalid', `${pathLabel}.${k} cannot be undefined`);
+    }
+    assertJsonValue(v, `${pathLabel}.${k}`);
+  }
+}
+
 export function serializeJsonArtifact(value: unknown): string {
+  assertJsonValue(value);
   try {
     return `${JSON.stringify(value, null, 2)}\n`;
   } catch (err) {

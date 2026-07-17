@@ -633,6 +633,40 @@ function fsyncDir(dirPath: string): void {
   }
 }
 
+function fsyncFdStrict(fd: number): void {
+  try {
+    fs.fsyncSync(fd);
+  } catch (err) {
+    throw {
+      code: 'run_store_error',
+      message: `fsync failed: ${err instanceof Error ? err.message : String(err)}`,
+    } satisfies RunStoreError;
+  }
+}
+
+function fsyncDirStrict(dirPath: string): void {
+  if (!POSIX) return;
+  let dirFd: number | undefined;
+  try {
+    dirFd = fs.openSync(dirPath, 'r');
+    fsyncFdStrict(dirFd);
+  } catch (err) {
+    if (err && typeof err === 'object' && 'code' in err) throw err;
+    throw {
+      code: 'run_store_error',
+      message: `directory fsync failed: ${err instanceof Error ? err.message : String(err)}`,
+    } satisfies RunStoreError;
+  } finally {
+    if (dirFd !== undefined) {
+      try {
+        fs.closeSync(dirFd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 function isUnitIdValid(id: string): boolean {
   return /^[a-z0-9-]+$/.test(id);
 }
@@ -1747,7 +1781,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     return { ok: true, loaded: { runDir: dir, record: validated.record } };
   }
 
-  function writeRunContents(runId: string, record: AgentRunRecordV1): void {
+  function writeRunContents(runId: string, record: AgentRunRecordV1, strict = false): void {
     const dir = runDirOf(runId);
     const target = path.join(dir, 'run.json');
     const tmp = path.join(dir, `.run.json.${instanceId}.${randomUUID()}.tmp`);
@@ -1756,11 +1790,13 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     try {
       fd = fs.openSync(tmp, 'w', FILE_MODE);
       fs.writeFileSync(fd, data);
-      fsyncFd(fd);
+      if (strict) fsyncFdStrict(fd);
+      else fsyncFd(fd);
       fs.closeSync(fd);
       fd = undefined;
       fs.renameSync(tmp, target);
-      fsyncDir(dir);
+      if (strict) fsyncDirStrict(dir);
+      else fsyncDir(dir);
     } finally {
       if (fd !== undefined) {
         try {
@@ -1783,7 +1819,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     });
   }
 
-  function appendEventLine(runId: string, event: RunLifecycleEvent): Promise<void> {
+  function appendEventLine(runId: string, event: RunLifecycleEvent, strict = false): Promise<void> {
     return runSerial(runId, async () => {
       const file = eventsPath(runId);
       mkdirPrivate(runDirOf(runId));
@@ -1792,9 +1828,11 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       try {
         fd = fs.openSync(file, 'a', FILE_MODE);
         fs.writeFileSync(fd, line);
-        fsyncFd(fd);
+        if (strict) fsyncFdStrict(fd);
+        else fsyncFd(fd);
         fs.closeSync(fd);
         fd = undefined;
+        if (strict) fsyncDirStrict(runDirOf(runId));
       } finally {
         if (fd !== undefined) {
           try {
@@ -2238,8 +2276,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     runId: string,
     mutate: (record: AgentRunRecordV1) => void
   ): Promise<AgentRunRecordV1> {
-    // Same serial queue as updateRun; write path currently uses best-effort fsync.
-    // Strict semantics: re-validate the mutated record before commit and surface load errors.
+    // Same serial queue as updateRun; strict fsync + re-validate before commit.
     return runSerial(runId, async () => {
       const loaded = loadRunJson(runId);
       if (!loaded.ok) throw loaded.error;
@@ -2248,17 +2285,17 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       record.updatedAt = now();
       const validated = validateRunRecord(record, runId, runDirOf(runId));
       if (!validated.ok) throw validated.error;
-      writeRunContents(runId, validated.record);
+      writeRunContents(runId, validated.record, true);
       return validated.record;
     });
   }
 
   async function appendEvent(runId: string, event: RunLifecycleEvent): Promise<void> {
-    await appendEventLine(runId, event);
+    await appendEventLine(runId, event, false);
   }
 
   async function appendEventStrict(runId: string, event: RunLifecycleEvent): Promise<void> {
-    await appendEventLine(runId, event);
+    await appendEventLine(runId, event, true);
   }
 
   async function writeTextArtifact(

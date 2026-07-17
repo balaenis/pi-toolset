@@ -71,6 +71,22 @@ describe('artifact-store', () => {
     fs.rmSync(runDir, { recursive: true, force: true });
   });
 
+  it('rejects non-finite numbers and undefined object values', async () => {
+    const runDir = makeTempRunDir();
+    const store = createArtifactStore();
+    const runId = 'run-json-invalid';
+    await expect(
+      store.writeJsonArtifact(runId, runDir, 'structured-output', { n: Number.NaN })
+    ).rejects.toMatchObject({ code: 'artifact_invalid' });
+    await expect(
+      store.writeJsonArtifact(runId, runDir, 'structured-output', { n: Number.POSITIVE_INFINITY })
+    ).rejects.toMatchObject({ code: 'artifact_invalid' });
+    await expect(
+      store.writeJsonArtifact(runId, runDir, 'structured-output', { u: undefined as never })
+    ).rejects.toMatchObject({ code: 'artifact_invalid' });
+    fs.rmSync(runDir, { recursive: true, force: true });
+  });
+
   it('rejects cross-run refs and path escape attempts', async () => {
     const runDir = makeTempRunDir();
     const store = createArtifactStore();

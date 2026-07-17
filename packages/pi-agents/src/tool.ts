@@ -303,7 +303,11 @@ interface DurableRunContext {
   /** Stamp the per-unit start; awaited before session stamp / interactive register. */
   beginUnit(ctx: UnitExecutionContext): void | Promise<void>;
   /** Stamp the per-unit terminal. */
-  endUnit(ctx: UnitExecutionContext, result: SingleResult, status: ExecutionStatus): Promise<void>;
+  endUnit(
+    ctx: UnitExecutionContext,
+    result: SingleResult,
+    status: ExecutionStatus
+  ): Promise<void | SingleResult>;
   /**
    * Strict awaited first-write of a unit sessionFile after Pi session creation.
    * Disk-first CAS via the coordinator; same path is idempotent.
@@ -419,8 +423,8 @@ async function maybeStartDurableRun(
     unitCtx: UnitExecutionContext,
     result: SingleResult,
     status: ExecutionStatus
-  ) => {
-    await coordinator.finishUnit(started.runId, unitCtx, result, status);
+  ): Promise<SingleResult> => {
+    return coordinator.finishUnit(started.runId, unitCtx, result, status);
   };
   const stampUnitSessionFile = async (unitId: string, sessionFile: string): Promise<void> => {
     const unit = units[unitId];
@@ -686,8 +690,8 @@ async function maybeResumeDurableRun(
     unitCtx: UnitExecutionContext,
     result: SingleResult,
     status: ExecutionStatus
-  ) => {
-    await coordinator.finishUnit(resumeRunId, unitCtx, result, status);
+  ): Promise<SingleResult> => {
+    return coordinator.finishUnit(resumeRunId, unitCtx, result, status);
   };
   const stampUnitSessionFile = async (unitId: string, sessionFile: string): Promise<void> => {
     const unit = units[unitId];
@@ -1937,7 +1941,7 @@ async function runStepWithContext(
       ctx: UnitExecutionContext,
       result: SingleResult,
       status: ExecutionStatus
-    ) => void | Promise<void>;
+    ) => void | Promise<void | SingleResult>;
     /** Runs before worktree cleanup and durable endUnit (schema validation, metadata). */
     postprocessTerminal?: (result: SingleResult) => void;
     interactiveRegistry?: import('./interactive-agent.ts').InteractiveAgentRegistry;
@@ -2008,11 +2012,15 @@ async function runStepWithContext(
     }
     const snapshot = snapshotSingleResult(working);
     if (options.unitContext && options.endUnit) {
-      await options.endUnit(
+      const committed = await options.endUnit(
         options.unitContext,
         snapshot,
         status ?? resolveExecutionStatus(snapshot)
       );
+      // Prefer the artifact-aware snapshot returned by finishUnit when present.
+      if (committed && typeof committed === 'object' && 'agent' in committed) {
+        return committed as SingleResult;
+      }
     }
     return snapshot;
   };
