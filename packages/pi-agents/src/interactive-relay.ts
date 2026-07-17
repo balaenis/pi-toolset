@@ -17,11 +17,13 @@ import {
   type InteractiveRegistryEvent,
   type InteractiveTerminalOverride,
 } from './interactive-agent.ts';
+import { isRunArtifactRef } from './artifact-store.ts';
 import {
   formatParentArtifactDescriptor,
   shouldSpillPayload,
   textPayloadBytes,
 } from './result-payload.ts';
+import type { RunArtifactRefV1 } from './run-types.ts';
 import type { RunStore } from './run-store.ts';
 
 export const CONTINUATION_MESSAGE_TYPE = 'pi-agents-interactive-continuation';
@@ -188,6 +190,33 @@ function escapeXml(value: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/** Validate additive V1 inline/outputRef union for persisted continuation data. */
+export function validateContinuationOutputUnion(
+  details: Partial<InteractiveContinuationDetails>
+): { ok: true } | { ok: false; error: string } {
+  const hasOutput = Object.prototype.hasOwnProperty.call(details, 'output');
+  const hasRef = Object.prototype.hasOwnProperty.call(details, 'outputRef');
+  if (hasOutput && hasRef) {
+    return { ok: false, error: 'continuation sets both output and outputRef' };
+  }
+  if (hasRef) {
+    if (!isRunArtifactRef(details.outputRef)) {
+      return { ok: false, error: 'continuation outputRef is not a Version 1 run-artifact ref' };
+    }
+    const r = details.outputRef as RunArtifactRefV1;
+    if (r.payload !== 'interactive-continuation') {
+      return { ok: false, error: `continuation outputRef payload mismatch: ${r.payload}` };
+    }
+    if (r.mediaType !== 'text/plain; charset=utf-8') {
+      return { ok: false, error: `continuation outputRef mediaType mismatch: ${r.mediaType}` };
+    }
+    if (!/^[a-f0-9]{64}$/.test(r.sha256)) {
+      return { ok: false, error: 'continuation outputRef sha256 is not lowercase hex' };
+    }
+  }
+  return { ok: true };
 }
 
 /**
@@ -549,6 +578,9 @@ export function renderContinuationMessage(
       const preview = details.output.split('\n')[0] ?? '';
       const trimmed = preview.length > 240 ? `${preview.slice(0, 240)}…` : preview;
       text += `\n${theme.fg('toolOutput', trimmed)}`;
+    } else if (details.outputRef) {
+      const shortSha = details.outputRef.sha256.slice(0, 16);
+      text += `\n${theme.fg('toolOutput', `[run-artifact payload=${details.outputRef.payload} bytes=${details.outputRef.bytes} sha256=${shortSha}…]`)}`;
     } else if (details.error) {
       text += `\n${theme.fg('error', details.error.slice(0, 240))}`;
     } else {
@@ -577,6 +609,19 @@ export function renderContinuationMessage(
     container.addChild(new Spacer(1));
     container.addChild(new Text(theme.fg('muted', '─── Output ───'), 0, 0));
     container.addChild(new Markdown(details.output.trim(), 0, 0, getMarkdownTheme()));
+  } else if (details.outputRef) {
+    container.addChild(new Spacer(1));
+    container.addChild(new Text(theme.fg('muted', '─── Artifact ───'), 0, 0));
+    container.addChild(
+      new Text(
+        theme.fg(
+          'dim',
+          `[run-artifact payload=${details.outputRef.payload} bytes=${details.outputRef.bytes} sha256=${details.outputRef.sha256.slice(0, 24)}…]`
+        ),
+        0,
+        0
+      )
+    );
   } else {
     container.addChild(new Spacer(1));
     container.addChild(new Text(theme.fg('muted', '(no final text)'), 0, 0));

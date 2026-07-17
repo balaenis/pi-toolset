@@ -112,6 +112,8 @@ export interface RunChainWorkflowOptions {
    * any worker is scheduled. Must not receive RunStore/RunCoordinator.
    */
   onFanoutExpand?: (req: FanoutExpandRequest) => Promise<WorkflowFanoutState | void>;
+  /** Trusted artifact resolver for structured refs (production workflow path only). */
+  resolveArtifact?: (ref: import('./run-types.ts').RunArtifactRefV1) => Promise<unknown>;
 }
 
 export type ChainResult = AgentToolResult<SubagentDetails> & { isError?: boolean };
@@ -468,7 +470,16 @@ function completedStepPreviousOutput(
 }
 
 export async function runChainWorkflow(options: RunChainWorkflowOptions): Promise<ChainResult> {
-  const { chain, signal, onUpdate, makeDetails, runStep, restored, onFanoutExpand } = options;
+  const {
+    chain,
+    signal,
+    onUpdate,
+    makeDetails,
+    runStep,
+    restored,
+    onFanoutExpand,
+    resolveArtifact,
+  } = options;
   let results: SingleResult[];
   let previousOutput = '';
   let previousRef: ChainOutputEntry['textRef'] | undefined;
@@ -595,6 +606,7 @@ export async function runChainWorkflow(options: RunChainWorkflowOptions): Promis
           emit,
           restored,
           onFanoutExpand,
+          resolveArtifact,
         });
         if (fanout.done) return fanout.result;
         previousOutput = fanout.previousOutput;
@@ -765,6 +777,7 @@ interface StepShared {
   emit: (content: string) => void;
   restored?: RestoredChainState;
   onFanoutExpand?: (req: FanoutExpandRequest) => Promise<WorkflowFanoutState | void>;
+  resolveArtifact?: (ref: import('./run-types.ts').RunArtifactRefV1) => Promise<unknown>;
 }
 
 async function runSequentialStep(

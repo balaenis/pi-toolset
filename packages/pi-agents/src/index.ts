@@ -130,6 +130,8 @@ export default function (pi: ExtensionAPI) {
     backgroundManager.cancelAll('session_shutdown');
     await backgroundManager.waitForIdle();
     viewController.clearWidget();
+    // Await tracked artifact publication before disposing relay/registry.
+    await relayCoordinator?.waitForIdle();
     relayCoordinator?.dispose();
     relayCoordinator = undefined;
     await interactiveRegistry.shutdown();

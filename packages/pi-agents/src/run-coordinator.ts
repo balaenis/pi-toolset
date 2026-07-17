@@ -1431,34 +1431,9 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
       unitClone.result = stored;
     }
 
-    // Mirror live to terminal first so any residual flush merges terminal authority.
-    const liveUnit = live.units[ctx.unitId];
-    if (liveUnit && unitClone) {
-      liveUnit.status = unitClone.status;
-      liveUnit.attempt = unitClone.attempt;
-      liveUnit.attempts = unitClone.attempts;
-      liveUnit.result = unitClone.result;
-      if (unitClone.sessionFile !== undefined) liveUnit.sessionFile = unitClone.sessionFile;
-      else delete liveUnit.sessionFile;
-      if (unitClone.acpSessionId !== undefined) liveUnit.acpSessionId = unitClone.acpSessionId;
-      else delete liveUnit.acpSessionId;
-      if (unitClone.worktreePath !== undefined) liveUnit.worktreePath = unitClone.worktreePath;
-      else delete liveUnit.worktreePath;
-      if (unitClone.sessionPromptEstablished !== undefined) {
-        liveUnit.sessionPromptEstablished = unitClone.sessionPromptEstablished;
-      }
-    } else if (unitClone) {
-      live.units[ctx.unitId] = unitClone;
-    }
-    if (Array.isArray(live.details.results)) {
-      const idx = live.details.results.findIndex(
-        (r) => r.unitId === ctx.unitId || (r.agent === stored.agent && r.task === stored.task)
-      );
-      if (idx >= 0) live.details.results[idx] = stored;
-      else live.details.results.push(stored);
-    }
-
-    // Strict run.json (target unit only), then unit_terminal event.
+    // Strict run.json (target unit only), then unit_terminal event, then mirror into live.
+    // Live mutation happens only after disk commit succeeds so rejected authority
+    // cannot leak to parent/coalesced paths.
     const updateRunFn =
       typeof store.updateRunStrict === 'function'
         ? store.updateRunStrict.bind(store)
@@ -1509,6 +1484,36 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
       };
     }
 
+    // Mirror committed authority into the existing live unit objects in place so
+    // DurableRunContext.started.units (same references) observes the terminal state.
+    const liveRec = active.get(runId);
+    if (liveRec) {
+      const liveUnit = liveRec.units[ctx.unitId];
+      if (liveUnit && unitClone) {
+        liveUnit.status = unitClone.status;
+        liveUnit.attempt = unitClone.attempt;
+        liveUnit.attempts = unitClone.attempts;
+        liveUnit.result = unitClone.result;
+        if (unitClone.sessionFile !== undefined) liveUnit.sessionFile = unitClone.sessionFile;
+        else delete liveUnit.sessionFile;
+        if (unitClone.acpSessionId !== undefined) liveUnit.acpSessionId = unitClone.acpSessionId;
+        else delete liveUnit.acpSessionId;
+        if (unitClone.worktreePath !== undefined) liveUnit.worktreePath = unitClone.worktreePath;
+        else delete liveUnit.worktreePath;
+        if (unitClone.sessionPromptEstablished !== undefined) {
+          liveUnit.sessionPromptEstablished = unitClone.sessionPromptEstablished;
+        }
+      } else if (unitClone) {
+        liveRec.units[ctx.unitId] = unitClone;
+      }
+      if (Array.isArray(liveRec.details.results)) {
+        const idx = liveRec.details.results.findIndex(
+          (r) => r.unitId === ctx.unitId || (r.agent === stored.agent && r.task === stored.task)
+        );
+        if (idx >= 0) liveRec.details.results[idx] = stored;
+        else liveRec.details.results.push(stored);
+      }
+    }
     return stored;
   }
 

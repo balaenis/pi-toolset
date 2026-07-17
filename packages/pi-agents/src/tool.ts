@@ -1171,7 +1171,8 @@ export async function executeAgentTool(
         durable,
         restoredChain,
         interactiveRegistry,
-        spawnFn
+        spawnFn,
+        options.runStore
       );
     if (mode === 'parallel')
       return runParallel(
@@ -1425,7 +1426,8 @@ async function runChain(
   durable: DurableRunContext | undefined = undefined,
   restored?: import('./chain.ts').RestoredChainState,
   interactiveRegistry?: import('./interactive-agent.ts').InteractiveAgentRegistry,
-  spawnFn?: import('./execution.ts').SpawnFn
+  spawnFn?: import('./execution.ts').SpawnFn,
+  runStore?: RunStore
 ): Promise<AgentResult> {
   const chainDetails = (results: SingleResult[], outputs?: Record<string, ChainOutputEntry>) => ({
     ...makeDetails('chain')(results),
@@ -1438,6 +1440,12 @@ async function runChain(
     makeDetails: chainDetails,
     restored,
     ...(durable ? { onFanoutExpand: (req) => durable.expandFanout(req) } : {}),
+    ...(runStore
+      ? {
+          resolveArtifact: (ref: import('./run-types.ts').RunArtifactRefV1) =>
+            runStore.readJsonArtifact(ref.runId, ref),
+        }
+      : {}),
     runStep: (req) =>
       runStepWithContext(
         ctx,
