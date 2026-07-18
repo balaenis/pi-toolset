@@ -249,7 +249,22 @@ export async function safeAbandon(store: RunStore, runId: string, claimId: strin
 }
 
 function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object') {
+    const rec = err as { code?: unknown; message?: unknown };
+    const code = typeof rec.code === 'string' ? rec.code : undefined;
+    const message = typeof rec.message === 'string' ? rec.message : undefined;
+    if (code && message) return `${code}: ${message}`;
+    if (message) return message;
+    if (code) return code;
+  }
+  try {
+    const json = JSON.stringify(err);
+    if (typeof json === 'string' && json.length > 0 && json !== '{}') return json;
+  } catch {
+    /* cyclic / non-serializable */
+  }
+  return String(err);
 }
 
 /**

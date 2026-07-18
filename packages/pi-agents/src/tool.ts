@@ -69,6 +69,7 @@ import {
 import {
   finalizeDurableRun,
   normalizeStoredRequest,
+  RunStoreError,
   safeAbandon,
   startDurableRun,
   type StartedRun,
@@ -1319,9 +1320,14 @@ export async function executeAgentTool(
       );
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // RunStoreError.message already includes its code; plain-object store failures
+    // are formatted by formatBoundedStoreError (never `[object Object]`).
+    const text =
+      err instanceof RunStoreError
+        ? boundDiagnosticText(err.message)
+        : formatBoundedStoreError(err, 'run_store_error: ');
     return {
-      content: [{ type: 'text', text: `run_store_error: ${message}` }],
+      content: [{ type: 'text', text }],
       details: makeDetails(mode)([]),
       isError: true,
     };

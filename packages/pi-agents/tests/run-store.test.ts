@@ -111,6 +111,28 @@ describe('getDefaultRunsRoot', () => {
   });
 });
 
+describe('createRunStore root canonicalization', () => {
+  it('resolves parent symlinks so createRun/claimRun succeed on a realpath root', async () => {
+    if (process.platform === 'win32') return;
+
+    // Mirror the real layout: ~/.pi/agent/@balaenis → some other directory.
+    const realPackageRoot = path.join(root, 'dotfiles', 'pi-agents');
+    const agentDir = path.join(root, '.pi', 'agent');
+    mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+    mkdirSync(realPackageRoot, { recursive: true, mode: 0o700 });
+    symlinkSync(realPackageRoot, path.join(agentDir, '@balaenis'));
+
+    const configuredRoot = path.join(agentDir, '@balaenis', 'pi-agents', 'runs');
+    const store = createRunStore({ rootDir: configuredRoot, ...makeDeps() });
+    expect(store.rootDir).toBe(path.join(realPackageRoot, 'pi-agents', 'runs'));
+
+    const { runId } = await store.createRun(makeCreateInput());
+    const claim = await store.claimRun(runId);
+    expect(claim.ok).toBe(true);
+    expect(existsSync(path.join(store.rootDir, runId, 'run.json'))).toBe(true);
+  });
+});
+
 describe('createRunStore directory and file modes', () => {
   it('creates the root with mode 0700 on POSIX systems', () => {
     const store = createRunStore({ rootDir: root, ...makeDeps() });

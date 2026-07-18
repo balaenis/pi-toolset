@@ -839,7 +839,21 @@ function normalizeTxLockTiming(
 }
 
 export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
-  const rootDir = options.rootDir ?? getDefaultRunsRoot();
+  // Ensure the configured root exists, then canonicalize so openPathComponentNoFollow
+  // does not reject intentional parent symlinks (e.g. ~/.pi/agent/@balaenis → dotfiles).
+  // TOCTOU protection still applies to components under this real path.
+  const configuredRoot = options.rootDir ?? getDefaultRunsRoot();
+  mkdirPrivate(configuredRoot);
+  let rootDir: string;
+  try {
+    rootDir = fs.realpathSync(configuredRoot);
+  } catch (err) {
+    throw {
+      code: 'run_store_error',
+      message: `cannot resolve runs root: ${err instanceof Error ? err.message : String(err)}`,
+    } satisfies RunStoreError;
+  }
+  applyMode(rootDir, DIR_MODE);
   const now = options.now ?? (() => Date.now());
   const randomUUID = options.randomUUID ?? crypto.randomUUID;
   const pid = options.pid ?? process.pid;
