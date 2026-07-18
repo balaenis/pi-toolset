@@ -278,9 +278,10 @@ Provide exactly one entry form:
 - \`chain\`: run sequential steps with output passing between them, optionally fanning out one step's structured output across parallel workers.
 - \`runId\`: resume a durable run from its stored workflow and sessions. Optional \`task\` appends a continuation instruction (required to resume a fully completed run). Do not supply fresh launch fields with \`runId\`.
 ## When to use
-Use when the task matches an agent type, for parallel independent work, or when answering requires reading several files - delegate and keep the conclusion, not the file dumps. For a single-fact lookup, search directly. Once delegated, don't redo the work yourself - wait for the result.
-- The agent's final message is returned as the tool result (not shown to the user) - relay what matters.
-- Durable run IDs appear on tool results; use \`agent({ runId })\` to resume. List/inspect runs with \`/agent runs\` and \`/agent status <run-id>\`.`,
+Use when the task matches an agent type, for parallel independent work, or when answering requires reading several files - delegate and keep the conclusion, not the file dumps. For a single-fact lookup, search directly. Do not redo delegated work yourself.
+- Foreground (default): the tool result carries the agent's final message (not shown to the user) — relay what matters.
+- Background (\`runInBackground: true\`): the tool returns immediately with a job/run id; a completion follow-up re-enters the model later.
+- Durable run IDs appear on tool results; use \`agent({ runId })\` only to resume interrupted work or continue a completed run with an explicit \`task\`. List/inspect with \`/agent runs\` and \`/agent status <run-id>\`.`,
     promptGuidelines: [
       '!! Use the `explore` agent when you need to search across multiple files or do broad code analysis exploration.',
     ],

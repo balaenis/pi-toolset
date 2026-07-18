@@ -5,7 +5,7 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 ## Features
 
 - **Isolated context** - every subagent runs in a fresh `pi` process
-- **Background agents** - long-running invocations return immediately and notify the parent via a custom message when they finish (`runInBackground: true`)
+- **Background agents** - long-running invocations return immediately and notify the parent via a custom message when they finish (`runInBackground: true`); hosts must not sleep or poll while waiting
 - **Streaming output** - tool calls and progress arrive live
 - **Three execution modes** - single, parallel (max 8, 4 concurrent), and chained
 - **Structured chain outputs** - per-step `outputSchema` extracts and validates JSON before passing it forward as `{outputs.<name>}`

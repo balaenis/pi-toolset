@@ -148,6 +148,7 @@ frontmatter and config overrides.
 | Max in-flight jobs    | 4 (additional launches error with `Too many background agent jobs`)                         |
 | Lifetime              | in-memory, per-session; cancelled on `quit`/`reload`/`resume`/`fork`/`new`                  |
 | Parent abort (Ctrl+C) | does not cancel a launched background job                                                   |
+| Host wait policy      | never sleep/poll/`agent({ runId })` to wait; completion follow-up re-enters the model       |
 | `json`/`print` modes  | rejected (those host processes exit when the tool returns)                                  |
 | Snake_case alias      | `run_in_background` normalized to `runInBackground` before validation                       |
 | Foreground detach     | not supported                                                                               |

@@ -325,11 +325,12 @@ parent does not need immediately:
 
 The tool returns immediately with an `agent-bg-*` job id. On completion or
 failure, a follow-up message (`customType:
-pi-agents-background-result`) triggers a new turn. Cancelled jobs emit the same
-message type but do not re-enter the model. At most four background jobs may be
-in flight per session; the parent abort signal (Ctrl+C) does not cancel a
-launched background job. Background mode is rejected in `json` and `print` host
-modes.
+pi-agents-background-result`) triggers a new turn. Hosts must not sleep, poll,
+or call `agent({ runId })` just to wait — continue other work or end the turn.
+Cancelled jobs emit the same message type but do not re-enter the model. At most
+four background jobs may be in flight per session; the parent abort signal
+(Ctrl+C) does not cancel a launched background job. Background mode is rejected
+in `json` and `print` host modes.
 
 ## Use the Grok ACP runtime
 

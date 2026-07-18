@@ -90,6 +90,11 @@ describe('createBackgroundManager.launch', () => {
     expect(launches?.length).toBe(1);
     const jobId = launches![0].jobId;
     expect(jobId).toMatch(/^agent-bg-/);
+    const launchText = launchResult.content
+      .map((part) => ('text' in part ? part.text : ''))
+      .join('');
+    expect(launchText).toContain(`Background agent launched (${jobId})`);
+    expect(launchText).toContain('Never sleep, poll, or call agent({ runId }) to wait');
     expect(pi.messages.length).toBe(0);
     expect(mgr.activeCount()).toBe(1);
 

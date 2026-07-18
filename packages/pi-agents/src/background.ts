@@ -308,7 +308,7 @@ export function createBackgroundManager(
     const launchText =
       `⧗ Background agent launched (${jobId}).\n` +
       `Mode: ${request.mode}. ${request.description}\n` +
-      `You will receive a follow-up message when it completes.`;
+      `Completion arrives as a follow-up that starts a new turn. Never sleep, poll, or call agent({ runId }) to wait — continue other work or end the turn.`;
 
     return {
       content: [{ type: 'text', text: launchText }],

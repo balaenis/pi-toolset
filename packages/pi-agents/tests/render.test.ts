@@ -1210,7 +1210,7 @@ describe('renderResult misc', () => {
     expect(text).toContain(RUNNING_STATUS_GLYPH);
     expect(text).toContain('background');
     expect(text).toContain('agent-bg-1');
-    expect(text).toContain('You will be notified when it completes.');
+    expect(text).toContain('Notified on completion — do not poll.');
     expect(state.spinnerStartedAt).toBeUndefined();
     expect(activeSpinnerCount()).toBe(0);
     for (const frame of SPINNER_FRAMES) {

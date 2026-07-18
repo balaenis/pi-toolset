@@ -1047,7 +1047,7 @@ export function renderResult(
         clampToWidth(launch.taskPreview, TITLE_MAX_COLUMNS) ||
         launch.description;
       text += `\n${theme.fg('dim', launchLabel)}`;
-      text += `\n${theme.fg('muted', 'You will be notified when it completes.')}`;
+      text += `\n${theme.fg('muted', 'Notified on completion — do not poll.')}`;
       return new Text(text, 0, 0);
     }
   }
