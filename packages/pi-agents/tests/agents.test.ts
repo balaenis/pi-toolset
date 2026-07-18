@@ -210,10 +210,29 @@ Body.`
     env = withAgentsDir(() => {});
     const { agents } = discoverAgents(env.cwd, 'project');
     const get = (name: string) => agents.find((a) => a.name === name);
+    expect(get('debug')?.maxSubagentDepth).toBe(0);
     expect(get('explore')?.maxSubagentDepth).toBe(0);
     expect(get('planner')?.maxSubagentDepth).toBe(0);
     expect(get('reviewer')?.maxSubagentDepth).toBe(0);
     expect(get('general')?.maxSubagentDepth).toBeUndefined();
+  });
+
+  it('bundled debug agent retains its operational contract', () => {
+    env = withAgentsDir(() => {});
+    const { agents } = discoverAgents(env.cwd, 'project');
+    const debug = agents.find((agent) => agent.name === 'debug');
+
+    expect(debug?.tools).toEqual(['read', 'grep', 'find', 'ls', 'bash', 'edit', 'write']);
+    expect(debug?.excludeTools).toEqual(['agent']);
+    expect(debug?.maxSubagentDepth).toBe(0);
+    expect(debug?.completionCheck).toEqual([
+      '## Feedback Loop',
+      '## Root Cause',
+      '## Changes',
+      '## Validation',
+      '## Cleanup',
+      '## Blockers',
+    ]);
   });
 
   it('parses comma lists with trimming and drops empty items', () => {

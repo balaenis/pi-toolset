@@ -115,6 +115,7 @@ function collectExplicitRefs(
       const looksLikeAgent =
         bundled.has(name) ||
         name === 'worker' ||
+        name === 'debug' ||
         name === 'general' ||
         name === 'explore' ||
         name === 'planner' ||
@@ -150,16 +151,18 @@ export function parsePackDryRunListing(stdout: string): string[] {
 }
 
 describe('bundled agents on disk', () => {
-  it('ships general.md and not worker.md', () => {
+  it('ships debug.md and general.md, not worker.md', () => {
     const files = readdirSync(agentsDir)
       .filter((n) => n.endsWith('.md'))
       .sort();
+    expect(files).toContain('debug.md');
     expect(files).toContain('general.md');
     expect(files).not.toContain('worker.md');
   });
 
   it('frontmatter names match discoverAgents builtin catalogue', () => {
     const fromFiles = bundledAgentNamesFromFiles();
+    expect(fromFiles).toContain('debug');
     expect(fromFiles).toContain('general');
     expect(fromFiles).not.toContain('worker');
 
@@ -218,8 +221,8 @@ describe('shipped README/docs agent name references', () => {
   });
 });
 
-describe('pack manifest includes general, not worker', () => {
-  it('npm/bun pack dry-run lists agents/general.md and omits agents/worker.md', () => {
+describe('pack manifest includes debug and general, not worker', () => {
+  it('npm/bun pack dry-run lists debug/general agents and omits worker', () => {
     // Prefer npm pack --dry-run (stable listing); fall back to parsing package files field + disk.
     const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: packageRoot,
@@ -251,9 +254,16 @@ describe('pack manifest includes general, not worker', () => {
       expect(pkg.files ?? []).toContain('agents');
       const agentFiles = readdirSync(agentsDir).filter((n) => n.endsWith('.md'));
       listed = agentFiles.map((n) => `agents/${n}`);
+      if ((pkg.files ?? []).includes('THIRD_PARTY_NOTICES.md')) {
+        listed.push('THIRD_PARTY_NOTICES.md');
+      }
     }
 
     const normalized = listed.map((p) => p.replace(/\\/g, '/'));
+    expect(normalized).toContain('THIRD_PARTY_NOTICES.md');
+    expect(normalized.some((p) => p === 'agents/debug.md' || p.endsWith('/agents/debug.md'))).toBe(
+      true
+    );
     expect(
       normalized.some((p) => p === 'agents/general.md' || p.endsWith('/agents/general.md'))
     ).toBe(true);

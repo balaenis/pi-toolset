@@ -213,12 +213,13 @@ Run records contain prompts, compact assistant presentation, outputs, cwd paths,
 
 ## Bundled agents
 
-| Agent      | Purpose              | Tools                        | Nested agents                    |
-| ---------- | -------------------- | ---------------------------- | -------------------------------- |
-| `explore`  | Fast codebase recon  | `read, grep, find, ls, bash` | disabled (`maxSubagentDepth: 0`) |
-| `planner`  | Implementation plans | `read, grep, find, ls`       | disabled (`maxSubagentDepth: 0`) |
-| `reviewer` | Code review          | `read, grep, find, ls, bash` | disabled (`maxSubagentDepth: 0`) |
-| `general`  | General-purpose      | (all default)                | follows `PI_AGENT_MAX_DEPTH`     |
+| Agent      | Purpose                 | Tools                                     | Nested agents                    |
+| ---------- | ----------------------- | ----------------------------------------- | -------------------------------- |
+| `debug`    | Bug diagnosis and fixes | `read, grep, find, ls, bash, edit, write` | disabled (`maxSubagentDepth: 0`) |
+| `explore`  | Fast codebase recon     | `read, grep, find, ls, bash`              | disabled (`maxSubagentDepth: 0`) |
+| `planner`  | Implementation plans    | `read, grep, find, ls`                    | disabled (`maxSubagentDepth: 0`) |
+| `reviewer` | Code review             | `read, grep, find, ls, bash`              | disabled (`maxSubagentDepth: 0`) |
+| `general`  | General-purpose         | (all default)                             | follows `PI_AGENT_MAX_DEPTH`     |
 
 The package also ships prompt templates: the `/implement`, `/explore-and-plan`, and `/implement-and-review` workflow prompts, plus `/work-with-grok` for delegating a task to the Grok ACP runtime. See [How-to guides](./docs/how-to.md#use-the-bundled-workflow-prompts).
 
@@ -233,4 +234,5 @@ hk check
 
 ## License
 
-See [LICENSE](../../LICENSE).
+See [LICENSE](../../LICENSE). Third-party material is listed in
+[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).

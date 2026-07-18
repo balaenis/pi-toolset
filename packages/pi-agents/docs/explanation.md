@@ -91,11 +91,12 @@ the child's final message after an explicit warning that the output did not pass
 behavior from `tools`/`excludeTools`/`edit`/`write`/`bash`; agents opt in
 explicitly.
 
-Among the bundled agents, `explore`, `planner`, `reviewer`, and `general` declare
-`completionCheck`. `general` requires `## Completed`, `## Files Changed`, and
+All bundled agents declare `completionCheck`. `debug` requires `## Feedback
+Loop`, `## Root Cause`, `## Changes`, `## Validation`, `## Cleanup`, and
+`## Blockers`; `general` requires `## Completed`, `## Files Changed`, and
 `## Validation`. The bundled workflow prompts (`/implement`,
-`/implement-and-review`) restate those headings in task text so chain steps stay
-aligned with the agent contract.
+`/implement-and-review`) restate the general-agent headings in task text so
+chain steps stay aligned with its contract.
 
 When a chain step declares `outputSchema`, `completionCheck` is bypassed for
 that step because the contract requires JSON-only output.
