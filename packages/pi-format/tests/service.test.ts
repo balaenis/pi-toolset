@@ -121,10 +121,45 @@ describe('formatPaths', () => {
     expect(summary.failed.length).toBe(1);
   });
 
-  it('returns disabled summary when enabled is false', async () => {
-    writeProjectConfig(JSON.stringify({ enabled: false }));
-    const summary = await formatPaths(['file.ts'], { mode: 'explicit' }, makeContext(cwdDir));
+  it('skips automatic formatting when enabled is false', async () => {
+    writeProjectConfig(
+      JSON.stringify({
+        enabled: false,
+        formatters: {
+          custom: { command: ['custom', '$FILE'], extensions: ['.ts'] },
+        },
+      })
+    );
+    const file = path.join(cwdDir, 'file.ts');
+    writeFileSync(file, 'x');
+    const summary = await formatPaths(['file.ts'], { mode: 'automatic' }, makeContext(cwdDir));
     expect(summary.disabled).toBe(true);
+    expect(summary.formatted.length).toBe(0);
+  });
+
+  it('still formats explicitly when enabled is false', async () => {
+    writeProjectConfig(
+      JSON.stringify({
+        enabled: false,
+        formatters: {
+          custom: { command: ['custom', '$FILE'], extensions: ['.ts'] },
+        },
+      })
+    );
+    const file = path.join(cwdDir, 'file.ts');
+    writeFileSync(file, 'x');
+
+    let ran = false;
+    const ctx = makeContext(cwdDir, async (command) => {
+      expect(command).toBe('custom');
+      ran = true;
+      return { stdout: '', stderr: '', code: 0, killed: false };
+    });
+
+    const summary = await formatPaths(['file.ts'], { mode: 'explicit' }, ctx);
+    expect(ran).toBe(true);
+    expect(summary.disabled).toBe(false);
+    expect(summary.formatted.length).toBe(1);
   });
 
   it('skips automatic formatting when formatOnWrite is false', async () => {

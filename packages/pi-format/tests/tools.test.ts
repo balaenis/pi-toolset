@@ -57,10 +57,21 @@ function fakeCtx(cwd: string): ExtensionContext {
 }
 
 describe('registerFormatTool', () => {
-  it('registers a tool named format', () => {
+  it('registers a tool named format', async () => {
+    const cwd = mkdtempSync(path.join(tmpRoot, 'case-'));
     const { pi, tools } = createFakePi();
-    registerFormatTool(pi);
+    const registered = await registerFormatTool(pi, cwd);
+    expect(registered).toBe(true);
     expect(tools.has('format')).toBe(true);
+  });
+
+  it('does not register when enabled is false', async () => {
+    const cwd = mkdtempSync(path.join(tmpRoot, 'case-'));
+    writeProjectConfig(cwd, JSON.stringify({ enabled: false }));
+    const { pi, tools } = createFakePi();
+    const registered = await registerFormatTool(pi, cwd);
+    expect(registered).toBe(false);
+    expect(tools.has('format')).toBe(false);
   });
 
   it('formats a single file successfully', async () => {
@@ -76,7 +87,7 @@ describe('registerFormatTool', () => {
     writeFileSync(path.join(cwd, 'file.ts'), 'const x=1');
 
     const { pi, tools } = createFakePi();
-    registerFormatTool(pi);
+    await registerFormatTool(pi, cwd);
     const tool = tools.get('format')!;
 
     const result = await tool.execute(
@@ -92,8 +103,9 @@ describe('registerFormatTool', () => {
   });
 
   it('throws when paths is empty', async () => {
+    const cwd = mkdtempSync(path.join(tmpRoot, 'case-'));
     const { pi, tools } = createFakePi();
-    registerFormatTool(pi);
+    await registerFormatTool(pi, cwd);
     const tool = tools.get('format')!;
 
     expect(

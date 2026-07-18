@@ -8,11 +8,29 @@ import {
   withFileMutationQueue,
 } from '@earendil-works/pi-coding-agent';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { getFormatConfig } from './config.ts';
 import { formatPaths } from './service.ts';
 import { logDebug, logError } from './log.ts';
 import type { FormatServiceContext } from './types.ts';
 
-export function registerFormatHooks(pi: ExtensionAPI): void {
+/**
+ * Register the auto-format hook when config allows it.
+ * Skips registration when `enabled` or `formatOnWrite` is false so the
+ * extension does not listen for tool results at all. Config is read from
+ * `cwd` (defaults to `process.cwd()`); reload the extension after changing it.
+ */
+export async function registerFormatHooks(
+  pi: ExtensionAPI,
+  cwd: string = process.cwd()
+): Promise<boolean> {
+  const config = await getFormatConfig(cwd);
+  if (!config.enabled || !config.formatOnWrite) {
+    logDebug(
+      `hook: not registered (enabled=${config.enabled} formatOnWrite=${config.formatOnWrite})`
+    );
+    return false;
+  }
+
   pi.on('tool_result', async (event, ctx) => {
     if (!isWriteToolResult(event) && !isEditToolResult(event)) return;
     if (event.isError) return;
@@ -55,6 +73,9 @@ export function registerFormatHooks(pi: ExtensionAPI): void {
       }
     }
   });
+
+  logDebug('hook: registered tool_result auto-format handler');
+  return true;
 }
 
 function makeCtx(pi: ExtensionAPI, ctx: { cwd: string }): FormatServiceContext {

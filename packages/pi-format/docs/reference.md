@@ -12,14 +12,14 @@ Both use JSONC syntax (comments allowed).
 
 ## Config fields
 
-| Field                          | Type   | Default | Description                                                                                |
-| ------------------------------ | ------ | ------- | ------------------------------------------------------------------------------------------ |
-| `enabled`                      | bool   | `true`  | Master switch. `false` disables tool, command, and hook (still registered).                |
-| `formatOnWrite`                | bool   | `true`  | When `false`, disables automatic post-`write`/`edit` formatting.                           |
-| `formatters.<name>.disabled`   | bool   | `false` | Disable a single formatter.                                                                |
-| `formatters.<name>.command`    | array  | -       | Override a built-in command or define a custom formatter. Must include `$FILE`.            |
-| `formatters.<name>.extensions` | array  | -       | Override supported extensions. Required for custom formatters; each entry starts with `.`. |
-| `formatters.<name>.timeoutMs`  | number | -       | Per-formatter timeout in milliseconds.                                                     |
+| Field                          | Type   | Default | Description                                                                                                                                       |
+| ------------------------------ | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                      | bool   | `true`  | Master switch. `false` skips registering the LLM `format` tool and the auto-format hook; `/format` still registers. Requires reload after change. |
+| `formatOnWrite`                | bool   | `true`  | When `false`, skips registering the automatic post-`write`/`edit` hook. Requires reload after change.                                             |
+| `formatters.<name>.disabled`   | bool   | `false` | Disable a single formatter.                                                                                                                       |
+| `formatters.<name>.command`    | array  | -       | Override a built-in command or define a custom formatter. Must include `$FILE`.                                                                   |
+| `formatters.<name>.extensions` | array  | -       | Override supported extensions. Required for custom formatters; each entry starts with `.`.                                                        |
+| `formatters.<name>.timeoutMs`  | number | -       | Per-formatter timeout in milliseconds.                                                                                                            |
 
 ## Built-in formatter recipes
 

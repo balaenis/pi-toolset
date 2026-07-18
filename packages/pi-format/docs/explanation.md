@@ -5,13 +5,24 @@ see [How-to guides](./how-to.md); for field tables see [Reference](./reference.m
 
 ## How auto-format hooks into write/edit
 
-When `enabled` and `formatOnWrite` are both `true`, successful built-in `write`
-and `edit` tool results automatically trigger formatting on the target file.
+Registration is decided once at extension load (reload after config changes):
 
-The hook listens to `tool_result` events from Pi's built-in `write`/`edit`
-tools. When such a tool succeeds, the extension runs the matching formatter on
-the mutated file. Formatting is serialized with other mutations on the same file
-via a `withFileMutationQueue`, so concurrent edits do not race the formatter.
+| Flag                                        | LLM `format` tool | `/format` command | Auto-format hook |
+| ------------------------------------------- | ----------------- | ----------------- | ---------------- |
+| defaults (`enabled` + `formatOnWrite` true) | registered        | registered        | registered       |
+| `formatOnWrite: false`                      | registered        | registered        | not registered   |
+| `enabled: false`                            | not registered    | registered        | not registered   |
+
+`enabled: false` deliberately omits the LLM tool so it does not occupy model
+attention. `/format` remains available for humans (and for a future
+`/format config` TUI). When the hook is registered, successful built-in
+`write`/`edit` results trigger formatting on the target file.
+
+When registered, the hook listens to `tool_result` events from Pi's built-in
+`write`/`edit` tools. When such a tool succeeds, the extension runs the matching
+formatter on the mutated file. Formatting is serialized with other mutations on
+the same file via a `withFileMutationQueue`, so concurrent edits do not race the
+formatter.
 
 The extension does **not** override Pi's built-in `write`/`edit` tools - it
 reacts to their results. Two consequences:

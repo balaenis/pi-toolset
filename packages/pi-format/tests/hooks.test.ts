@@ -1,5 +1,5 @@
 // ABOUTME: Tests for automatic post-write/edit formatting hook.
-// ABOUTME: Verifies the hook triggers formatting for successful write/edit results.
+// ABOUTME: Verifies the hook registers only when enabled and triggers formatting.
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -49,6 +49,14 @@ function setExec(pi: ExtensionAPI, exec: ExtensionAPI['exec']): void {
   (pi as unknown as { exec: ExtensionAPI['exec'] }).exec = exec;
 }
 
+function writeProjectConfig(cwd: string, config: unknown): void {
+  mkdirSync(path.join(cwd, '.pi', '@balaenis', 'pi-format'), { recursive: true });
+  writeFileSync(
+    path.join(cwd, '.pi', '@balaenis', 'pi-format', 'config.json'),
+    JSON.stringify(config)
+  );
+}
+
 function makeEvent(toolName: 'write' | 'edit', isError: boolean, filePath: string) {
   return {
     toolName,
@@ -72,15 +80,11 @@ async function triggerHook(
 describe('registerFormatHooks', () => {
   it('formats after a successful write result', async () => {
     const cwd = mkdtempSync(path.join(tmpRoot, 'case-'));
-    mkdirSync(path.join(cwd, '.pi', '@balaenis', 'pi-format'), { recursive: true });
-    writeFileSync(
-      path.join(cwd, '.pi', '@balaenis', 'pi-format', 'config.json'),
-      JSON.stringify({
-        formatters: {
-          custom: { command: ['custom', '$FILE'], extensions: ['.ts'] },
-        },
-      })
-    );
+    writeProjectConfig(cwd, {
+      formatters: {
+        custom: { command: ['custom', '$FILE'], extensions: ['.ts'] },
+      },
+    });
     writeFileSync(path.join(cwd, 'file.ts'), 'x');
 
     const { pi, handlers } = createFakePi();
@@ -91,22 +95,20 @@ describe('registerFormatHooks', () => {
       return { stdout: '', stderr: '', code: 0, killed: false };
     });
 
-    registerFormatHooks(pi);
+    const registered = await registerFormatHooks(pi, cwd);
+    expect(registered).toBe(true);
+    expect(handlers.has('tool_result')).toBe(true);
     await triggerHook(handlers, makeEvent('write', false, 'file.ts'), fakeCtx(cwd));
     expect(ran).toBe(true);
   });
 
   it('formats after a successful edit result', async () => {
     const cwd = mkdtempSync(path.join(tmpRoot, 'case-'));
-    mkdirSync(path.join(cwd, '.pi', '@balaenis', 'pi-format'), { recursive: true });
-    writeFileSync(
-      path.join(cwd, '.pi', '@balaenis', 'pi-format', 'config.json'),
-      JSON.stringify({
-        formatters: {
-          custom: { command: ['custom', '$FILE'], extensions: ['.ts'] },
-        },
-      })
-    );
+    writeProjectConfig(cwd, {
+      formatters: {
+        custom: { command: ['custom', '$FILE'], extensions: ['.ts'] },
+      },
+    });
     writeFileSync(path.join(cwd, 'file.ts'), 'x');
 
     const { pi, handlers } = createFakePi();
@@ -117,7 +119,8 @@ describe('registerFormatHooks', () => {
       return { stdout: '', stderr: '', code: 0, killed: false };
     });
 
-    registerFormatHooks(pi);
+    const registered = await registerFormatHooks(pi, cwd);
+    expect(registered).toBe(true);
     await triggerHook(handlers, makeEvent('edit', false, 'file.ts'), fakeCtx(cwd));
     expect(ran).toBe(true);
   });
@@ -133,18 +136,14 @@ describe('registerFormatHooks', () => {
       return { stdout: '', stderr: '', code: 0, killed: false };
     });
 
-    registerFormatHooks(pi);
+    await registerFormatHooks(pi, cwd);
     await triggerHook(handlers, makeEvent('write', true, 'file.ts'), fakeCtx(cwd));
     expect(ran).toBe(false);
   });
 
-  it('skips when formatOnWrite is false', async () => {
+  it('does not register when formatOnWrite is false', async () => {
     const cwd = mkdtempSync(path.join(tmpRoot, 'case-'));
-    mkdirSync(path.join(cwd, '.pi', '@balaenis', 'pi-format'), { recursive: true });
-    writeFileSync(
-      path.join(cwd, '.pi', '@balaenis', 'pi-format', 'config.json'),
-      JSON.stringify({ formatOnWrite: false })
-    );
+    writeProjectConfig(cwd, { formatOnWrite: false });
     writeFileSync(path.join(cwd, 'file.ts'), 'x');
 
     const { pi, handlers } = createFakePi();
@@ -154,22 +153,39 @@ describe('registerFormatHooks', () => {
       return { stdout: '', stderr: '', code: 0, killed: false };
     });
 
-    registerFormatHooks(pi);
+    const registered = await registerFormatHooks(pi, cwd);
+    expect(registered).toBe(false);
+    expect(handlers.has('tool_result')).toBe(false);
+    await triggerHook(handlers, makeEvent('write', false, 'file.ts'), fakeCtx(cwd));
+    expect(ran).toBe(false);
+  });
+
+  it('does not register when enabled is false', async () => {
+    const cwd = mkdtempSync(path.join(tmpRoot, 'case-'));
+    writeProjectConfig(cwd, { enabled: false });
+    writeFileSync(path.join(cwd, 'file.ts'), 'x');
+
+    const { pi, handlers } = createFakePi();
+    let ran = false;
+    setExec(pi, async () => {
+      ran = true;
+      return { stdout: '', stderr: '', code: 0, killed: false };
+    });
+
+    const registered = await registerFormatHooks(pi, cwd);
+    expect(registered).toBe(false);
+    expect(handlers.has('tool_result')).toBe(false);
     await triggerHook(handlers, makeEvent('write', false, 'file.ts'), fakeCtx(cwd));
     expect(ran).toBe(false);
   });
 
   it('does not throw on formatter failure', async () => {
     const cwd = mkdtempSync(path.join(tmpRoot, 'case-'));
-    mkdirSync(path.join(cwd, '.pi', '@balaenis', 'pi-format'), { recursive: true });
-    writeFileSync(
-      path.join(cwd, '.pi', '@balaenis', 'pi-format', 'config.json'),
-      JSON.stringify({
-        formatters: {
-          custom: { command: ['custom', '$FILE'], extensions: ['.ts'] },
-        },
-      })
-    );
+    writeProjectConfig(cwd, {
+      formatters: {
+        custom: { command: ['custom', '$FILE'], extensions: ['.ts'] },
+      },
+    });
     writeFileSync(path.join(cwd, 'file.ts'), 'x');
 
     const { pi, handlers } = createFakePi();
@@ -180,7 +196,7 @@ describe('registerFormatHooks', () => {
       killed: false,
     }));
 
-    registerFormatHooks(pi);
+    await registerFormatHooks(pi, cwd);
     await expect(
       triggerHook(handlers, makeEvent('write', false, 'file.ts'), fakeCtx(cwd))
     ).resolves.toBeUndefined();

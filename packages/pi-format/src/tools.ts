@@ -5,6 +5,8 @@ import { Type } from '@earendil-works/pi-ai';
 import { Text } from '@earendil-works/pi-tui';
 import type { Static } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getFormatConfig } from './config.ts';
+import { logDebug } from './log.ts';
 import { formatPaths, formatSummaryText } from './service.ts';
 import type { FormatServiceContext, FormatSummary } from './types.ts';
 
@@ -33,7 +35,21 @@ const DESCRIPTION = `Format one or more files using project-local formatters.
 Only formats files with a recognized extension and an available formatter.
 Returns a summary of formatted, skipped, and failed files.`;
 
-export function registerFormatTool(pi: ExtensionAPI): void {
+/**
+ * Register the LLM-callable `format` tool when config allows it.
+ * Skips registration when `enabled` is false so the model never sees the tool.
+ * Config is read from `cwd` (defaults to `process.cwd()`); reload after changes.
+ */
+export async function registerFormatTool(
+  pi: ExtensionAPI,
+  cwd: string = process.cwd()
+): Promise<boolean> {
+  const config = await getFormatConfig(cwd);
+  if (!config.enabled) {
+    logDebug('tool: not registered (enabled=false)');
+    return false;
+  }
+
   pi.registerTool({
     name: 'format',
     label: 'Format',
@@ -98,6 +114,9 @@ export function registerFormatTool(pi: ExtensionAPI): void {
       return new Text(text, 0, 0);
     },
   });
+
+  logDebug('tool: registered format tool');
+  return true;
 }
 
 function makeCtx(pi: ExtensionAPI, ctx: ExtensionContext): FormatServiceContext {

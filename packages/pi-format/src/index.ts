@@ -6,8 +6,10 @@ import { registerFormatCommand } from './command.ts';
 import { registerFormatHooks } from './hooks.ts';
 import { registerFormatTool } from './tools.ts';
 
-export default function (pi: ExtensionAPI): void {
-  registerFormatTool(pi);
+export default async function (pi: ExtensionAPI): Promise<void> {
+  // /format is always registered (including future /format config).
+  // The LLM format tool and auto-format hook honor enabled / formatOnWrite.
+  await registerFormatTool(pi);
   registerFormatCommand(pi);
-  registerFormatHooks(pi);
+  await registerFormatHooks(pi);
 }

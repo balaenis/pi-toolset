@@ -41,22 +41,26 @@ availability.
 
 ## Enable or disable format-on-write
 
-Set `formatOnWrite` to `false` to turn off automatic post-`write`/`edit`
-formatting while keeping explicit formatting available:
+Set `formatOnWrite` to `false` to skip registering the automatic post-`write`/`edit`
+hook while keeping explicit formatting available:
 
 ```jsonc
 { "formatOnWrite": false }
 ```
 
-## Disable the whole extension
+Hook registration is decided at extension load. After changing this value, run
+`pi reload` (or restart Pi) so the extension re-reads config.
+
+## Disable formatting for the model and auto-format
 
 ```jsonc
 { "enabled": false }
 ```
 
-`enabled: false` disables the tool, the `/format` command, and the automatic
-hook, but still registers them so you see a clear disabled message rather than a
-missing tool.
+`enabled: false` skips registering the LLM-callable `format` tool and the
+auto-format hook, so the model never sees a format tool. The `/format` slash
+command still registers (for explicit use and future `/format config`). Reload
+the extension after changing this value.
 
 ## Add a custom formatter
 

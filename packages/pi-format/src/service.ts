@@ -27,12 +27,15 @@ export async function formatPaths(
 ): Promise<FormatSummary> {
   const config = await getFormatConfig(ctx.cwd);
 
-  if (!config.enabled) {
-    return { formatted: [], skipped: [], failed: [], disabled: true };
-  }
-
-  if (options.mode === 'automatic' && !config.formatOnWrite) {
-    return { formatted: [], skipped: [], failed: [], disabled: false };
+  // Explicit `/format` always runs (tool registration is gated separately).
+  // Automatic mode honors both master and format-on-write switches.
+  if (options.mode === 'automatic') {
+    if (!config.enabled) {
+      return { formatted: [], skipped: [], failed: [], disabled: true };
+    }
+    if (!config.formatOnWrite) {
+      return { formatted: [], skipped: [], failed: [], disabled: false };
+    }
   }
 
   const registry = createFormatterRegistry(ctx.cwd, config.formatters, BUILTIN_FORMATTER_RECIPES);
