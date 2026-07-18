@@ -421,6 +421,7 @@ The below-editor chrome (when any agent is `starting`/`running`) lists only thos
 
 - Ctrl+X aborts/cancels only the selected child's current turn (Pi abort RPC or Grok ACP `session/cancel`).
 - Ctrl+O toggles between the last-15-line preview and the complete retained/bounded Agent View transcript.
+- The detail status line shows the durable `runId`. When the run is resumable and the endpoint is not live, it appends `(Ctrl+R resume)`. Ctrl+R closes Agent View and injects a host user message that asks the model to call `agent({ runId })` (no other launch fields).
 - After idle, a new message continues the child session without replaying the original task prompt.
 - Detached idle children reopen lazily on the next prompt (same session artifact, cwd/worktree, and fingerprint).
 

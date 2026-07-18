@@ -31,6 +31,9 @@ const TOOL_RESULT_MAX_BYTES = 4 * 1024;
 /** Default detail-panel content height: last N lines only (not terminal-row dependent). */
 const DETAIL_PREVIEW_LINES = 15;
 
+/** Result returned from the navigator custom UI when the user requests a host resume. */
+export type InteractiveNavResult = null | { resumeRunId: string };
+
 export interface InteractiveViewControllerOptions {
   registry: InteractiveAgentRegistry;
   /** When false, openView is a no-op (non-TUI hosts). */
@@ -38,6 +41,16 @@ export interface InteractiveViewControllerOptions {
   /** Extension UI surface for custom/widget. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getUi: () => any;
+  /**
+   * Whether a durable run should offer Ctrl+R host resume in Agent View detail.
+   * Prefer durable store truth (interrupted/cancelled/failed/resumable completed).
+   */
+  isRunResumable?: (runId: string) => boolean;
+  /**
+   * Inject a host-model resume request after the navigator closes.
+   * Typically `pi.sendUserMessage(...)` so the host calls `agent({ runId })`.
+   */
+  requestHostResume?: (runId: string) => void;
 }
 
 export function createInteractiveViewController(options: InteractiveViewControllerOptions) {
@@ -176,24 +189,35 @@ export function createInteractiveViewController(options: InteractiveViewControll
     viewOpen = true;
     // Hide below-editor agent widget for the whole custom-nav session (list and detail).
     refreshWidget?.();
-    try {
-      // Non-overlay: temporarily replaces the host editor (same surface as /settings).
-      await ui.custom(
-        (tui: TUI, theme: Theme, _keybindings: unknown, done: (result: null) => void) =>
+    // Non-overlay: temporarily replaces the host editor (same surface as /settings).
+    const navResult = await Promise.resolve(
+      ui.custom(
+        (
+          tui: TUI,
+          theme: Theme,
+          _keybindings: unknown,
+          done: (result: InteractiveNavResult) => void
+        ) =>
           new AgentNavigatorPanel({
             tui,
             theme,
             registry,
             onClose: () => done(null),
+            onResume: (runId) => done({ resumeRunId: runId }),
+            isRunResumable: options.isRunResumable,
             endpointLabel,
             statusText,
           }),
         { overlay: false }
-      );
-    } finally {
+      ) as Promise<InteractiveNavResult>
+    ).finally(() => {
       viewOpen = false;
       // Restore only if installWidget is still active and endpoints are starting/running.
       refreshWidget?.();
+    });
+    // After the custom UI returns the editor, ask the host model to resume via agent({ runId }).
+    if (navResult && typeof navResult === 'object' && navResult.resumeRunId) {
+      options.requestHostResume?.(navResult.resumeRunId);
     }
   }
 
@@ -218,6 +242,9 @@ interface NavigatorOptions {
   theme: Theme;
   registry: InteractiveAgentRegistry;
   onClose: () => void;
+  /** Close navigator and request host resume for this durable runId. */
+  onResume: (runId: string) => void;
+  isRunResumable?: (runId: string) => boolean;
   endpointLabel: (
     snap: Pick<InteractiveEndpointListItem, 'title' | 'agent' | 'unitId'>,
     all: Array<Pick<InteractiveEndpointListItem, 'title' | 'agent' | 'unitId'>>
@@ -309,12 +336,14 @@ export class AgentNavigatorPanel implements Component, Focusable {
       theme: this.opts.theme,
       registry: this.opts.registry,
       endpointKey: item.value,
+      isRunResumable: this.opts.isRunResumable,
       onBack: () => {
         this.detail?.dispose();
         this.detail = null;
         this.mode = 'list';
         this.opts.tui.requestRender();
       },
+      onResume: (runId) => this.opts.onResume(runId),
     });
     this.detail.focused = this._focused;
     this.mode = 'detail';
@@ -374,6 +403,9 @@ interface DetailOptions {
   registry: InteractiveAgentRegistry;
   endpointKey: string;
   onBack: () => void;
+  /** Close navigator and request host resume for this durable runId. */
+  onResume: (runId: string) => void;
+  isRunResumable?: (runId: string) => boolean;
 }
 
 export class AgentDetailPanel implements Component, Focusable {
@@ -664,29 +696,19 @@ export class AgentDetailPanel implements Component, Focusable {
     // Top/bottom rules: accent + full-width ─.
     const border = this.opts.theme.fg('accent', '─'.repeat(Math.max(1, width)));
     const header = truncateToWidth(this.opts.theme.fg('accent', title), width);
-    const sessionLabel = snap?.sessionArtifact
-      ? snap.sessionArtifact.runtime === 'grok-acp'
-        ? `acp:${snap.sessionArtifact.sessionId.length > 12 ? `${snap.sessionArtifact.sessionId.slice(0, 6)}…${snap.sessionArtifact.sessionId.slice(-4)}` : snap.sessionArtifact.sessionId}`
-        : snap.sessionFile
-          ? 'session'
-          : 'no-session'
-      : snap?.sessionFile
-        ? 'session'
-        : 'no-session';
+    const offerResume = snap ? this.canOfferResume(snap) : false;
     const status =
-      this.statusMessage || (snap ? `queues ${snap.queueCount} · ${sessionLabel}` : '');
+      this.statusMessage || (snap ? formatDetailStatusLine(snap, { offerResume }) : '');
     const statusLine = this.opts.theme.fg(
       this.statusMessage ? 'warning' : 'dim',
       truncateToWidth(status, width)
     );
     // Collapsed: hint expand-all; expanded: hint fold back to last-N preview.
-    const helpKeys = this.isGrokAcp()
-      ? this.contentExpanded
-        ? 'Enter send · Ctrl+X cancel · Ctrl+O collapse · Up/Down · End · ←/Esc back'
-        : 'Enter send · Ctrl+X cancel · Ctrl+O expand all · Up/Down · End · ←/Esc back'
-      : this.contentExpanded
-        ? 'Enter send · Alt+Enter follow-up · Ctrl+X abort · Ctrl+O collapse · Up/Down · End · ←/Esc back'
-        : 'Enter send · Alt+Enter follow-up · Ctrl+X abort · Ctrl+O expand all · Up/Down · End · ←/Esc back';
+    const helpKeys = formatDetailHelpKeys({
+      grokAcp: this.isGrokAcp(),
+      contentExpanded: this.contentExpanded,
+      offerResume,
+    });
     const help = truncateToWidth(this.opts.theme.fg('dim', helpKeys), width);
     const inputLines = this.isRunningInputBlocked()
       ? [
@@ -748,6 +770,19 @@ export class AgentDetailPanel implements Component, Focusable {
       });
       return;
     }
+    // Host resume: close Agent View and inject agent({ runId }) into the host turn.
+    if (matchesKey(data, 'ctrl+r')) {
+      const snap = this.snap;
+      if (!snap?.runId || !this.canOfferResume(snap)) {
+        this.statusMessage = snap?.runId
+          ? 'Resume unavailable while this agent is running'
+          : 'Resume unavailable (no run id)';
+        this.opts.tui.requestRender();
+        return;
+      }
+      this.opts.onResume(snap.runId);
+      return;
+    }
     // Toggle last-N preview vs full transcript (must not fall into Input).
     if (matchesKey(data, 'ctrl+o')) {
       this.contentExpanded = !this.contentExpanded;
@@ -776,6 +811,11 @@ export class AgentDetailPanel implements Component, Focusable {
     this.opts.tui.requestRender();
   }
 
+  /** Whether detail should offer Ctrl+R host resume for the current snapshot. */
+  private canOfferResume(snap: InteractiveEndpointSnapshot): boolean {
+    return canOfferDetailResume(snap, this.opts.isRunResumable);
+  }
+
   invalidate(): void {
     this.finalizedCacheKey = '';
     this.finalizedFormattedCount = 0;
@@ -792,6 +832,80 @@ export class AgentDetailPanel implements Component, Focusable {
     this.finalizedFormattedCount = 0;
     this.finalizedMessagesRef = undefined;
   }
+}
+
+/**
+ * Whether Agent View detail should offer Ctrl+R host resume.
+ * Never while the endpoint is live (starting/running/open activation).
+ * Prefer durable `isRunResumable` when provided; otherwise UI-local interrupted signals.
+ */
+export function canOfferDetailResume(
+  snap: Pick<InteractiveEndpointSnapshot, 'runId' | 'status' | 'usage' | 'activation'>,
+  isRunResumable?: (runId: string) => boolean
+): boolean {
+  if (!snap.runId) return false;
+  if (snap.status === 'starting' || snap.status === 'running' || snap.activation) {
+    return false;
+  }
+  if (isRunResumable) return isRunResumable(snap.runId);
+  const stop = snap.usage?.stopReason;
+  return stop === 'aborted' || stop === 'interrupted' || snap.status === 'error';
+}
+
+/** Session label fragment for detail status (session / no-session / acp:…). */
+export function formatDetailSessionLabel(
+  snap: Pick<InteractiveEndpointSnapshot, 'sessionArtifact' | 'sessionFile'>
+): string {
+  if (snap.sessionArtifact) {
+    if (snap.sessionArtifact.runtime === 'grok-acp') {
+      const id = snap.sessionArtifact.sessionId;
+      return id.length > 12 ? `acp:${id.slice(0, 6)}…${id.slice(-4)}` : `acp:${id}`;
+    }
+    return snap.sessionFile ? 'session' : 'no-session';
+  }
+  return snap.sessionFile ? 'session' : 'no-session';
+}
+
+/**
+ * Detail status line under the transcript separator.
+ * Example: `queues 0 · no-session · run-…(Ctrl+R resume)`
+ */
+export function formatDetailStatusLine(
+  snap: Pick<
+    InteractiveEndpointSnapshot,
+    'queueCount' | 'sessionArtifact' | 'sessionFile' | 'runId'
+  >,
+  options: { offerResume: boolean }
+): string {
+  const parts = [`queues ${snap.queueCount}`, formatDetailSessionLabel(snap)];
+  if (snap.runId) {
+    parts.push(options.offerResume ? `${snap.runId}(Ctrl+R resume)` : snap.runId);
+  }
+  return parts.join(' · ');
+}
+
+/** Footer help keys for Agent View detail. */
+export function formatDetailHelpKeys(options: {
+  grokAcp: boolean;
+  contentExpanded: boolean;
+  offerResume: boolean;
+}): string {
+  const expand = options.contentExpanded ? 'Ctrl+O collapse' : 'Ctrl+O expand all';
+  const resume = options.offerResume ? ' · Ctrl+R resume' : '';
+  if (options.grokAcp) {
+    return `Enter send · Ctrl+X cancel · ${expand} · Up/Down · End · ←/Esc back${resume}`;
+  }
+  return `Enter send · Alt+Enter follow-up · Ctrl+X abort · ${expand} · Up/Down · End · ←/Esc back${resume}`;
+}
+
+/** Host-facing prompt that asks the model to resume via the agent tool. */
+export function buildHostResumePrompt(runId: string): string {
+  return [
+    'Resume the durable agent run by calling the agent tool with only this runId',
+    '(do not add other launch fields such as agent/task/tasks/chain):',
+    '',
+    `agent({ runId: ${JSON.stringify(runId)} })`,
+  ].join('\n');
 }
 
 /** Max terminal columns among strings (ANSI/CJK-aware via visibleWidth). */

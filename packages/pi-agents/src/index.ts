@@ -17,7 +17,7 @@ import {
   createInteractiveRelayCoordinator,
   renderContinuationMessage,
 } from './interactive-relay.ts';
-import { createInteractiveViewController } from './interactive-view.ts';
+import { buildHostResumePrompt, createInteractiveViewController } from './interactive-view.ts';
 import { withAgentToolFailureLogging } from './log.ts';
 import { createRunStore } from './run-store.ts';
 import { createRunCoordinator } from './run-coordinator.ts';
@@ -84,10 +84,47 @@ export default function (pi: ExtensionAPI) {
   // Latest UI context and per-session interactive runtime (recreated on session_start).
   let latestUiCtx: ExtensionContext | undefined;
   let interactiveRegistry = createInteractiveAgentRegistry({ runStore, runCoordinator });
+  function isRunResumable(runId: string): boolean {
+    // Live in-process work: use Agent View chat / Ctrl+X, not host resume.
+    if (runCoordinator.isActive(runId)) return false;
+    const got = runStore.getRun(runId);
+    if (!got.ok) return false;
+    const record = got.loaded.record;
+    // Ctrl+R targets interrupted/cancelled/failed recovery (no continuation task).
+    // Fully completed runs need an explicit task via agent({ runId, task }) and are not offered here.
+    if (
+      record.status === 'interrupted' ||
+      record.status === 'cancelled' ||
+      record.status === 'failed'
+    ) {
+      return true;
+    }
+    // Dead-owner / unrecovered active labels after host exit: still offer resume.
+    if (record.status === 'running' || record.status === 'queued') return true;
+    return Object.values(record.units).some(
+      (u) =>
+        u.status === 'interrupted' ||
+        u.status === 'failed' ||
+        u.status === 'cancelled' ||
+        u.status === 'skipped' ||
+        u.status === 'queued'
+    );
+  }
+
+  function requestHostResume(runId: string): void {
+    try {
+      pi.sendUserMessage(buildHostResumePrompt(runId));
+    } catch {
+      // Best-effort: view already closed; surface nothing if host injection fails.
+    }
+  }
+
   let viewController = createInteractiveViewController({
     registry: interactiveRegistry,
     isTui: () => latestUiCtx?.mode === 'tui',
     getUi: () => latestUiCtx?.ui,
+    isRunResumable,
+    requestHostResume,
   });
   // Relay coordinator forwards interrupted/cancelled view continuations to the
   // bound host model. Rebuilt with the registry on every session start/tree swap.
@@ -120,6 +157,8 @@ export default function (pi: ExtensionAPI) {
       registry: interactiveRegistry,
       isTui: () => latestUiCtx?.mode === 'tui',
       getUi: () => latestUiCtx?.ui,
+      isRunResumable,
+      requestHostResume,
     });
     bindRelayCoordinator();
   }

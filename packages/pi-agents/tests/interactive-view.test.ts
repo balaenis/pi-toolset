@@ -12,7 +12,11 @@ import type {
 import {
   AgentDetailPanel,
   AgentNavigatorPanel,
+  buildHostResumePrompt,
+  canOfferDetailResume,
   createInteractiveViewController,
+  formatDetailHelpKeys,
+  formatDetailStatusLine,
   __test,
 } from '../src/interactive-view.ts';
 
@@ -344,6 +348,7 @@ describe('interactive-view helpers', () => {
       tui: { requestRender: () => undefined, terminal: { rows: 24 } } as never,
       theme: fakeTheme() as never,
       onBack: () => undefined,
+      onResume: () => undefined,
     });
     // Inject mock input so render does not depend on real Input internals.
     (panelUi as unknown as { input: typeof mockInput }).input = mockInput;
@@ -396,6 +401,7 @@ describe('interactive-view helpers', () => {
       endpointLabel: (ep) => ep.title || ep.agent,
       statusText: (ep) => `${ep.status} · queues ${ep.queueCount}`,
       onClose: () => undefined,
+      onResume: () => undefined,
     });
 
     for (const width of [8, 12, 20, 40]) {
@@ -422,6 +428,7 @@ describe('interactive-view helpers', () => {
       endpointLabel: (ep) => ep.agent,
       statusText: (ep) => ep.status,
       onClose: () => undefined,
+      onResume: () => undefined,
     });
     const used = (nav as unknown as { listTheme: ReturnType<typeof getSelectListTheme> }).listTheme;
     const expected = getSelectListTheme();
@@ -459,6 +466,7 @@ describe('interactive-view helpers', () => {
       endpointLabel: (ep) => ep.agent,
       statusText: (ep) => ep.status,
       onClose: () => undefined,
+      onResume: () => undefined,
     });
     const used = (nav as unknown as { listTheme: ReturnType<typeof getSelectListTheme> }).listTheme;
     const accentAnsi = realTheme.getFgAnsi('accent');
@@ -600,6 +608,7 @@ describe('interactive-view helpers', () => {
       endpointLabel: view.endpointLabel,
       statusText: view.statusText,
       onClose: () => undefined,
+      onResume: () => undefined,
     });
 
     const items = (
@@ -1521,6 +1530,7 @@ describe('interactive-view widget metadata refresh', () => {
       endpointLabel: view.endpointLabel,
       statusText: view.statusText,
       onClose: () => undefined,
+      onResume: () => undefined,
     });
     const items = (
       nav as unknown as { buildItems: () => Array<{ value: string; label: string }> }
@@ -1582,6 +1592,7 @@ describe('interactive-view widget metadata refresh', () => {
       endpointLabel: view.endpointLabel,
       statusText: view.statusText,
       onClose: () => undefined,
+      onResume: () => undefined,
     });
     const items = (
       nav as unknown as { buildItems: () => Array<{ value: string; label: string }> }
@@ -1631,6 +1642,7 @@ describe('interactive-view widget metadata refresh', () => {
       onClose: () => {
         closed += 1;
       },
+      onResume: () => undefined,
     });
 
     // Help text advertises arrow navigation (wide enough to keep both glyphs).
@@ -1722,6 +1734,7 @@ describe('interactive-view widget metadata refresh', () => {
       registry: registry as never,
       endpointKey: 'run:u',
       onBack: () => undefined,
+      onResume: () => undefined,
     });
 
     const first = panel.render(80).join('\n');
@@ -1843,6 +1856,7 @@ describe('interactive-view widget metadata refresh', () => {
       registry: registry as never,
       endpointKey: 'run:u',
       onBack: () => undefined,
+      onResume: () => undefined,
     });
 
     panel.render(80);
@@ -2016,6 +2030,7 @@ describe('interactive-view detail preview (last 15 + Ctrl+O)', () => {
       } as never,
       endpointKey: 'run:u',
       onBack: () => undefined,
+      onResume: () => undefined,
     });
     // Spy Input so we can assert Ctrl+O never reaches it.
     const realInput = (panel as unknown as { input: { handleInput: (d: string) => void } }).input;
@@ -2202,6 +2217,161 @@ describe('interactive-view detail preview (last 15 + Ctrl+O)', () => {
     expect(scrollState(panel).scrollOffset).toBe(0);
     expect(scrollState(panel).followTail).toBe(true);
 
+    panel.dispose();
+  });
+});
+
+describe('Agent View host resume (Ctrl+R)', () => {
+  const RUN_ID = 'run-8f60b689-1512-4913-8410-ace20528f600';
+
+  it('formats status line with full runId and Ctrl+R resume hint', () => {
+    const line = formatDetailStatusLine(
+      {
+        queueCount: 0,
+        sessionFile: '',
+        runId: RUN_ID,
+      },
+      { offerResume: true }
+    );
+    expect(line).toBe(`queues 0 · no-session · ${RUN_ID}(Ctrl+R resume)`);
+  });
+
+  it('formats status line with runId only when resume is not offered', () => {
+    const line = formatDetailStatusLine(
+      {
+        queueCount: 2,
+        sessionFile: '/tmp/s.jsonl',
+        runId: RUN_ID,
+      },
+      { offerResume: false }
+    );
+    expect(line).toBe(`queues 2 · session · ${RUN_ID}`);
+  });
+
+  it('canOfferDetailResume is false while live and true for interrupted idle', () => {
+    expect(
+      canOfferDetailResume({
+        runId: RUN_ID,
+        status: 'running',
+        usage: { stopReason: 'aborted' } as never,
+      })
+    ).toBe(false);
+    expect(
+      canOfferDetailResume({
+        runId: RUN_ID,
+        status: 'idle',
+        usage: { stopReason: 'aborted' } as never,
+      })
+    ).toBe(true);
+    expect(
+      canOfferDetailResume(
+        {
+          runId: RUN_ID,
+          status: 'detached',
+          usage: undefined,
+        },
+        (id) => id === RUN_ID
+      )
+    ).toBe(true);
+    expect(
+      canOfferDetailResume(
+        {
+          runId: RUN_ID,
+          status: 'detached',
+          usage: undefined,
+        },
+        () => false
+      )
+    ).toBe(false);
+  });
+
+  it('help keys advertise Ctrl+R resume only when offered', () => {
+    const withResume = formatDetailHelpKeys({
+      grokAcp: false,
+      contentExpanded: false,
+      offerResume: true,
+    });
+    expect(withResume).toContain('Ctrl+R resume');
+    const without = formatDetailHelpKeys({
+      grokAcp: false,
+      contentExpanded: false,
+      offerResume: false,
+    });
+    expect(without).not.toContain('Ctrl+R');
+  });
+
+  it('buildHostResumePrompt asks the host for agent({ runId }) only', () => {
+    const prompt = buildHostResumePrompt(RUN_ID);
+    expect(prompt).toContain(`agent({ runId: ${JSON.stringify(RUN_ID)} })`);
+    expect(prompt).toContain('only this runId');
+  });
+
+  it('Ctrl+R closes via onResume when offerable', () => {
+    const resumed: string[] = [];
+    const s = snap({
+      key: `${RUN_ID}:u`,
+      linkCreatedAt: 1,
+      runId: RUN_ID,
+      status: 'idle',
+      usage: {
+        turns: 1,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 0,
+        stopReason: 'aborted',
+      },
+    });
+    const panel = new AgentDetailPanel({
+      tui: { requestRender: () => undefined, terminal: { rows: 24 } } as never,
+      theme: fakeTheme() as never,
+      registry: {
+        get: () => s,
+        subscribe: () => () => undefined,
+        send: async () => undefined,
+        abort: async () => undefined,
+      } as never,
+      endpointKey: s.key,
+      onBack: () => undefined,
+      onResume: (runId) => resumed.push(runId),
+      isRunResumable: () => true,
+    });
+    const rows = panel.render(200).join('\n');
+    expect(rows).toContain(`${RUN_ID}(Ctrl+R resume)`);
+    // ctrl+r (ASCII DC2) — matches pi-tui matchesKey('ctrl+r')
+    panel.handleInput('\x12');
+    expect(resumed).toEqual([RUN_ID]);
+    panel.dispose();
+  });
+
+  it('Ctrl+R is rejected while endpoint is running', () => {
+    const resumed: string[] = [];
+    const s = snap({
+      key: `${RUN_ID}:u`,
+      linkCreatedAt: 1,
+      runId: RUN_ID,
+      status: 'running',
+    });
+    const panel = new AgentDetailPanel({
+      tui: { requestRender: () => undefined, terminal: { rows: 24 } } as never,
+      theme: fakeTheme() as never,
+      registry: {
+        get: () => s,
+        subscribe: () => () => undefined,
+        send: async () => undefined,
+        abort: async () => undefined,
+      } as never,
+      endpointKey: s.key,
+      onBack: () => undefined,
+      onResume: (runId) => resumed.push(runId),
+      isRunResumable: () => true,
+    });
+    panel.handleInput('\x12');
+    expect(resumed).toEqual([]);
+    const rows = panel.render(160).join('\n');
+    expect(rows).toContain('Resume unavailable while this agent is running');
     panel.dispose();
   });
 });

@@ -401,7 +401,10 @@ TUI-only navigator for Pi and Grok ACP durable units linked to the active main-s
 | Detail    | Alt+Enter       | Pi: `follow_up` when running; `prompt` otherwise. Grok ACP: `prompt` when idle; rejected when running |
 | Detail    | Ctrl+X          | Abort/cancel current child turn only (Pi abort RPC or Grok ACP `session/cancel`)                      |
 | Detail    | Ctrl+O          | Toggle last-15-line preview vs complete retained/bounded Agent View transcript                        |
+| Detail    | Ctrl+R          | When resumable and not live: close view and inject host user message for `agent({ runId })`           |
 | Detail    | Escape / Left   | Return to navigator (Left only when the prompt is empty; otherwise moves the input cursor)            |
+
+Detail status line: `queues N · session|no-session|acp:… · <runId>` and, when Ctrl+R is offered, `<runId>(Ctrl+R resume)`.
 
 ### Endpoint statuses
 
