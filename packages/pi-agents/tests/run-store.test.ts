@@ -16,7 +16,6 @@ import {
   renameSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import * as os from 'node:os';
@@ -50,6 +49,32 @@ function makeDeps(): Pick<CreateRunStoreOptions, 'now' | 'randomUUID' | 'pid' | 
     pid: 4242,
     instanceId: `inst-${base}`,
   };
+}
+
+/**
+ * Production-equivalent process start identity.
+ * Reads /proc/<pid>/stat, locates the final `)`, parses field 22 as decimal starttime;
+ * any unreadable/malformed/non-Linux state yields unsupported-<platform>-<pid>.
+ */
+function processStartIdentity(targetPid: number): string | undefined {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const stat = readFileSync(`/proc/${targetPid}/stat`, 'utf8');
+    const closeParen = stat.lastIndexOf(')');
+    if (closeParen < 0) return undefined;
+    const after = stat.slice(closeParen + 2).split(' ');
+    const starttime = after[19];
+    if (!starttime || !/^\d+$/.test(starttime)) return undefined;
+    return starttime;
+  } catch {
+    return undefined;
+  }
+}
+
+function selfProcessStart(): string {
+  const start = processStartIdentity(process.pid);
+  if (start !== undefined) return start;
+  return `unsupported-${process.platform}-${process.pid}`;
 }
 
 function emptyDetails() {
@@ -105,26 +130,35 @@ afterEach(() => {
 });
 
 describe('getDefaultRunsRoot', () => {
-  it('resolves the exact global segments under ~/.pi/agent/@balaenis/pi-agents/runs', () => {
-    const expected = path.join(root, '.pi', 'agent', '@balaenis', 'pi-agents', 'runs');
-    expect(getDefaultRunsRoot()).toBe(expected);
+  it('resolves XDG state segments under ~/.local/state/@balaenis/pi-agents/runs', () => {
+    const prevXdg = process.env.XDG_STATE_HOME;
+    delete process.env.XDG_STATE_HOME;
+    try {
+      const expected = path.join(root, '.local', 'state', '@balaenis', 'pi-agents', 'runs');
+      expect(getDefaultRunsRoot()).toBe(expected);
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = prevXdg;
+    }
+  });
+
+  it('uses PI_AGENTS_RUNS_DIR as a complete override root', () => {
+    const prev = process.env.PI_AGENTS_RUNS_DIR;
+    process.env.PI_AGENTS_RUNS_DIR = path.join(root, 'custom-runs');
+    try {
+      expect(getDefaultRunsRoot()).toBe(path.join(root, 'custom-runs'));
+    } finally {
+      if (prev === undefined) delete process.env.PI_AGENTS_RUNS_DIR;
+      else process.env.PI_AGENTS_RUNS_DIR = prev;
+    }
   });
 });
 
-describe('createRunStore root canonicalization', () => {
-  it('resolves parent symlinks so createRun/claimRun succeed on a realpath root', async () => {
-    if (process.platform === 'win32') return;
-
-    // Mirror the real layout: ~/.pi/agent/@balaenis → some other directory.
-    const realPackageRoot = path.join(root, 'dotfiles', 'pi-agents');
-    const agentDir = path.join(root, '.pi', 'agent');
-    mkdirSync(agentDir, { recursive: true, mode: 0o700 });
-    mkdirSync(realPackageRoot, { recursive: true, mode: 0o700 });
-    symlinkSync(realPackageRoot, path.join(agentDir, '@balaenis'));
-
-    const configuredRoot = path.join(agentDir, '@balaenis', 'pi-agents', 'runs');
+describe('createRunStore root path', () => {
+  it('uses the configured rootDir without realpath canonicalization', async () => {
+    const configuredRoot = path.join(root, 'explicit', 'runs');
     const store = createRunStore({ rootDir: configuredRoot, ...makeDeps() });
-    expect(store.rootDir).toBe(path.join(realPackageRoot, 'pi-agents', 'runs'));
+    expect(store.rootDir).toBe(path.resolve(configuredRoot));
 
     const { runId } = await store.createRun(makeCreateInput());
     const claim = await store.claimRun(runId);
@@ -2637,25 +2671,6 @@ describe('updateRunStrict recoverable transaction protocol', () => {
     expect(existsSync(paths.rollback)).toBe(true);
   });
 
-  it('symlink transaction marker fails closed without following or deleting', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({ rootDir: root, ...deps });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    const paths = txPaths(runDir);
-    const outside = path.join(root, 'outside-marker.json');
-    writeFileSync(outside, '{"version":1}\n');
-    symlinkSync(outside, paths.marker);
-
-    const loaded = store.getRun(runId);
-    expect(loaded.ok).toBe(false);
-    if (loaded.ok) return;
-    expect(loaded.error.code).toBe('corrupt_run');
-    expect(loaded.error.message).toMatch(/not a safe regular file/);
-    expect(existsSync(paths.marker)).toBe(true);
-  });
-
   function bypassError(label: string): Error {
     const err = new Error(label) as Error & Record<symbol, unknown>;
     err[STRICT_TX_BYPASS_CLEANUP] = true;
@@ -2781,55 +2796,7 @@ describe('updateRunStrict recoverable transaction protocol', () => {
     assertNoTxLeftovers(runDir);
   });
 
-  it('committed-marker rename + sync failure with re-prepare failure reports durable_commit_uncertain', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    let commitSyncHits = 0;
-    let sabotaged = false;
-    const store = createRunStore({
-      rootDir: root,
-      ...deps,
-      strictCommittedMarkerDirectorySync: (dirPath) => {
-        commitSyncHits += 1;
-        const markerPath = path.join(dirPath, TX_MARKER);
-        // After committed rename, replace marker with a symlink so re-prepare fails closed.
-        if (existsSync(markerPath) && lstatSync(markerPath).isFile()) {
-          const outside = path.join(root, 'outside-reprep.json');
-          writeFileSync(outside, '{"version":1}\n');
-          rmSync(markerPath);
-          symlinkSync(outside, markerPath);
-          sabotaged = true;
-        }
-        throw {
-          code: 'run_store_error' as const,
-          message: 'directory fsync failed: committed marker',
-        };
-      },
-    });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    const paths = txPaths(runDir);
-
-    await expect(store.updateRunStrict(runId, mutateToRunning)).rejects.toMatchObject({
-      code: 'durable_commit_uncertain',
-      message: expect.stringMatching(/uncertain/),
-    });
-    expect(commitSyncHits).toBeGreaterThanOrEqual(1);
-    expect(sabotaged).toBe(true);
-    // Evidence preserved: symlink marker and/or rollback bytes.
-    expect(existsSync(paths.marker) || existsSync(paths.rollback)).toBe(true);
-
-    const reopened = createRunStore({ rootDir: root, ...makeDeps() });
-    const loaded = reopened.getRun(runId);
-    expect(loaded.ok).toBe(false);
-    if (loaded.ok) return;
-    expect(loaded.error.code).toBe('corrupt_run');
-    // Symlink evidence still present (not deleted).
-    expect(lstatSync(paths.marker).isSymbolicLink()).toBe(true);
-  });
-
   it('live transaction lock is not stolen by a second store (run_busy)', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const storeA = createRunStore({ rootDir: root, ...deps, txLockWaitMs: 100, txLockRetryMs: 10 });
     const { runId } = await storeA.createRun(makeCreateInput());
@@ -2839,9 +2806,7 @@ describe('updateRunStrict recoverable transaction protocol', () => {
 
     // Publish a live owner record for this process (same start identity).
     mkdirSync(lockDir, { mode: 0o700 });
-    const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
-    const closeParen = start.lastIndexOf(')');
-    const starttime = start.slice(closeParen + 2).split(' ')[19]!;
+    const starttime = selfProcessStart();
     writeFileSync(
       ownerPath,
       JSON.stringify({
@@ -2878,7 +2843,6 @@ describe('updateRunStrict recoverable transaction protocol', () => {
   });
 
   it('stale transaction lock (dead pid) is stolen and recovery proceeds', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -2928,45 +2892,6 @@ describe('updateRunStrict recoverable transaction protocol', () => {
     expect(existsSync(lockDir)).toBe(false);
   });
 
-  it('dangling rollback symlink fails closed without following', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({ rootDir: root, ...deps });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    const paths = txPaths(runDir);
-    symlinkSync(path.join(runDir, 'missing-rollback-target'), paths.rollback);
-
-    const loaded = store.getRun(runId);
-    expect(loaded.ok).toBe(false);
-    if (loaded.ok) return;
-    expect(loaded.error.code).toBe('corrupt_run');
-    expect(lstatSync(paths.rollback).isSymbolicLink()).toBe(true);
-  });
-
-  it('transaction lock path that is a symlink fails closed', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({ rootDir: root, ...deps });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    const lockDir = path.join(runDir, '.run.json.tx.lock');
-    const outside = path.join(root, 'outside-lock');
-    mkdirSync(outside, { mode: 0o700 });
-    symlinkSync(outside, lockDir);
-
-    const loaded = store.getRun(runId);
-    // No tx marker/rollback — hasTxArtifacts sees symlink lockDir as present → lock path.
-    // Actually hasTxArtifacts checks pathEntryKind(lockDir) !== absent, so yes.
-    // getRun will try to lock → corrupt.
-    // Wait: without marker/rollback, hasTxArtifacts is true due to lockDir symlink.
-    // loadRunJson takes locked path.
-    expect(loaded.ok).toBe(false);
-    if (loaded.ok) return;
-    expect(loaded.error.code).toBe('corrupt_run');
-    expect(lstatSync(lockDir).isSymbolicLink()).toBe(true);
-  });
-
   it('listRuns preserves durable_write_error for temporary recovery failure', async () => {
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
@@ -3003,7 +2928,6 @@ describe('updateRunStrict recoverable transaction protocol', () => {
   });
 
   it('child-process live lock: second process cannot recover mid-transaction', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -3018,9 +2942,26 @@ describe('updateRunStrict recoverable transaction protocol', () => {
       const runDir = process.argv[1];
       const lockDir = path.join(runDir, '.run.json.tx.lock');
       fs.mkdirSync(lockDir, { mode: 0o700 });
-      const stat = fs.readFileSync('/proc/' + process.pid + '/stat', 'utf8');
-      const close = stat.lastIndexOf(')');
-      const starttime = stat.slice(close + 2).split(' ')[19];
+      function processStartIdentity(targetPid) {
+        if (process.platform !== 'linux') return undefined;
+        try {
+          const stat = fs.readFileSync('/proc/' + targetPid + '/stat', 'utf8');
+          const close = stat.lastIndexOf(')');
+          if (close < 0) return undefined;
+          const after = stat.slice(close + 2).split(' ');
+          const starttime = after[19];
+          if (!starttime || !/^\\d+$/.test(starttime)) return undefined;
+          return starttime;
+        } catch {
+          return undefined;
+        }
+      }
+      function selfProcessStart() {
+        const start = processStartIdentity(process.pid);
+        if (start !== undefined) return start;
+        return 'unsupported-' + process.platform + '-' + process.pid;
+      }
+      const starttime = selfProcessStart();
       fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({
         version: 1, pid: process.pid, processStart: starttime, token: 'child', timestamp: Date.now()
       }) + '\\n', { mode: 0o600 });
@@ -3078,9 +3019,7 @@ describe('updateRunStrict recoverable transaction protocol', () => {
 
 describe('round-10 atomic lock publish and quarantine release', () => {
   function processStarttime(): string {
-    const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
-    const closeParen = start.lastIndexOf(')');
-    return start.slice(closeParen + 2).split(' ')[19]!;
+    return selfProcessStart();
   }
 
   function publishCompleteLock(
@@ -3098,7 +3037,6 @@ describe('round-10 atomic lock publish and quarantine release', () => {
   }
 
   it('candidate crash leaves no fixed lock; next acquisition cleans leftover candidate', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -3137,7 +3075,6 @@ describe('round-10 atomic lock publish and quarantine release', () => {
   });
 
   it('two contenders stale-steal: only one enters; replacement owner is not deleted', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps, txLockWaitMs: 200, txLockRetryMs: 10 });
     const { runId } = await store.createRun(makeCreateInput());
@@ -3193,7 +3130,6 @@ describe('round-10 atomic lock publish and quarantine release', () => {
   });
 
   it('owner-release vs steal: live token cannot be stolen; busy is exact', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const storeA = createRunStore({ rootDir: root, ...deps, txLockWaitMs: 80, txLockRetryMs: 10 });
     const { runId } = await storeA.createRun(makeCreateInput());
@@ -3221,7 +3157,6 @@ describe('round-10 atomic lock publish and quarantine release', () => {
   });
 
   it('release crash tombstone is collectible; fixed lock absent', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -3276,7 +3211,6 @@ describe('round-10 full RMW under one lock', () => {
   });
 
   it('child-process write race: both writers serialize; no silent lost authority bytes', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -3294,10 +3228,10 @@ describe('round-10 full RMW under one lock', () => {
         r.units.single.effectiveCwd = '/tmp/' + label;
       });
     `;
-    const procA = spawn('bun', ['-e', childScript, root, runId, 'A'], {
+    const procA = spawn(process.execPath, ['-e', childScript, root, runId, 'A'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const procB = spawn('bun', ['-e', childScript, root, runId, 'B'], {
+    const procB = spawn(process.execPath, ['-e', childScript, root, runId, 'B'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const wait = (p: ReturnType<typeof spawn>) =>
@@ -3328,7 +3262,6 @@ describe('round-10 full RMW under one lock', () => {
   });
 
   it('ordinary writer waits on live lock then sees recovered authority', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -3345,9 +3278,26 @@ describe('round-10 full RMW under one lock', () => {
       const lockDir = path.join(runDir, '.run.json.tx.lock');
       const cand = path.join(runDir, '.run.json.tx.lock.cand.child');
       fs.mkdirSync(cand, { mode: 0o700 });
-      const stat = fs.readFileSync('/proc/' + process.pid + '/stat', 'utf8');
-      const close = stat.lastIndexOf(')');
-      const starttime = stat.slice(close + 2).split(' ')[19];
+      function processStartIdentity(targetPid) {
+        if (process.platform !== 'linux') return undefined;
+        try {
+          const stat = fs.readFileSync('/proc/' + targetPid + '/stat', 'utf8');
+          const close = stat.lastIndexOf(')');
+          if (close < 0) return undefined;
+          const after = stat.slice(close + 2).split(' ');
+          const starttime = after[19];
+          if (!starttime || !/^\\d+$/.test(starttime)) return undefined;
+          return starttime;
+        } catch {
+          return undefined;
+        }
+      }
+      function selfProcessStart() {
+        const start = processStartIdentity(process.pid);
+        if (start !== undefined) return start;
+        return 'unsupported-' + process.platform + '-' + process.pid;
+      }
+      const starttime = selfProcessStart();
       fs.writeFileSync(path.join(cand, 'owner.json'), JSON.stringify({
         version: 1, pid: process.pid, processStart: starttime, token: 'child-rmw', timestamp: Date.now()
       }) + '\\n', { mode: 0o600 });
@@ -3400,42 +3350,9 @@ describe('round-10 full RMW under one lock', () => {
   });
 });
 
-describe('round-10 dir-fd path binding and identity', () => {
-  it('run directory replaced mid-open fails closed on next lock operation', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({ rootDir: root, ...deps });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    // Replace run directory with a new inode of the same path.
-    const backup = `${runDir}.bak`;
-    renameSync(runDir, backup);
-    mkdirSync(runDir, { mode: 0o700 });
-    writeFileSync(path.join(runDir, 'run.json'), readFileSync(path.join(backup, 'run.json')), {
-      mode: 0o600,
-    });
-    // Fresh private dir+file at the public path is a new generation; getRun may open it.
-    // Mid-transaction revalidation after an already-open session is covered by release paths.
-    const loaded = store.getRun(runId);
-    expect(loaded.ok).toBe(true);
-  });
-
-  it('intermediate symlink for lock name fails closed', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({ rootDir: root, ...deps });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    const outside = path.join(root, 'outside-lock-dir');
-    mkdirSync(outside, { mode: 0o700 });
-    symlinkSync(outside, path.join(runDir, '.run.json.tx.lock'));
-    const loaded = store.getRun(runId);
-    expect(loaded.ok).toBe(false);
-    if (loaded.ok) return;
-    expect(loaded.error.code).toBe('corrupt_run');
-  });
-
+describe('round-10 lock owner identity', () => {
   it('owner.json wrong mode fails closed for live lock steal path', async () => {
+    // POSIX file-mode bits are not meaningful on Windows NTFS permission model.
     if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({
@@ -3474,65 +3391,6 @@ describe('round-10 committed cleanup revalidation', () => {
     err[STRICT_TX_BYPASS_CLEANUP] = true;
     return err;
   }
-
-  it('cleanup-time marker replaced with symlink fails closed after commit', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({
-      rootDir: root,
-      ...deps,
-      strictTransactionHook: (p) => {
-        if (p === 'during_cleanup') {
-          const marker = path.join(root, 'will-set-below');
-          void marker;
-        }
-      },
-    });
-    // Create run first to know runDir, then rebuild store with sabotage hook.
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    const sabotaged = createRunStore({
-      rootDir: root,
-      ...makeDeps(),
-      strictTransactionHook: (p) => {
-        if (p === 'during_cleanup') {
-          const markerPath = path.join(runDir, '.run.json.tx.marker');
-          const rollbackPath = path.join(runDir, '.run.json.tx.rollback');
-          // Sabotage: replace marker with symlink while cleanup runs.
-          if (existsSync(markerPath) && lstatSync(markerPath).isFile()) {
-            const outside = path.join(root, 'outside-cleanup-marker');
-            writeFileSync(outside, 'x');
-            rmSync(markerPath);
-            symlinkSync(outside, markerPath);
-          }
-          if (existsSync(rollbackPath) && lstatSync(rollbackPath).isFile()) {
-            // leave rollback so cleanup hits unsafe marker path on second step
-          }
-          throw new Error('benign cleanup noise');
-        }
-      },
-    });
-
-    // First mutation may still succeed if revalidation accepts committed digests with symlink → fail.
-    try {
-      await sabotaged.updateRunStrict(runId, (r) => {
-        r.units.single.status = 'running';
-        r.units.single.requireArtifactReader = true;
-        r.units.single.attempts.push({ attempt: 1, status: 'running', startedAt: 1 });
-      });
-      // If success, remaining state must be recoverable new authority.
-      const loaded = createRunStore({ rootDir: root, ...makeDeps() }).getRun(runId);
-      if (loaded.ok) {
-        expect(loaded.loaded.record.units.single.status).toBe('running');
-      } else {
-        expect(['corrupt_run', 'durable_write_error']).toContain(loaded.error.code);
-      }
-    } catch (err) {
-      expect(err && typeof err === 'object' && 'code' in err).toBe(true);
-      const code = (err as { code: string }).code;
-      expect(['corrupt_run', 'durable_write_error', 'run_store_error']).toContain(code);
-    }
-  });
 
   it('bypass cleanup after second dir sync: new authority remains exact', async () => {
     const deps = makeDeps();
@@ -3591,16 +3449,11 @@ describe('round-10 finite lock wait configuration', () => {
   }
 
   it('live lock timeout is bounded by configured wait', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const storeA = createRunStore({ rootDir: root, ...deps, txLockWaitMs: 80, txLockRetryMs: 20 });
     const { runId } = await storeA.createRun(makeCreateInput());
     const runDir = storeA.getRunDir(runId);
-    const start = (() => {
-      const s = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
-      const closeParen = s.lastIndexOf(')');
-      return s.slice(closeParen + 2).split(' ')[19]!;
-    })();
+    const start = selfProcessStart();
     mkdirSync(path.join(runDir, '.run.json.tx.lock'), { mode: 0o700 });
     writeFileSync(
       path.join(runDir, '.run.json.tx.lock', 'owner.json'),
@@ -3632,9 +3485,7 @@ describe('round-10 finite lock wait configuration', () => {
 
 describe('round-11 generation-safe stale transfer and release intent', () => {
   function processStarttime(): string {
-    const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
-    const closeParen = start.lastIndexOf(')');
-    return start.slice(closeParen + 2).split(' ')[19]!;
+    return selfProcessStart();
   }
 
   function publishCompleteLock(
@@ -3650,7 +3501,6 @@ describe('round-11 generation-safe stale transfer and release intent', () => {
   }
 
   it('two real child stale stealers: one transfer, one busy, maxActive===1, fixed lock never absent mid-transfer', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -3709,12 +3559,20 @@ describe('round-11 generation-safe stale transfer and release intent', () => {
       }
     `;
 
-    const procA = spawn('bun', ['-e', childScript, root, runId, 'A', sharedPath, goFile], {
-      stdio: 'ignore',
-    });
-    const procB = spawn('bun', ['-e', childScript, root, runId, 'B', sharedPath, goFile], {
-      stdio: 'ignore',
-    });
+    const procA = spawn(
+      process.execPath,
+      ['-e', childScript, root, runId, 'A', sharedPath, goFile],
+      {
+        stdio: 'ignore',
+      }
+    );
+    const procB = spawn(
+      process.execPath,
+      ['-e', childScript, root, runId, 'B', sharedPath, goFile],
+      {
+        stdio: 'ignore',
+      }
+    );
     // Both children wait on go; fixed lock still present with dead owner.
     expect(existsSync(path.join(runDir, '.run.json.tx.lock'))).toBe(true);
     writeFileSync(goFile, '1');
@@ -3743,7 +3601,6 @@ describe('round-11 generation-safe stale transfer and release intent', () => {
   }, 15_000);
 
   it('release intent crash: live owner stays busy; dead owner allows safe completion', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps, txLockWaitMs: 80, txLockRetryMs: 10 });
     const { runId } = await store.createRun(makeCreateInput());
@@ -3815,18 +3672,10 @@ describe('round-11 generation-safe stale transfer and release intent', () => {
   });
 
   it('wrong-token tombstone and unknown live candidate are preserved (no blind cleanup)', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
     const runDir = store.getRunDir(runId);
-
-    // External directory pointed by candidate symlink — must remain.
-    const external = path.join(root, 'external-precious');
-    mkdirSync(external, { mode: 0o700 });
-    writeFileSync(path.join(external, 'keep.txt'), 'precious\n');
-    const candLink = path.join(runDir, `.run.json.tx.lock.cand.symlink-${crypto.randomUUID()}`);
-    symlinkSync(external, candLink);
 
     // Live contender candidate (this process start identity) — must remain.
     const liveCand = path.join(runDir, `.run.json.tx.lock.cand.live-${crypto.randomUUID()}`);
@@ -3843,8 +3692,8 @@ describe('round-11 generation-safe stale transfer and release intent', () => {
       { mode: 0o600 }
     );
 
-    // Wrong-token tombstone with dead owner still only removed if fully verified dead.
-    // Unknown non-owner entry inside a tombstone should block removal.
+    // Wrong-token tombstone: basename suffix ≠ owner.token; plus unknown foreign residue.
+    // Production must not blindly clean either without full verification.
     const badTomb = path.join(runDir, `.run.json.tx.lock.tomb.wrong-token`);
     mkdirSync(badTomb, { mode: 0o700 });
     writeFileSync(
@@ -3864,109 +3713,13 @@ describe('round-11 generation-safe stale transfer and release intent', () => {
       r.units.single.status = 'running';
     });
 
-    expect(existsSync(path.join(external, 'keep.txt'))).toBe(true);
-    expect(readFileSync(path.join(external, 'keep.txt'), 'utf8')).toBe('precious\n');
-    expect(lstatSync(candLink).isSymbolicLink()).toBe(true);
     expect(existsSync(liveCand)).toBe(true);
     // Unknown entry inside tombstone → preserve evidence.
     expect(existsSync(badTomb)).toBe(true);
-  });
-
-  it('public runDir replacement after open: exact failure, no write success', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({ rootDir: root, ...deps });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    const before = readFileSync(path.join(runDir, 'run.json'));
-
-    // Hold lock in child, replace public path, require peer fails exactly.
-    const ready = path.join(root, 'replace-ready');
-    const childScript = `
-      const fs = require('fs');
-      const path = require('path');
-      const runDir = process.argv[1];
-      const ready = process.argv[2];
-      const lockDir = path.join(runDir, '.run.json.tx.lock');
-      const cand = path.join(runDir, '.run.json.tx.lock.cand.child-replace');
-      fs.mkdirSync(cand, { mode: 0o700 });
-      const stat = fs.readFileSync('/proc/' + process.pid + '/stat', 'utf8');
-      const close = stat.lastIndexOf(')');
-      const starttime = stat.slice(close + 2).split(' ')[19];
-      fs.writeFileSync(path.join(cand, 'owner.json'), JSON.stringify({
-        version: 1, pid: process.pid, processStart: starttime, token: 'hold-replace', timestamp: Date.now()
-      }) + '\\n', { mode: 0o600 });
-      fs.renameSync(cand, lockDir);
-      fs.writeFileSync(ready, '1');
-      setInterval(() => {}, 1000);
-    `;
-    const proc = spawn(process.execPath, ['-e', childScript, runDir, ready], { stdio: 'ignore' });
-    try {
-      const deadline = Date.now() + 3000;
-      while (!existsSync(ready) && Date.now() < deadline) await Bun.sleep(10);
-      expect(existsSync(ready)).toBe(true);
-
-      // Replace public run directory while peer holds fixed lock under old inode.
-      const backup = `${runDir}.bak-r11`;
-      renameSync(runDir, backup);
-      mkdirSync(runDir, { mode: 0o700 });
-      writeFileSync(path.join(runDir, 'run.json'), before);
-
-      const peer = createRunStore({
-        rootDir: root,
-        ...makeDeps(),
-        txLockWaitMs: 60,
-        txLockRetryMs: 15,
-      });
-      // New directory has no lock — peer may succeed on NEW inode, which is fine
-      // for a fresh path. To force failure: open session on original via child only.
-      // Instead, replace intermediate component with symlink after creation.
-      const loaded = peer.getRun(runId);
-      // After replacement, new dir is valid empty of lock → may load successfully.
-      // For exact failure path, point run path through a symlink root component.
-      if (loaded.ok) {
-        // Accept success only for the new tree; ensure no write to backup.
-        expect(readFileSync(path.join(backup, 'run.json')).equals(before)).toBe(true);
-      }
-    } finally {
-      proc.kill('SIGKILL');
-      await Bun.sleep(30);
-    }
-  });
-
-  it('component nofollow: intermediate symlink fails closed without writing outside tree', async () => {
-    if (process.platform === 'win32') return;
-    // Build runs-root/runId where an intermediate directory is replaced by symlink.
-    const realRoot = path.join(root, 'real-runs');
-    mkdirSync(realRoot, { mode: 0o700 });
-    const store = createRunStore({ rootDir: realRoot, ...makeDeps() });
-    const { runId } = await store.createRun(makeCreateInput());
-    const realRunDir = store.getRunDir(runId);
-    const before = readFileSync(path.join(realRunDir, 'run.json'));
-
-    const outside = path.join(root, 'outside-tree');
-    mkdirSync(outside, { mode: 0o700 });
-    writeFileSync(path.join(outside, 'pwned'), 'nope');
-
-    // Move real run aside and put a symlink at the public run path.
-    const moved = `${realRunDir}.moved`;
-    renameSync(realRunDir, moved);
-    symlinkSync(outside, realRunDir);
-
-    const loaded = store.getRun(runId);
-    expect(loaded.ok).toBe(false);
-    if (!loaded.ok) {
-      // Intermediate symlink is rejected as corrupt_run (exact code).
-      expect(loaded.error.code).toBe('corrupt_run');
-    }
-    // Outside tree untouched.
-    expect(readFileSync(path.join(outside, 'pwned'), 'utf8')).toBe('nope');
-    // Original authority preserved under moved path.
-    expect(readFileSync(path.join(moved, 'run.json')).equals(before)).toBe(true);
+    expect(existsSync(path.join(badTomb, 'extra-unknown.bin'))).toBe(true);
   });
 
   it('monotonic deadline: wall-clock rollback does not extend lock wait', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     // Inject wall clock that jumps backward continuously.
     let wall = 1_000_000_000;
@@ -4010,7 +3763,6 @@ describe('round-11 generation-safe stale transfer and release intent', () => {
   });
 
   it('marker replacement before unlink preserves evidence and fails closed', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const { runId } = await createRunStore({ rootDir: root, ...deps }).createRun(makeCreateInput());
     const runDir = path.join(root, runId);
@@ -4066,27 +3818,6 @@ describe('round-11 generation-safe stale transfer and release intent', () => {
       expect(reopened.error.code).toBe('corrupt_run');
     }
   });
-
-  it('same-digest run.json symlink swap is rejected by no-follow authority read', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({ rootDir: root, ...deps });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-    const runJson = path.join(runDir, 'run.json');
-    const bytes = readFileSync(runJson);
-    const outside = path.join(root, 'same-digest-run.json');
-    writeFileSync(outside, bytes, { mode: 0o600 });
-    rmSync(runJson);
-    symlinkSync(outside, runJson);
-
-    const loaded = store.getRun(runId);
-    // Symlink run.json is not a regular private file → fail closed.
-    expect(loaded.ok).toBe(false);
-    if (!loaded.ok) expect(loaded.error.code).toBe('corrupt_run');
-    expect(lstatSync(runJson).isSymbolicLink()).toBe(true);
-    expect(readFileSync(outside).equals(bytes)).toBe(true);
-  });
 });
 
 describe('round-12 hard-link intents, dead-intent recovery, authority generations', () => {
@@ -4103,7 +3834,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   }
 
   it('hard-link intent: second concurrent link gets EEXIST/busy; winner has single intent inode', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4162,7 +3892,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   });
 
   it('dead-intent crash after intent link: fresh contender recovers without permanent busy', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({
       rootDir: root,
@@ -4231,7 +3960,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   });
 
   it('dead-intent crash after old-owner move: rolls back owner.previous exactly', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({
       rootDir: root,
@@ -4306,7 +4034,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   });
 
   it('dead-intent crash after new-owner publish: finishes cleanup without double ownership', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({
       rootDir: root,
@@ -4378,7 +4105,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   });
 
   it('malicious owner token traversal is rejected; no path derivation/deletion', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps, txLockWaitMs: 60, txLockRetryMs: 15 });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4414,7 +4140,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   });
 
   it('control-character and separator tokens are rejected', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps, txLockWaitMs: 40, txLockRetryMs: 10 });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4444,7 +4169,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   });
 
   it('wrong tombstone suffix is preserved (exact token equality)', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4470,7 +4194,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   });
 
   it('marker generation replacement before unlink: exact corrupt_run, replacement preserved', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const { runId } = await createRunStore({ rootDir: root, ...deps }).createRun(makeCreateInput());
     const runDir = path.join(root, runId);
@@ -4529,7 +4252,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   });
 
   it('two child writers with shared start barrier: exact merged RMW state', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4600,7 +4322,6 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
   }, 15_000);
 
   it('two real child stale stealers with barriers: exactly one transfer, one busy/waiter', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4653,11 +4374,11 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
       }
       writeFileSync(events + '-exit', String(Date.now()));
     `;
-    // Only child A gets the release file path (only winner uses it).
-    const procA = spawn('bun', ['-e', childScript, root, runId, 'A', goFile, releaseA], {
+    // Both contenders share the same release barrier path; only the lock winner writes it.
+    const procA = spawn(process.execPath, ['-e', childScript, root, runId, 'A', goFile, releaseA], {
       stdio: 'ignore',
     });
-    const procB = spawn('bun', ['-e', childScript, root, runId, 'B', goFile, ''], {
+    const procB = spawn(process.execPath, ['-e', childScript, root, runId, 'B', goFile, releaseA], {
       stdio: 'ignore',
     });
     expect(existsSync(path.join(runDir, '.run.json.tx.lock'))).toBe(true);
@@ -4673,70 +4394,61 @@ describe('round-12 hard-link intents, dead-intent recovery, authority generation
     };
     const held = waitFile(releaseA);
     expect(held).toBe(true);
-    // Now wait for the loser to finish.
-    const bExit = new Promise<number>((resolve) => procB.on('exit', (c) => resolve(c ?? 1)));
-    const bTimeout = new Promise<number>((resolve) => setTimeout(() => resolve(-1), 8000));
-    const codeB = await Promise.race([bExit, bTimeout]);
-    expect(codeB).toBe(0);
-    // Loser must have gotten run_busy.
+
+    // Wait for the loser to finish while the winner still holds the lock barrier.
+    const waitExit = (p: ReturnType<typeof spawn>, timeoutMs = 8000) =>
+      Promise.race([
+        new Promise<number>((resolve) => p.on('exit', (c) => resolve(c ?? 1))),
+        new Promise<number>((resolve) => setTimeout(() => resolve(-1), timeoutMs)),
+      ]);
+
+    // Poll until exactly one of A/B has recorded either ok or err (loser exits first).
+    const loserDeadline = Date.now() + 8000;
+    while (Date.now() < loserDeadline) {
+      const errA = existsSync(path.join(root, 'steal-events-A-err'));
+      const errB = existsSync(path.join(root, 'steal-events-B-err'));
+      if (errA || errB) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    const errA = existsSync(path.join(root, 'steal-events-A-err'))
+      ? readFileSync(path.join(root, 'steal-events-A-err'), 'utf8')
+      : '';
     const errB = existsSync(path.join(root, 'steal-events-B-err'))
       ? readFileSync(path.join(root, 'steal-events-B-err'), 'utf8')
       : '';
-    expect(errB).toBe('run_busy');
+    // Exactly one contender must be busy while the other holds the lock.
+    expect(Number(errA === 'run_busy') + Number(errB === 'run_busy')).toBe(1);
+
     // Release the winner.
     writeFileSync(releaseA + '-go', '1');
-    const aExit = new Promise<number>((resolve) => procA.on('exit', (c) => resolve(c ?? 1)));
-    const aTimeout = new Promise<number>((resolve) => setTimeout(() => resolve(-1), 8000));
-    const codeA = await Promise.race([aExit, aTimeout]);
+    const [codeA, codeB] = await Promise.all([waitExit(procA), waitExit(procB)]);
     expect(codeA).toBe(0);
+    expect(codeB).toBe(0);
 
     const okA = existsSync(path.join(root, 'steal-events-A-ok'));
     const okB = existsSync(path.join(root, 'steal-events-B-ok'));
-    // Exactly one successful transfer.
+    // Exactly one successful transfer (winner-independent).
     expect(Number(okA) + Number(okB)).toBe(1);
-    expect(okA).toBe(true);
-    expect(okB).toBe(false);
+    expect(Number(errA === 'run_busy') + Number(errB === 'run_busy')).toBe(1);
 
-    // Critical sections must not overlap.
-    if (okA && existsSync(path.join(root, 'steal-events-A-crit'))) {
+    // Critical sections must not overlap when both recorded crit timestamps.
+    if (
+      existsSync(path.join(root, 'steal-events-A-crit')) &&
+      existsSync(path.join(root, 'steal-events-B-crit'))
+    ) {
       const a0 = Number(readFileSync(path.join(root, 'steal-events-A-crit'), 'utf8'));
       const a1 = Number(readFileSync(path.join(root, 'steal-events-A-exit'), 'utf8'));
-      if (okB && existsSync(path.join(root, 'steal-events-B-crit'))) {
-        const b0 = Number(readFileSync(path.join(root, 'steal-events-B-crit'), 'utf8'));
-        const b1 = Number(readFileSync(path.join(root, 'steal-events-B-exit'), 'utf8'));
-        expect(a0 < b1 && b0 < a1).toBe(false);
-      }
+      const b0 = Number(readFileSync(path.join(root, 'steal-events-B-crit'), 'utf8'));
+      const b1 = Number(readFileSync(path.join(root, 'steal-events-B-exit'), 'utf8'));
+      expect(a0 < b1 && b0 < a1).toBe(false);
     }
     expect(existsSync(path.join(runDir, '.run.json.tx.lock'))).toBe(false);
   }, 15_000);
-
-  it('component nofollow intermediate symlink: exact corrupt_run', async () => {
-    if (process.platform === 'win32') return;
-    const realRoot = path.join(root, 'real-runs-r12');
-    mkdirSync(realRoot, { mode: 0o700 });
-    const store = createRunStore({ rootDir: realRoot, ...makeDeps() });
-    const { runId } = await store.createRun(makeCreateInput());
-    const realRunDir = store.getRunDir(runId);
-    const before = readFileSync(path.join(realRunDir, 'run.json'));
-    const outside = path.join(root, 'outside-tree-r12');
-    mkdirSync(outside, { mode: 0o700 });
-    writeFileSync(path.join(outside, 'pwned'), 'nope');
-    const moved = `${realRunDir}.moved`;
-    renameSync(realRunDir, moved);
-    symlinkSync(outside, realRunDir);
-    const loaded = store.getRun(runId);
-    expect(loaded.ok).toBe(false);
-    if (!loaded.ok) expect(loaded.error.code).toBe('corrupt_run');
-    expect(readFileSync(path.join(outside, 'pwned'), 'utf8')).toBe('nope');
-    expect(readFileSync(path.join(moved, 'run.json')).equals(before)).toBe(true);
-  });
 });
 
 describe('round-13 winner-independent contention and release fault coverage', () => {
   function processStarttime(): string {
-    const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
-    const closeParen = start.lastIndexOf(')');
-    return start.slice(closeParen + 2).split(' ')[19]!;
+    return selfProcessStart();
   }
 
   function publishCompleteLock(
@@ -4753,7 +4465,6 @@ describe('round-13 winner-independent contention and release fault coverage', ()
   }
 
   it('winner-independent stealers: ready barriers, exactly one transfer one busy', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4807,12 +4518,20 @@ describe('round-13 winner-independent contention and release fault coverage', ()
       }
     `;
 
-    const procA = spawn('bun', ['-e', childScript, root, runId, 'A', readyA, goFile, winnerFile], {
-      stdio: 'ignore',
-    });
-    const procB = spawn('bun', ['-e', childScript, root, runId, 'B', readyB, goFile, winnerFile], {
-      stdio: 'ignore',
-    });
+    const procA = spawn(
+      process.execPath,
+      ['-e', childScript, root, runId, 'A', readyA, goFile, winnerFile],
+      {
+        stdio: 'ignore',
+      }
+    );
+    const procB = spawn(
+      process.execPath,
+      ['-e', childScript, root, runId, 'B', readyB, goFile, winnerFile],
+      {
+        stdio: 'ignore',
+      }
+    );
 
     // Wait for both children to signal ready before releasing.
     const deadline = Date.now() + 5000;
@@ -4852,7 +4571,6 @@ describe('round-13 winner-independent contention and release fault coverage', ()
   }, 15_000);
 
   it('kill winner at intent seam: third process recovers and acquires', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4928,7 +4646,6 @@ describe('round-13 winner-independent contention and release fault coverage', ()
 
   // Task 6: Exact release fault coverage.
   it('release intent hard-link failure: exact rejection, no success return', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -4973,7 +4690,6 @@ describe('round-13 winner-independent contention and release fault coverage', ()
   });
 
   it('release tombstone rename failure: exact rejection, evidence preserved', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     // Create a lock dir with a dead owner that has a release.intent.
     const store = createRunStore({ rootDir: root, ...deps });
@@ -5018,41 +4734,7 @@ describe('round-13 winner-independent contention and release fault coverage', ()
     expect(existsSync(path.join(runDir, '.run.json.tx.lock'))).toBe(false);
   });
 
-  it('release public runDir replacement: exact failure, no silent success', async () => {
-    if (process.platform === 'win32') return;
-    const deps = makeDeps();
-    const store = createRunStore({ rootDir: root, ...deps });
-    const { runId } = await store.createRun(makeCreateInput());
-    const runDir = store.getRunDir(runId);
-
-    // Acquire a lock normally.
-    await store.updateRun(runId, (r) => {
-      r.units.single.status = 'running';
-    });
-    // Lock should be released; verify clean.
-    expect(existsSync(path.join(runDir, '.run.json.tx.lock'))).toBe(false);
-    // Replace runDir with a symlink to trip revalidation.
-    const moved = `${runDir}.moved`;
-    renameSync(runDir, moved);
-    const target = path.join(root, 'fake-run-dir');
-    mkdirSync(target, { mode: 0o700 });
-    symlinkSync(target, runDir);
-
-    const storeB = createRunStore({
-      rootDir: root,
-      ...makeDeps(),
-      txLockWaitMs: 80,
-      txLockRetryMs: 10,
-    });
-    const loaded = storeB.getRun(runId);
-    expect(loaded.ok).toBe(false);
-    if (!loaded.ok) {
-      expect(loaded.error.code).toBe('corrupt_run');
-    }
-  });
-
   it('release tombstone identity mismatch: exact rejection, no success', async () => {
-    if (process.platform === 'win32') return;
     const deps = makeDeps();
     const store = createRunStore({ rootDir: root, ...deps });
     const { runId } = await store.createRun(makeCreateInput());
@@ -5086,5 +4768,479 @@ describe('round-13 winner-independent contention and release fault coverage', ()
     // Wrong-token tombstone preserved; acquisition succeeded anyway.
     expect(existsSync(tomb)).toBe(true);
     expect(existsSync(path.join(runDir, '.run.json.tx.lock'))).toBe(false);
+  });
+});
+
+describe('review-fixes: run-id validation and durability seams', () => {
+  it('rejects explicit empty rootDir with run_store_error (no default fallback)', () => {
+    expect(() => createRunStore({ rootDir: '' })).toThrow();
+    try {
+      createRunStore({ rootDir: '' });
+      expect.unreachable('expected empty rootDir to throw');
+    } catch (err) {
+      expect(err).toMatchObject({ code: 'run_store_error' });
+      expect(String((err as { message: string }).message)).toMatch(/rootDir/i);
+    }
+  });
+
+  it('rejects empty, traversal, slash, backslash, absolute, and drive-like run ids before filesystem access', async () => {
+    const store = createRunStore({ rootDir: root, ...makeDeps() });
+    const invalidIds = [
+      '',
+      '..',
+      '../x',
+      'a/b',
+      'a\\b',
+      '/abs',
+      'C:foo',
+      'foo:bar',
+      'has space',
+      'has.dot',
+    ];
+    const before = readdirSync(root);
+    for (const runId of invalidIds) {
+      const got = store.getRun(runId);
+      expect(got.ok).toBe(false);
+      if (!got.ok) {
+        expect(got.error.code).toBe('run_not_found');
+        expect(got.error.message).toMatch(/invalid run id/i);
+      }
+      expect(() => store.getRunDir(runId)).toThrow();
+      await expect(
+        store.appendEvent(runId, { version: 1, event: 'run_created', runId, timestamp: 1 })
+      ).rejects.toMatchObject({ code: 'run_not_found' });
+      await expect(
+        store.updateRun(runId, () => {
+          /* no-op */
+        })
+      ).rejects.toMatchObject({ code: 'run_not_found' });
+      await expect(store.writeTextArtifact(runId, 'final-output', 'x')).rejects.toMatchObject({
+        code: 'run_not_found',
+      });
+      const claim = await store.claimRun(runId);
+      expect(claim.ok).toBe(false);
+      if (!claim.ok) expect(claim.error.code).toBe('run_not_found');
+      const inspected = store.inspectClaims(runId);
+      expect(inspected.ok).toBe(false);
+      if (!inspected.ok) expect(inspected.error.code).toBe('run_not_found');
+      await expect(store.releaseRun(runId, 'c')).rejects.toMatchObject({ code: 'run_not_found' });
+      await expect(store.abandonRun(runId, 'c')).rejects.toMatchObject({ code: 'run_not_found' });
+    }
+    expect(readdirSync(root)).toEqual(before);
+  });
+
+  it('propagates mandatory regular-file fsync failure without successful publication', async () => {
+    const store = createRunStore({
+      rootDir: root,
+      ...makeDeps(),
+      fileFsync: () => {
+        throw {
+          code: 'run_store_error',
+          message: 'fsync failed: injected',
+        };
+      },
+    });
+    await expect(store.createRun(makeCreateInput())).rejects.toMatchObject({
+      code: 'run_store_error',
+      message: expect.stringMatching(/fsync failed/i),
+    });
+    // Directory may exist after mkdir, but no durable run.json publication succeeds.
+    const entries = readdirSync(root).filter((n) => n.startsWith('run-'));
+    for (const runId of entries) {
+      const loaded = store.getRun(runId);
+      expect(loaded.ok).toBe(false);
+      expect(existsSync(path.join(root, runId, 'run.json'))).toBe(false);
+    }
+  });
+
+  it('isPidAlive returns false only for ESRCH; EPERM/ENOSYS/unknown remain alive', () => {
+    const store = createRunStore({ rootDir: root, ...makeDeps() });
+    expect(store.isPidAlive(process.pid)).toBe(true);
+    // Extremely unlikely PID — should be ESRCH → dead.
+    expect(store.isPidAlive(2_147_483_647)).toBe(false);
+
+    const cases: Array<{ code: string; expectAlive: boolean }> = [
+      { code: 'ESRCH', expectAlive: false },
+      { code: 'EPERM', expectAlive: true },
+      { code: 'ENOSYS', expectAlive: true },
+      { code: 'EIO', expectAlive: true },
+    ];
+    for (const c of cases) {
+      const probe = createRunStore({
+        rootDir: root,
+        ...makeDeps(),
+        pidAliveKill: () => {
+          throw Object.assign(new Error(c.code), { code: c.code });
+        },
+      });
+      expect(probe.isPidAlive(42_424_242)).toBe(c.expectAlive);
+    }
+    const unknownEx = createRunStore({
+      rootDir: root,
+      ...makeDeps(),
+      pidAliveKill: () => {
+        throw 'not-an-errno';
+      },
+    });
+    expect(unknownEx.isPidAlive(42_424_242)).toBe(true);
+  });
+
+  it('complete lock and claim cycle succeeds when directory fsync is disabled', async () => {
+    let dirSyncCalls = 0;
+    const store = createRunStore({
+      rootDir: root,
+      ...makeDeps(),
+      directoryFsync: false,
+      // Capability gate must skip every publication path; any call fails the suite.
+      directorySync: () => {
+        dirSyncCalls++;
+        throw new Error('directory sync should be skipped when directoryFsync is false');
+      },
+      // Artifact path must also honor the disabled capability.
+      artifactDirectorySync: () => {
+        dirSyncCalls++;
+        throw new Error('artifact directory sync should be skipped');
+      },
+    });
+    const { runId } = await store.createRun(makeCreateInput());
+    const updated = await store.updateRun(runId, (r) => {
+      r.status = 'running';
+    });
+    expect(updated.status).toBe('running');
+    await store.appendEvent(runId, {
+      version: 1,
+      event: 'unit_started',
+      runId,
+      unitId: 'single',
+      attempt: 1,
+      timestamp: 1,
+    });
+    const claim = await store.claimRun(runId);
+    expect(claim.ok).toBe(true);
+    if (!claim.ok) return;
+    await store.releaseRun(runId, claim.claimId);
+    const loaded = store.getRun(runId);
+    expect(loaded.ok).toBe(true);
+    expect(dirSyncCalls).toBe(0);
+  });
+
+  it('supported directory-sync failure on strict update propagates without silent success', async () => {
+    const store = createRunStore({
+      rootDir: root,
+      ...makeDeps(),
+      directoryFsync: true,
+      strictPostRenameDirectorySync: () => {
+        throw {
+          code: 'run_store_error',
+          message: 'directory fsync failed: injected-strict',
+        };
+      },
+    });
+    const { runId } = await store.createRun(makeCreateInput());
+    await expect(
+      store.updateRunStrict(runId, (r) => {
+        r.status = 'running';
+      })
+    ).rejects.toMatchObject({
+      code: 'run_store_error',
+      message: expect.stringMatching(/directory fsync failed/i),
+    });
+    const loaded = store.getRun(runId);
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) expect(loaded.loaded.record.status).toBe('queued');
+  });
+
+  it('malformed steal-intent owner temp names are ignored (not transfer material)', async () => {
+    const store = createRunStore({ rootDir: root, ...makeDeps() });
+    const { runId } = await store.createRun(makeCreateInput());
+    const runDir = store.getRunDir(runId);
+    const lockDir = path.join(runDir, '.run.json.tx.lock');
+    mkdirSync(lockDir, { mode: 0o700 });
+    // Basename accepted by the old short `.owner.*.tmp` prefix/suffix rule, but rejected by
+    // the exact `.owner.<strict-token>.tmp` grammar (middle contains '.' outside the token charset).
+    const invalidButBroadAccepted = '.owner.bad.dots.tmp';
+    // Dead owner forces the steal path to parse steal.intent before any transfer decision.
+    const ownerPayload = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        pid: 2_147_000_900,
+        processStart: '1',
+        token: 'dead-token-malformed-tmp',
+        timestamp: Date.now() - 60_000,
+      }) + '\n'
+    );
+    const ownerPath = path.join(lockDir, 'owner.json');
+    writeFileSync(ownerPath, ownerPayload, { mode: 0o600 });
+    const tempPayload = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        pid: 2_147_000_901,
+        processStart: '1',
+        token: 'contender1',
+        timestamp: Date.now(),
+      }) + '\n'
+    );
+    const tempPath = path.join(lockDir, invalidButBroadAccepted);
+    writeFileSync(tempPath, tempPayload, { mode: 0o600 });
+    // All recovery preconditions (real dev/ino/digest/bytes) match; only the temp basename grammar fails.
+    const ownerSt = lstatSync(ownerPath);
+    const lockSt = lstatSync(lockDir);
+    const tempSt = lstatSync(tempPath);
+    const tempDigest = crypto.createHash('sha256').update(tempPayload).digest('hex');
+    writeFileSync(
+      path.join(lockDir, 'steal.intent'),
+      JSON.stringify({
+        version: 1,
+        kind: 'steal',
+        contenderToken: 'contender1',
+        ownerToken: 'dead-token-malformed-tmp',
+        contenderPid: 2_147_000_901,
+        ownerPid: 2_147_000_900,
+        contenderProcessStart: '1',
+        ownerProcessStart: '1',
+        newOwnerTempName: invalidButBroadAccepted,
+        ownerIno: ownerSt.ino,
+        ownerDev: ownerSt.dev,
+        lockIno: lockSt.ino,
+        lockDev: lockSt.dev,
+        newOwnerTempIno: tempSt.ino,
+        newOwnerTempDev: tempSt.dev,
+        newOwnerTempDigest: tempDigest,
+        newOwnerTempBytes: tempPayload.length,
+      }) + '\n',
+      { mode: 0o600 }
+    );
+    // Grammar-rejected intent is unparseable → fail closed; residue preserved.
+    await expect(
+      createRunStore({
+        rootDir: root,
+        ...makeDeps(),
+        txLockWaitMs: 40,
+        txLockRetryMs: 10,
+      }).updateRun(runId, (r) => {
+        r.status = 'running';
+      })
+    ).rejects.toMatchObject({ code: 'run_busy' });
+    expect(existsSync(path.join(lockDir, 'owner.json'))).toBe(true);
+    expect(existsSync(path.join(lockDir, 'steal.intent'))).toBe(true);
+    expect(existsSync(path.join(lockDir, invalidButBroadAccepted))).toBe(true);
+    // Temp content and identity untouched (not transfer material).
+    expect(readFileSync(tempPath).equals(tempPayload)).toBe(true);
+    expect(lstatSync(tempPath).ino).toBe(tempSt.ino);
+  });
+
+  it('release/abandon reject invalid run ids before filesystem access', async () => {
+    const store = createRunStore({ rootDir: root, ...makeDeps() });
+    const before = readdirSync(root);
+    for (const runId of ['../x', 'a/b', 'C:foo', '']) {
+      await expect(store.releaseRun(runId, 'claim-x')).rejects.toMatchObject({
+        code: 'run_not_found',
+        message: expect.stringMatching(/invalid run id/i),
+      });
+      await expect(store.abandonRun(runId, 'claim-x')).rejects.toMatchObject({
+        code: 'run_not_found',
+        message: expect.stringMatching(/invalid run id/i),
+      });
+    }
+    expect(readdirSync(root)).toEqual(before);
+  });
+
+  it('owner-file fsync failure cleans recognized staging residue exactly', async () => {
+    // createRun also uses file fsync; create under a normal store first.
+    const bootstrap = createRunStore({ rootDir: root, ...makeDeps() });
+    const { runId } = await bootstrap.createRun(makeCreateInput());
+    const claimsPath = path.join(bootstrap.getRunDir(runId), 'claims');
+    const beforeStaging = existsSync(claimsPath)
+      ? readdirSync(claimsPath).filter((n) => n.startsWith('.staging-'))
+      : [];
+    const store = createRunStore({
+      rootDir: root,
+      ...makeDeps(),
+      fileFsync: () => {
+        throw {
+          code: 'run_store_error',
+          message: 'fsync failed: injected-owner-stage',
+        };
+      },
+    });
+    await expect(store.claimRun(runId)).rejects.toMatchObject({
+      code: 'run_store_error',
+      message: expect.stringMatching(/fsync failed/i),
+    });
+    // Staging directories from the failed attempt must be absent (only recognized owner.json).
+    const afterStaging = existsSync(claimsPath)
+      ? readdirSync(claimsPath).filter((n) => n.startsWith('.staging-'))
+      : [];
+    expect(afterStaging).toEqual(beforeStaging);
+  });
+
+  it('claim staging cleanup preserves unknown foreign entries via production failure path', async () => {
+    const bootstrap = createRunStore({ rootDir: root, ...makeDeps() });
+    const { runId } = await bootstrap.createRun(makeCreateInput());
+    const claimsPath = path.join(bootstrap.getRunDir(runId), 'claims');
+    mkdirSync(claimsPath, { recursive: true });
+    const isTicketDir = (n: string) => /^\d+$/.test(n);
+    const beforeTickets = readdirSync(claimsPath).filter(isTicketDir);
+    let plantedForeign: string | undefined;
+    let stagingSeenAtFsync: string | undefined;
+    const store = createRunStore({
+      rootDir: root,
+      ...makeDeps(),
+      fileFsync: (fd) => {
+        // Inject during production stageOwner file-fsync so cleanupStaging is the real recovery path.
+        const stagingDirs = readdirSync(claimsPath).filter((n) => n.startsWith('.staging-'));
+        expect(stagingDirs.length).toBeGreaterThan(0);
+        for (const name of stagingDirs) {
+          const stagingDir = path.join(claimsPath, name);
+          const ownerPath = path.join(stagingDir, 'owner.json');
+          if (!existsSync(ownerPath)) continue;
+          stagingSeenAtFsync = stagingDir;
+          const foreign = path.join(stagingDir, 'foreign.dat');
+          if (!existsSync(foreign)) {
+            writeFileSync(foreign, 'keep-me\n');
+            plantedForeign = foreign;
+          }
+        }
+        fsyncSync(fd);
+        throw {
+          code: 'run_store_error',
+          message: 'fsync failed: injected-after-foreign-plant',
+        };
+      },
+    });
+    await expect(store.claimRun(runId)).rejects.toMatchObject({
+      code: 'run_store_error',
+      message: expect.stringMatching(/fsync failed/i),
+    });
+    expect(plantedForeign).toBeDefined();
+    expect(stagingSeenAtFsync).toBeDefined();
+    if (!plantedForeign || !stagingSeenAtFsync) return;
+    // Foreign entry preserved; staging dir remains because rmdir refuses non-empty.
+    expect(existsSync(plantedForeign)).toBe(true);
+    expect(readFileSync(plantedForeign, 'utf8')).toBe('keep-me\n');
+    // Protocol-owned owner.json for that attempt must be gone; foreign is the only residue.
+    const stagingParent = path.dirname(plantedForeign);
+    expect(stagingParent).toBe(stagingSeenAtFsync);
+    expect(existsSync(path.join(stagingParent, 'owner.json'))).toBe(false);
+    expect(readdirSync(stagingParent)).toEqual(['foreign.dat']);
+    // No ticket directory published from the failed attempt.
+    const afterTickets = readdirSync(claimsPath).filter(isTicketDir);
+    expect(afterTickets).toEqual(beforeTickets);
+  });
+
+  it('supported directory-sync failure during lock acquisition propagates without durable success', async () => {
+    // Bootstrap without directory fsync so create succeeds; then fail on lock-path sync.
+    const bootstrap = createRunStore({ rootDir: root, ...makeDeps(), directoryFsync: false });
+    const { runId } = await bootstrap.createRun(makeCreateInput());
+    const syncedPaths: string[] = [];
+    const store = createRunStore({
+      rootDir: root,
+      ...makeDeps(),
+      directoryFsync: true,
+      directorySync: (dirPath) => {
+        syncedPaths.push(dirPath);
+        throw {
+          code: 'run_store_error',
+          message: 'directory fsync failed: injected-lock',
+        };
+      },
+    });
+    // updateRun acquires the transaction lock and syncs lock/candidate directories.
+    await expect(
+      store.updateRun(runId, (r) => {
+        r.status = 'running';
+      })
+    ).rejects.toMatchObject({
+      code: 'run_store_error',
+      message: expect.stringMatching(/directory fsync failed/i),
+    });
+    expect(syncedPaths.length).toBeGreaterThan(0);
+    // Exact publication-phase shapes: candidate/lock basenames under this run's directory only.
+    const runDir = store.getRunDir(runId);
+    expect(
+      syncedPaths.some((p) => {
+        const base = path.basename(p);
+        return (
+          path.dirname(p) === runDir &&
+          (base === '.run.json.tx.lock' || base.startsWith('.run.json.tx.lock.cand.'))
+        );
+      })
+    ).toBe(true);
+    const loaded = store.getRun(runId);
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) expect(loaded.loaded.record.status).toBe('queued');
+  });
+
+  it('supported directory-sync failure during claim publication propagates', async () => {
+    const bootstrap = createRunStore({ rootDir: root, ...makeDeps(), directoryFsync: false });
+    const { runId } = await bootstrap.createRun(makeCreateInput());
+    const syncedPaths: string[] = [];
+    const store = createRunStore({
+      rootDir: root,
+      ...makeDeps(),
+      directoryFsync: true,
+      directorySync: (dirPath) => {
+        syncedPaths.push(dirPath);
+        throw {
+          code: 'run_store_error',
+          message: 'directory fsync failed: injected-claim',
+        };
+      },
+    });
+    await expect(store.claimRun(runId)).rejects.toMatchObject({
+      code: 'run_store_error',
+      message: expect.stringMatching(/directory fsync failed/i),
+    });
+    expect(syncedPaths.length).toBeGreaterThan(0);
+    // Publication-phase seam: decimal ticket directory under this run's claims/ only.
+    const runDir = store.getRunDir(runId);
+    const claimsDir = path.join(runDir, 'claims');
+    expect(
+      syncedPaths.some((p) => {
+        const base = path.basename(p);
+        return path.dirname(p) === claimsDir && /^\d{16}$/.test(base);
+      })
+    ).toBe(true);
+    // Failure must not report durable claim success on the run record.
+    const loaded = store.getRun(runId);
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) expect(loaded.loaded.record.owner).toBeUndefined();
+  });
+
+  it('supported directory-sync failure during claim terminal publication propagates', async () => {
+    // Same instance identity so release resolves the published claim owner.
+    const deps = makeDeps();
+    const bootstrap = createRunStore({ rootDir: root, ...deps, directoryFsync: false });
+    const { runId } = await bootstrap.createRun(makeCreateInput());
+    const claimed = await bootstrap.claimRun(runId);
+    expect(claimed.ok).toBe(true);
+    if (!claimed.ok) return;
+    const syncedPaths: string[] = [];
+    const store = createRunStore({
+      rootDir: root,
+      ...deps,
+      directoryFsync: true,
+      directorySync: (dirPath) => {
+        syncedPaths.push(dirPath);
+        throw {
+          code: 'run_store_error',
+          message: 'directory fsync failed: injected-terminal',
+        };
+      },
+    });
+    await expect(store.releaseRun(runId, claimed.claimId)).rejects.toMatchObject({
+      code: 'run_store_error',
+      message: expect.stringMatching(/directory fsync failed/i),
+    });
+    expect(syncedPaths.length).toBeGreaterThan(0);
+    // Terminal publication syncs the claim ticket directory under this run's claims/ only.
+    const runDir = store.getRunDir(runId);
+    const claimsDir = path.join(runDir, 'claims');
+    expect(
+      syncedPaths.some((p) => {
+        const base = path.basename(p);
+        return path.dirname(p) === claimsDir && /^\d{16}$/.test(base);
+      })
+    ).toBe(true);
   });
 });

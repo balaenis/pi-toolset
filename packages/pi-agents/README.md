@@ -20,7 +20,7 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 - **Parallel & Chain progress** - ordered per-task summaries; Chain fanout is one logical step with real item counts and collect metadata
 - **Usage tracking** - turns, tokens, and context per execution unit; aggregates sum tokens/turns and use `ctx:max` (no aggregate model/thinking); partial stats stream live for `grok-acp`
 - **Abort support** - Ctrl+C propagates and kills active subprocesses
-- **Durable runs** - every invocation persists a run record, unit state, and native Pi sessions under `~/.pi/agent/@balaenis/pi-agents/runs/`; interrupted runs can be inspected and resumed without re-running completed work
+- **Durable runs** - every invocation persists a run record, unit state, and native Pi sessions under a per-user state directory (see [Durable runs and resume](#durable-runs-and-resume)); interrupted runs can be inspected and resumed without re-running completed work
 - **Compact parent/durable results** - newly written and actively resumed parent tool details and `run.json` store assistant presentation (text/tool-call summaries) plus final/structured output, not raw child tool-result bodies (inactive historical Version 1 records remain unchanged until active resume)
 - **Resume** - `agent({ runId })` resumes a durable run from its stored workflow and sessions; optional `task` appends a continuation instruction (required to resume a fully completed run); Pi and Grok ACP units reopen native sessions
 - **Reconciliation** - on session start, runs left running by a dead process are automatically marked interrupted
@@ -41,7 +41,32 @@ Failed `agent` tool invocations record the complete tool call parameters, failur
 
 ## Durable runs and resume
 
-Every validated invocation creates a durable run record under `~/.pi/agent/@balaenis/pi-agents/runs/<run-id>/`. The per-run layout:
+Every validated invocation creates a durable run record under a platform default runs root (or an override):
+
+| Platform    | Default runs root                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------- |
+| Windows     | `%LOCALAPPDATA%\\@balaenis\\pi-agents\\runs` (fallback: `<home>\\AppData\\Local\\@balaenis\\pi-agents\\runs`) |
+| non-Windows | `$XDG_STATE_HOME/@balaenis/pi-agents/runs` (fallback: `~/.local/state/@balaenis/pi-agents/runs`)              |
+
+**Configuration precedence:**
+
+1. Programmatic `createRunStore({ rootDir })` (complete root; no package suffix appended)
+2. Environment `PI_AGENTS_RUNS_DIR` (complete root; relative paths resolve against process cwd)
+3. Platform default above (package segments appended)
+
+Production RunStore data is never placed in `/tmp` or `os.tmpdir()`. Explicit empty `createRunStore({ rootDir: '' })` fails with `run_store_error` (no default fallback). Empty `PI_AGENTS_RUNS_DIR` is ignored so the platform default still applies; non-empty values are not trimmed.
+
+**Trusted storage:** The complete runs root is application-owned, per-user storage. Intentional same-user insertion of symlinks, junctions, reparse points, or replacement paths is unsupported and may cause failure or data loss. Ordinary API path traversal is still prevented by run-ID validation, fixed basenames, schema validation, and syntactic containment.
+
+**Filesystem requirements:** The runs root must support regular-file `fsync` and hard-link no-replace publication. Startup probing fails closed when either is missing (no weak rename/overwrite fallback). Directory `fsync` is used when available; on some platforms (including Windows) it may be unavailable, which weakens sudden-power-loss durability of directory entries while file fsync remains mandatory.
+
+**Stale-owner recovery:** Linux can detect PID reuse via `/proc/<pid>/stat`. On non-Linux, only `process.kill(pid, 0)` with `ESRCH` proves death; success, `EPERM`, and unknown results stay busy. Lock age is never used to steal.
+
+**Version 1 compatibility:** Existing Version 1 records remain readable. There is no automatic migration from the legacy `~/.pi/agent/@balaenis/pi-agents/runs` location. To keep old runs: stop all pi-agents processes, then either move the complete old root to the new default, or set `PI_AGENTS_RUNS_DIR` to the old path.
+
+**Privacy:** Runs contain prompts, outputs, cwd paths, session identifiers, continuations, claims, artifacts, and error details. POSIX `0700`/`0600` modes are best-effort and are not Windows privacy controls; protect the user profile / ACL as appropriate.
+
+The per-run layout:
 
 ```
 <run-id>/

@@ -33,6 +33,20 @@ import * as worktreeMod from '../src/worktree.ts';
 
 type AgentResult = AgentToolResult<SubagentDetails> & { isError?: boolean };
 
+/** Minimal headings that satisfy agents/general.md completionCheck. */
+const GENERAL_COMPLETION_HEADINGS = '## Completed\n\n## Files Changed\n\n## Validation\n';
+/** Minimal headings that satisfy agents/explore.md completionCheck. */
+const EXPLORE_COMPLETION_HEADINGS =
+  '## Files Retrieved\n\n## Key Code\n\n## Architecture\n\n## Start Here\n';
+
+function withGeneralCompletion(body: string): string {
+  return `${body}\n${GENERAL_COMPLETION_HEADINGS}`;
+}
+
+function withExploreCompletion(body: string): string {
+  return `${body}\n${EXPLORE_COMPLETION_HEADINGS}`;
+}
+
 function loadedRecordOf(entry: ListRunsResult[number]): AgentRunRecordV1 {
   if ('record' in entry) return entry.record;
   throw new Error(`corrupt run: ${entry.code}`);
@@ -2798,7 +2812,7 @@ describe('executeAgentTool public runId resume', () => {
                 type: 'message_end',
                 message: {
                   role: 'assistant',
-                  content: [{ type: 'text', text: 'finish-out' }],
+                  content: [{ type: 'text', text: withExploreCompletion('finish-out') }],
                   usage: { input: 1, output: 1, totalTokens: 2 },
                 },
               })}\n`
@@ -4101,7 +4115,7 @@ describe('executeAgentTool public runId resume', () => {
             type: 'message_end',
             message: {
               role: 'assistant',
-              content: [{ type: 'text', text: 'ok' }],
+              content: [{ type: 'text', text: withExploreCompletion('ok') }],
               usage: { input: 1, output: 1, totalTokens: 2 },
             },
           }) + '\n'
@@ -4238,7 +4252,7 @@ describe('executeAgentTool public runId resume', () => {
             type: 'message_end',
             message: {
               role: 'assistant',
-              content: [{ type: 'text', text: 'done' }],
+              content: [{ type: 'text', text: withExploreCompletion('done') }],
               usage: { input: 1, output: 1, totalTokens: 2 },
             },
           }) + '\n'
@@ -4299,7 +4313,7 @@ describe('executeAgentTool public runId resume', () => {
             type: 'message_end',
             message: {
               role: 'assistant',
-              content: [{ type: 'text', text: 'resumed' }],
+              content: [{ type: 'text', text: withExploreCompletion('resumed') }],
               usage: { input: 1, output: 1, totalTokens: 2 },
             },
           }) + '\n'
@@ -4524,7 +4538,7 @@ describe('executeAgentTool public runId resume', () => {
               type: 'message_end',
               message: {
                 role: 'assistant',
-                content: [{ type: 'text', text: 'all good' }],
+                content: [{ type: 'text', text: withExploreCompletion('all good') }],
                 usage: { input: 1, output: 1, totalTokens: 2 },
               },
             })}\n`
@@ -4972,7 +4986,7 @@ Body.
             type: 'message_end',
             message: {
               role: 'assistant',
-              content: [{ type: 'text', text: 'ok' }],
+              content: [{ type: 'text', text: withExploreCompletion('ok') }],
               usage: { input: 1, output: 1, totalTokens: 2 },
             },
           }) + '\n'
@@ -6302,7 +6316,8 @@ describe('strict startUnit failure has zero launch side effects', () => {
   });
 
   function oversizedText(sentinel: string): string {
-    return sentinel + 'X'.repeat(300 * 1024);
+    // Sentinel first for identity assertions; general headings keep completion_check green.
+    return withGeneralCompletion(sentinel + 'X'.repeat(300 * 1024));
   }
 
   function isReaderLaunchArgs(args: string[]): boolean {
@@ -6667,8 +6682,8 @@ describe('real executeAgentTool Chain/Parallel artifact orchestration', () => {
     const coordinator = createRunCoordinator({ store });
     const sentinel1 = 'REAL_CHAIN_SENTINEL1_';
     const sentinel2 = 'REAL_CHAIN_SENTINEL2_';
-    const oversized1 = sentinel1 + 'C'.repeat(300 * 1024);
-    const oversized2 = sentinel2 + 'D'.repeat(300 * 1024);
+    const oversized1 = withGeneralCompletion(sentinel1 + 'C'.repeat(300 * 1024));
+    const oversized2 = withGeneralCompletion(sentinel2 + 'D'.repeat(300 * 1024));
     let spawnIndex = 0;
     /** Tasks captured by spawn index (1-based) for identity-exact correlation. */
     const tasksBySpawnIndex = new Map<number, string[]>();
@@ -6773,7 +6788,7 @@ describe('real executeAgentTool Chain/Parallel artifact orchestration', () => {
     const store = createRunStore({ rootDir: tmpRoot });
     const coordinator = createRunCoordinator({ store });
     const sentinel = 'REAL_PAR_SENTINEL_';
-    const oversized = sentinel + 'P'.repeat(300 * 1024);
+    const oversized = withGeneralCompletion(sentinel + 'P'.repeat(300 * 1024));
 
     const result = await executeAgentTool(
       {

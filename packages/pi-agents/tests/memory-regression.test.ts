@@ -24,6 +24,13 @@ import { createLatestValueCoalescer } from '../src/update-coalescer.ts';
 import type { PiRpcTransport } from '../src/pi-rpc-transport.ts';
 import { executeAgentTool } from '../src/tool.ts';
 
+/** Minimal headings that satisfy agents/general.md completionCheck. */
+const GENERAL_COMPLETION_HEADINGS = '## Completed\n\n## Files Changed\n\n## Validation\n';
+
+function withGeneralCompletion(body: string): string {
+  return `${body}\n${GENERAL_COMPLETION_HEADINGS}`;
+}
+
 function assistant(text: string, toolName?: string): SingleResult['messages'][number] {
   if (toolName) {
     return {
@@ -1531,7 +1538,7 @@ describe('memory regressions', () => {
       const store = createRunStore({ rootDir: root });
       const coordinator = createRunCoordinator({ store });
       const sentinel = 'EAT_SINGLE_SENTINEL_';
-      const oversized = sentinel + 'X'.repeat(300 * 1024);
+      const oversized = withGeneralCompletion(sentinel + 'X'.repeat(300 * 1024));
 
       const result = await executeAgentTool(
         { agent: 'general', task: 'eat-single', agentScope: 'user' },
@@ -1614,7 +1621,7 @@ describe('memory regressions', () => {
       const store = createRunStore({ rootDir: root });
       const coordinator = createRunCoordinator({ store });
       const sentinel = 'EAT_PAR_SENTINEL_';
-      const oversized = sentinel + 'P'.repeat(300 * 1024);
+      const oversized = withGeneralCompletion(sentinel + 'P'.repeat(300 * 1024));
 
       const result = await executeAgentTool(
         {
@@ -1708,8 +1715,8 @@ describe('memory regressions', () => {
       const coordinator = createRunCoordinator({ store });
       const sentinel1 = 'EAT_CHAIN_SENTINEL1_';
       const sentinel2 = 'EAT_CHAIN_SENTINEL2_';
-      const oversized1 = sentinel1 + 'C'.repeat(300 * 1024);
-      const oversized2 = sentinel2 + 'D'.repeat(300 * 1024);
+      const oversized1 = withGeneralCompletion(sentinel1 + 'C'.repeat(300 * 1024));
+      const oversized2 = withGeneralCompletion(sentinel2 + 'D'.repeat(300 * 1024));
       let spawnIndex = 0;
       const tasksBySpawnIndex = new Map<number, string[]>();
 

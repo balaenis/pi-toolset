@@ -1,5 +1,5 @@
 // ABOUTME: Content-addressed run-local text/JSON artifact writes and verified reads.
-// ABOUTME: Publishes immutable SHA-256 paths under a run directory with strict sync helpers.
+// ABOUTME: Publishes immutable SHA-256 paths under a run directory via exclusive create + rename.
 
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -110,7 +110,7 @@ function mkdirPrivate(dir: string): void {
   applyMode(dir, DIR_MODE);
 }
 
-function fsyncFdStrict(fd: number): void {
+function defaultFileFsync(fd: number): void {
   try {
     fs.fsyncSync(fd);
   } catch (err) {
@@ -122,14 +122,12 @@ function fsyncFdStrict(fd: number): void {
   }
 }
 
-function fsyncDirStrict(dirPath: string): void {
-  if (!POSIX) return;
+function defaultDirectorySync(dirPath: string): void {
   let dirFd: number | undefined;
   try {
     dirFd = fs.openSync(dirPath, 'r');
-    fsyncFdStrict(dirFd);
+    fs.fsyncSync(dirFd);
   } catch (err) {
-    if (err instanceof ArtifactStoreError) throw err;
     throw new ArtifactStoreError(
       'artifact_write_error',
       `directory fsync failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -175,10 +173,17 @@ function assertValidRefShape(runId: string, ref: RunArtifactRefV1): void {
   }
 }
 
-function openNoFollow(filePath: string, flags: number, mode?: number): number {
-  const openFlags =
-    typeof fs.constants.O_NOFOLLOW === 'number' ? flags | fs.constants.O_NOFOLLOW : flags;
-  return fs.openSync(filePath, openFlags, mode);
+/** Syntactic containment under the run directory (no realpath/inode identity). */
+function resolveContainedArtifactPath(runDir: string, relativePath: string): string {
+  if (relativePath.includes('..') || path.isAbsolute(relativePath)) {
+    throw new ArtifactStoreError('artifact_corrupt', 'artifact relativePath escapes run directory');
+  }
+  const absolute = path.resolve(runDir, ...relativePath.split('/'));
+  const rel = path.relative(path.resolve(runDir), absolute);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new ArtifactStoreError('artifact_corrupt', 'artifact path escapes run directory');
+  }
+  return absolute;
 }
 
 export interface ArtifactStore {
@@ -199,11 +204,31 @@ export interface ArtifactStore {
   resolveArtifactPath(runId: string, runDir: string, ref: RunArtifactRefV1): Promise<string>;
 }
 
-export function createArtifactStore(options?: {
+export interface CreateArtifactStoreOptions {
+  /**
+   * Whether directory fsync is supported for this runs root.
+   * Required: callers must pass a probed or known capability (no silent true default).
+   * RunStore wires this from RunStoreCapabilities.directoryFsync.
+   */
+  directoryFsync: boolean;
+  /** Test seam: regular-file fsync used before rename publication (mandatory). */
+  fileFsync?: (fd: number) => void;
+  /** Test seam: directory sync (defaults to real fsync when directoryFsync is true). */
+  directorySync?: (dirPath: string) => void;
   /** Test seam: inject staging root under runDir. */
   stagingName?: string;
-}): ArtifactStore {
-  const stagingName = options?.stagingName ?? `.artifact-staging`;
+}
+
+export function createArtifactStore(options: CreateArtifactStoreOptions): ArtifactStore {
+  const stagingName = options.stagingName ?? `.artifact-staging`;
+  const directoryFsync = options.directoryFsync;
+  const fileFsync = options.fileFsync ?? defaultFileFsync;
+  const directorySyncImpl = options.directorySync ?? defaultDirectorySync;
+
+  function syncDir(dirPath: string): void {
+    if (!directoryFsync) return;
+    directorySyncImpl(dirPath);
+  }
 
   async function writeBytes(
     runId: string,
@@ -217,34 +242,27 @@ export function createArtifactStore(options?: {
     }
     const sha256 = sha256Hex(bytes);
     const relativePath = artifactRelativePath(sha256, mediaType);
-    const absolute = path.join(runDir, ...relativePath.split('/'));
+    const absolute = resolveContainedArtifactPath(runDir, relativePath);
     const parent = path.dirname(absolute);
     mkdirPrivate(path.join(runDir, 'artifacts'));
     mkdirPrivate(path.join(runDir, 'artifacts', 'sha256'));
     mkdirPrivate(parent);
 
+    const ref: RunArtifactRefV1 = {
+      kind: 'run-artifact',
+      version: 1,
+      runId,
+      payload,
+      relativePath,
+      sha256,
+      bytes: bytes.length,
+      mediaType,
+    };
+
     // Dedup: existing digest path must verify exact bytes.
     if (fs.existsSync(absolute)) {
-      await verifyFile(runId, runDir, {
-        kind: 'run-artifact',
-        version: 1,
-        runId,
-        payload,
-        relativePath,
-        sha256,
-        bytes: bytes.length,
-        mediaType,
-      });
-      return {
-        kind: 'run-artifact',
-        version: 1,
-        runId,
-        payload,
-        relativePath,
-        sha256,
-        bytes: bytes.length,
-        mediaType,
-      };
+      await verifyFile(runId, runDir, ref);
+      return ref;
     }
 
     const stagingRoot = path.join(runDir, stagingName);
@@ -255,48 +273,30 @@ export function createArtifactStore(options?: {
     );
 
     let fd: number | undefined;
+    let renamed = false;
     try {
-      fd = openNoFollow(
+      fd = fs.openSync(
         staging,
         fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
         FILE_MODE
       );
       fs.writeFileSync(fd, bytes);
-      fsyncFdStrict(fd);
+      fileFsync(fd);
       fs.closeSync(fd);
       fd = undefined;
       applyMode(staging, FILE_MODE);
       fs.renameSync(staging, absolute);
-      fsyncDirStrict(parent);
-      if (POSIX) {
-        fsyncDirStrict(path.join(runDir, 'artifacts', 'sha256'));
-        fsyncDirStrict(path.join(runDir, 'artifacts'));
-        fsyncDirStrict(runDir);
-      }
+      renamed = true;
+      syncDir(parent);
+      syncDir(path.join(runDir, 'artifacts', 'sha256'));
+      syncDir(path.join(runDir, 'artifacts'));
+      syncDir(runDir);
     } catch (err) {
       if (err instanceof ArtifactStoreError) throw err;
-      // Concurrent creator may have published the same digest.
-      if (fs.existsSync(absolute)) {
-        await verifyFile(runId, runDir, {
-          kind: 'run-artifact',
-          version: 1,
-          runId,
-          payload,
-          relativePath,
-          sha256,
-          bytes: bytes.length,
-          mediaType,
-        });
-        return {
-          kind: 'run-artifact',
-          version: 1,
-          runId,
-          payload,
-          relativePath,
-          sha256,
-          bytes: bytes.length,
-          mediaType,
-        };
+      // Concurrent creator may have published the same digest before our rename.
+      if (!renamed && fs.existsSync(absolute)) {
+        await verifyFile(runId, runDir, ref);
+        return ref;
       }
       throw new ArtifactStoreError(
         'artifact_write_error',
@@ -311,23 +311,20 @@ export function createArtifactStore(options?: {
           /* ignore */
         }
       }
+      // Clean only this writer's exact staging pathname, then try non-recursive rmdir.
       try {
         if (fs.existsSync(staging)) fs.unlinkSync(staging);
       } catch {
         /* ignore */
       }
+      try {
+        fs.rmdirSync(stagingRoot);
+      } catch {
+        /* not empty or missing — preserve competing/unknown entries */
+      }
     }
 
-    return {
-      kind: 'run-artifact',
-      version: 1,
-      runId,
-      payload,
-      relativePath,
-      sha256,
-      bytes: bytes.length,
-      mediaType,
-    };
+    return ref;
   }
 
   async function verifyFile(
@@ -336,11 +333,10 @@ export function createArtifactStore(options?: {
     ref: RunArtifactRefV1
   ): Promise<{ absolute: string; buf: Buffer }> {
     assertValidRefShape(runId, ref);
-    const absolute = path.join(runDir, ...ref.relativePath.split('/'));
-    const runReal = fs.realpathSync(runDir);
+    const absolute = resolveContainedArtifactPath(runDir, ref.relativePath);
     let st: fs.Stats;
     try {
-      st = fs.lstatSync(absolute);
+      st = fs.statSync(absolute);
     } catch (err) {
       throw new ArtifactStoreError(
         'artifact_missing',
@@ -348,30 +344,16 @@ export function createArtifactStore(options?: {
         { cause: err }
       );
     }
-    if (st.isSymbolicLink() || !st.isFile()) {
+    if (!st.isFile()) {
       throw new ArtifactStoreError('artifact_corrupt', 'artifact is not a regular file');
     }
     if (st.size !== ref.bytes) {
       throw new ArtifactStoreError('artifact_corrupt', 'artifact size does not match ref');
     }
-    let real: string;
-    try {
-      real = fs.realpathSync(absolute);
-    } catch (err) {
-      throw new ArtifactStoreError(
-        'artifact_corrupt',
-        `artifact realpath failed: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err }
-      );
-    }
-    const rel = path.relative(runReal, real);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new ArtifactStoreError('artifact_corrupt', 'artifact path escapes run directory');
-    }
 
     let fd: number | undefined;
     try {
-      fd = openNoFollow(absolute, fs.constants.O_RDONLY);
+      fd = fs.openSync(absolute, fs.constants.O_RDONLY);
       const buf = fs.readFileSync(fd);
       if (buf.length !== ref.bytes) {
         throw new ArtifactStoreError('artifact_corrupt', 'artifact size does not match ref');
@@ -380,7 +362,7 @@ export function createArtifactStore(options?: {
       if (digest !== ref.sha256) {
         throw new ArtifactStoreError('artifact_corrupt', 'artifact digest mismatch');
       }
-      return { absolute: real, buf };
+      return { absolute, buf };
     } catch (err) {
       if (err instanceof ArtifactStoreError) throw err;
       throw new ArtifactStoreError(
@@ -406,12 +388,10 @@ export function createArtifactStore(options?: {
     },
 
     async writeJsonArtifact(runId, runDir, payload, value) {
-      // Reject non-JSON values that JSON.stringify would drop or mangle silently.
       if (value === undefined) {
         throw new ArtifactStoreError('artifact_invalid', 'JSON artifact value cannot be undefined');
       }
       const text = serializeJsonArtifact(value);
-      // Round-trip check for non-finite numbers etc.
       try {
         JSON.parse(text);
       } catch (err) {

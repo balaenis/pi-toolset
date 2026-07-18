@@ -210,8 +210,21 @@ go under `collect.name`; the `structured` value is an array of each worker's
 
 ## Durable runs
 
-Every validated invocation persists under
-`~/.pi/agent/@balaenis/pi-agents/runs/<run-id>/`:
+Every validated invocation persists under `<runs-root>/<run-id>/`.
+
+### Runs root selection
+
+| Precedence | Source                                     | Notes                                                                                                                                                                                                |
+| ---------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1          | Programmatic `createRunStore({ rootDir })` | Complete root; relative paths resolve against process cwd; no package suffix. Explicit empty string fails with `run_store_error` (no default fallback).                                              |
+| 2          | `PI_AGENTS_RUNS_DIR`                       | Complete root override; empty string ignored (platform default used). Non-empty values are not trimmed.                                                                                              |
+| 3          | Platform default                           | Windows: `%LOCALAPPDATA%\\@balaenis\\pi-agents\\runs` (else `<home>\\AppData\\Local\\...`); non-Windows: `$XDG_STATE_HOME/@balaenis/pi-agents/runs` (else `~/.local/state/@balaenis/pi-agents/runs`) |
+
+Production storage is never `/tmp` / `os.tmpdir()`. The package is unpublished at `0.0.1`; no automatic migration from `~/.pi/agent/@balaenis/pi-agents/runs`. Stop all agents before moving a legacy root, or set `PI_AGENTS_RUNS_DIR` to the old path.
+
+The runs root is trusted per-user storage: symlink/junction/reparse-point tampering is unsupported. Mandatory regular-file fsync and hard-link no-replace publication are probed at startup. Directory fsync is capability-based.
+
+Per-run layout:
 
 | Path              | Role                                                                 |
 | ----------------- | -------------------------------------------------------------------- |
@@ -340,12 +353,17 @@ time; run `pi reload` (or restart) after adding/removing agent files.
 
 ## Environment variables
 
-| Variable                  | Default | Meaning                                                                                        |
-| ------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `PI_AGENT_CHILD`          | unset   | Set to `1` on every spawned child.                                                             |
-| `PI_AGENT_DEPTH`          | unset   | Current nesting depth, incremented per child.                                                  |
-| `PI_AGENT_MAX_DEPTH`      | `2`     | Global nesting limit. A new child is refused when `depth >= max`. Raise before launching `pi`. |
-| `PI_AGENT_TOOL_AVAILABLE` | unset   | Set to `0` as a runtime backstop when the `agent` tool is removed from a child.                |
+| Variable                     | Default | Meaning                                                                                                            |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `PI_AGENT_CHILD`             | unset   | Set to `1` on every spawned child.                                                                                 |
+| `PI_AGENT_DEPTH`             | unset   | Current nesting depth, incremented per child.                                                                      |
+| `PI_AGENT_MAX_DEPTH`         | `2`     | Global nesting limit. A new child is refused when `depth >= max`. Raise before launching `pi`.                     |
+| `PI_AGENT_TOOL_AVAILABLE`    | unset   | Set to `0` as a runtime backstop when the `agent` tool is removed from a child.                                    |
+| `PI_AGENTS_RUNS_DIR`         | unset   | Complete durable runs root override (no package suffix). Relative paths resolve against cwd. Empty string ignored. |
+| `PI_AGENTS_RUN_ID`           | unset   | Private: owning run id for child artifact reader.                                                                  |
+| `PI_AGENTS_RUN_ARTIFACT_DIR` | unset   | Private: run directory for child artifact reader.                                                                  |
+| `XDG_STATE_HOME`             | unset   | non-Windows base for the default runs root (`…/@balaenis/pi-agents/runs`).                                         |
+| `LOCALAPPDATA`               | unset   | Windows base for the default runs root (`…\\@balaenis\\pi-agents\\runs`).                                          |
 
 ## `stopReason` values
 

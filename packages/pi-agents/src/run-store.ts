@@ -1,10 +1,16 @@
 // ABOUTME: Durable run store — versioned snapshots, event log, and append-only ticket claims.
-// ABOUTME: All paths resolve under ~/.pi/agent/@balaenis/pi-agents/runs/; tests inject a temp root.
+// ABOUTME: Pathname-based cross-platform transactions under a resolved per-user runs root.
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import {
+  getDefaultRunsRoot as resolveDefaultRunsRoot,
+  initializeRunsRoot,
+  isNoReplaceContentionError,
+  resolveRunsRoot,
+  type RunStoreCapabilities,
+} from './run-store-paths.ts';
 import { DEFAULT_RUNTIME, GROK_ACP_RUNTIME } from './constants.ts';
 import { chainFanoutUnitId, chainStepUnitId, generateUnitIds, pad } from './run-coordinator.ts';
 import { createArtifactStore, isRunArtifactRef, type ArtifactStore } from './artifact-store.ts';
@@ -590,10 +596,11 @@ function effectiveUnitRuntime(runtime: unknown): string {
 }
 
 export function getDefaultRunsRoot(): string {
-  // Tests inject a custom rootDir; the process-level HOME env override
-  // ensures getDefaultRunsRoot picks up temp directories during testing.
-  const home = process.env.HOME ?? os.homedir();
-  return path.join(home, '.pi', 'agent', '@balaenis', 'pi-agents', 'runs');
+  return resolveDefaultRunsRoot();
+}
+
+function isNonEmptyRoot(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
 }
 
 const POSIX = process.platform !== 'win32';
@@ -614,25 +621,6 @@ function mkdirPrivate(dir: string): void {
   applyMode(dir, DIR_MODE);
 }
 
-function fsyncFd(fd: number): void {
-  try {
-    fs.fsyncSync(fd);
-  } catch {
-    // best-effort
-  }
-}
-
-function fsyncDir(dirPath: string): void {
-  if (!POSIX) return;
-  try {
-    const dirFd = fs.openSync(dirPath, 'r');
-    fsyncFd(dirFd);
-    fs.closeSync(dirFd);
-  } catch {
-    // best-effort
-  }
-}
-
 function fsyncFdStrict(fd: number): void {
   try {
     fs.fsyncSync(fd);
@@ -645,7 +633,8 @@ function fsyncFdStrict(fd: number): void {
 }
 
 function fsyncDirStrict(dirPath: string): void {
-  if (!POSIX) return;
+  // Capability gate is applied by callers (fsyncRunDir / defaultDirSync).
+  // When directory fsync is supported, failure propagates as run_store_error.
   let dirFd: number | undefined;
   try {
     dirFd = fs.openSync(dirPath, 'r');
@@ -673,7 +662,26 @@ function isUnitIdValid(id: string): boolean {
 
 function isRunIdValid(id: string): boolean {
   if (!id || id.includes(path.sep) || id.includes('/') || id.includes('\\')) return false;
+  // Reject drive-like prefixes (e.g. C:foo) and absolute forms without separators.
+  if (id.includes(':')) return false;
   return /^[a-zA-Z0-9-]+$/.test(id);
+}
+
+/** Throw run_store_error / run_not_found-shaped rejection before any path join. */
+function assertValidRunId(id: string, shape: 'throw' | 'not_found' = 'not_found'): void {
+  if (isRunIdValid(id)) return;
+  if (shape === 'throw') {
+    throw {
+      code: 'run_store_error',
+      runId: id,
+      message: 'invalid run id',
+    } satisfies RunStoreError;
+  }
+  throw {
+    code: 'run_not_found',
+    runId: id,
+    message: 'invalid run id',
+  } satisfies RunStoreError;
 }
 
 /** Per-run write queue so overlapping streaming updates cannot interleave temp renames. */
@@ -727,6 +735,28 @@ export interface CreateRunStoreOptions {
    * Defaults to the real strict directory fsync.
    */
   strictCommittedMarkerDirectorySync?: (dirPath: string) => void;
+  /** Test seam: regular-file fsync used for durable publications (mandatory). */
+  fileFsync?: (fd: number) => void;
+  /**
+   * Test seam: directory sync used when directoryFsync capability is true.
+   * Defaults to real directory open/fsync. Not called when capability is false.
+   * Shared by lock, candidate, intent, tombstone, claim, terminal, and cleanup paths.
+   */
+  directorySync?: (dirPath: string) => void;
+  /** Test seam: artifact regular-file fsync (defaults to real fsync). */
+  artifactFileFsync?: (fd: number) => void;
+  /** Test seam: artifact directory sync (defaults to capability-aware fsync). */
+  artifactDirectorySync?: (dirPath: string) => void;
+  /**
+   * Test seam: force directory-fsync capability after probe (does not re-probe).
+   * When false, directory open/sync is skipped; file fsync and hard-link remain required.
+   */
+  directoryFsync?: boolean;
+  /**
+   * Test seam: process.kill used by isPidAlive (signal 0). Production uses process.kill.
+   * Only ESRCH must be treated as dead; EPERM/ENOSYS/unknown remain busy.
+   */
+  pidAliveKill?: (pid: number, signal: 0) => void;
   /** Max wait for a live transaction lock before run_busy (default 2000ms). */
   txLockWaitMs?: number;
   /** Retry interval while waiting for a transaction lock (default 25ms). */
@@ -796,7 +826,7 @@ export interface RunStore {
         }>;
       }
     | { ok: false; error: RunStoreError };
-  /** Test/inspection helper: is the given PID alive (false on ESRCH/ENOSYS). */
+  /** Test/inspection helper: is the given PID alive (false only on ESRCH). */
   isPidAlive(pid: number): boolean;
 }
 
@@ -839,34 +869,61 @@ function normalizeTxLockTiming(
 }
 
 export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
-  // Ensure the configured root exists, then canonicalize so openPathComponentNoFollow
-  // does not reject intentional parent symlinks (e.g. ~/.pi/agent/@balaenis → dotfiles).
-  // TOCTOU protection still applies to components under this real path.
-  const configuredRoot = options.rootDir ?? getDefaultRunsRoot();
-  mkdirPrivate(configuredRoot);
-  let rootDir: string;
-  try {
-    rootDir = fs.realpathSync(configuredRoot);
-  } catch (err) {
+  // Resolve runs root (programmatic > env > platform default), create it, and probe
+  // mandatory regular-file fsync + hard-link no-replace capabilities before any run-*.
+  // Explicit empty rootDir is invalid; omitted rootDir falls through to env/platform default.
+  if (options.rootDir !== undefined && !isNonEmptyRoot(options.rootDir)) {
     throw {
       code: 'run_store_error',
-      message: `cannot resolve runs root: ${err instanceof Error ? err.message : String(err)}`,
+      message: 'rootDir must be a non-empty path when provided',
     } satisfies RunStoreError;
   }
+  const configuredRoot = isNonEmptyRoot(options.rootDir)
+    ? resolveRunsRoot({ rootDir: options.rootDir })
+    : resolveRunsRoot();
+  let capabilities: RunStoreCapabilities;
+  try {
+    capabilities = initializeRunsRoot(configuredRoot);
+  } catch (err) {
+    if (isRunStoreError(err)) throw err;
+    throw {
+      code: 'run_store_error',
+      message: `cannot initialize runs root: ${err instanceof Error ? err.message : String(err)}`,
+    } satisfies RunStoreError;
+  }
+  if (options.directoryFsync !== undefined) {
+    capabilities = { ...capabilities, directoryFsync: options.directoryFsync };
+  }
+  const rootDir = path.resolve(configuredRoot);
+  const pidAliveKill =
+    options.pidAliveKill ?? ((probePid: number, signal: 0) => process.kill(probePid, signal));
   applyMode(rootDir, DIR_MODE);
   const now = options.now ?? (() => Date.now());
   const randomUUID = options.randomUUID ?? crypto.randomUUID;
   const pid = options.pid ?? process.pid;
   const instanceId = options.instanceId ?? `${process.ppid ?? 0}-${Date.now()}-${randomUUID()}`;
-  const strictPostRenameDirectorySync = options.strictPostRenameDirectorySync ?? fsyncDirStrict;
+  // Single injectable directory-sync implementation; capability gate applied at call sites.
+  const directorySyncImpl = options.directorySync ?? fsyncDirStrict;
+  const defaultDirSync = (dirPath: string): void => {
+    if (!capabilities.directoryFsync) return;
+    directorySyncImpl(dirPath);
+  };
+  // Strict-transaction seams retain independent fault-phase injection; default to shared gate.
+  const strictPostRenameDirectorySync = options.strictPostRenameDirectorySync ?? defaultDirSync;
   const strictCommittedMarkerDirectorySync =
-    options.strictCommittedMarkerDirectorySync ?? fsyncDirStrict;
+    options.strictCommittedMarkerDirectorySync ?? defaultDirSync;
   const strictTransactionHook = options.strictTransactionHook;
   const { txLockWaitMs, txLockRetryMs } = normalizeTxLockTiming(
     options.txLockWaitMs,
     options.txLockRetryMs
   );
-  const artifacts: ArtifactStore = createArtifactStore();
+  // File fsync test seam: production uses real fsyncFdStrict.
+  const fileFsyncImpl = options.fileFsync ?? fsyncFdStrict;
+  const artifacts: ArtifactStore = createArtifactStore({
+    directoryFsync: capabilities.directoryFsync,
+    fileFsync: options.artifactFileFsync,
+    directorySync: options.artifactDirectorySync,
+  });
 
   /** Deterministic private transaction filenames (never public refs). */
   const TX_ROLLBACK_NAME = '.run.json.tx.rollback';
@@ -899,12 +956,9 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     ino: number;
   }
 
-  interface RunDirSession {
+  /** Pathname handle for a run directory under the trusted runs root. */
+  interface RunDirHandle {
     publicDir: string;
-    dirFd: number;
-    identity: FileIdentity;
-    uid: number;
-    mode: number;
   }
 
   interface HeldTxLock {
@@ -912,7 +966,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     dir: string;
     lockDir: string;
     token: string;
-    session: RunDirSession;
+    session: RunDirHandle;
     lockIdentity: FileIdentity;
   }
 
@@ -932,14 +986,25 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     return crypto.createHash('sha256').update(buf).digest('hex');
   }
 
+  function isRunStoreError(err: unknown): err is RunStoreError {
+    if (!err || typeof err !== 'object' || !('code' in err) || !('message' in err)) return false;
+    const code = (err as { code: unknown }).code;
+    return (
+      code === 'run_not_found' ||
+      code === 'corrupt_run' ||
+      code === 'run_store_error' ||
+      code === 'run_busy' ||
+      code === 'durable_write_error' ||
+      code === 'durable_commit_uncertain' ||
+      code === 'generation_mismatch' ||
+      code === 'claim_corrupt' ||
+      code === 'run_active'
+    );
+  }
+
   function noFollowFlag(): number {
-    if (typeof fs.constants.O_NOFOLLOW !== 'number') {
-      throw {
-        code: 'run_store_error',
-        message: 'O_NOFOLLOW is required for private transaction files',
-      } satisfies RunStoreError;
-    }
-    return fs.constants.O_NOFOLLOW;
+    // Cross-platform pathname mode: no-follow flags are not required.
+    return 0;
   }
 
   function processStartIdentity(targetPid: number): string | undefined {
@@ -983,29 +1048,20 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     return { dev: st.dev, ino: st.ino };
   }
 
-  function directoryFlag(): number {
-    if (typeof fs.constants.O_DIRECTORY !== 'number') {
-      throw {
-        code: 'run_store_error',
-        message: 'O_DIRECTORY is required for run-directory transactions',
-      } satisfies RunStoreError;
-    }
-    return fs.constants.O_DIRECTORY;
-  }
-
-  function procFdBase(dirFd: number): string {
-    return `/proc/self/fd/${dirFd}`;
-  }
-
-  function childViaDirFd(dirFd: number, name: string): string {
-    // Entries are fixed private basenames; never join untrusted components.
+  function assertSafeEntryName(name: string): string {
+    // Basenames may start with '.' (protocol temps like ..run.json.tx.marker.*.tmp).
+    // Reject only path separators and NUL — never treat leading dots as traversal.
     if (!name || name.includes('/') || name.includes('\\') || name.includes('\0')) {
       throw {
         code: 'run_store_error',
         message: 'invalid transaction entry name',
       } satisfies RunStoreError;
     }
-    return path.join(procFdBase(dirFd), name);
+    return name;
+  }
+
+  function childInDir(dir: string, name: string): string {
+    return path.join(dir, assertSafeEntryName(name));
   }
 
   function closeFdQuiet(fd: number | undefined): void {
@@ -1018,198 +1074,43 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   }
 
   /**
-   * Open absolute path component-by-component from `/` with O_DIRECTORY|O_NOFOLLOW.
-   * Rejects any symlink or intermediate replacement so the final fd cannot be redirected.
+   * Open a pathname session for a run directory under the trusted runs root.
+   * Symlink/junction tampering inside the runs tree is unsupported.
    */
-  function openPathComponentNoFollow(
-    absolutePath: string,
-    runId?: string
-  ): { dirFd: number; identity: FileIdentity; uid: number; mode: number } {
-    if (!POSIX) {
-      throw {
-        code: 'run_store_error',
-        runId,
-        message: 'directory-fd transactions require a POSIX /proc platform',
-      } satisfies RunStoreError;
-    }
-    const resolved = path.resolve(absolutePath);
-    if (!path.isAbsolute(resolved) || resolved.includes('\0')) {
-      throw {
-        code: 'run_store_error',
-        runId,
-        message: 'run path must be an absolute non-null path',
-      } satisfies RunStoreError;
-    }
-    const parts = resolved.split(path.sep).filter((p) => p.length > 0);
-    let parentFd: number | undefined;
+  function openRunDirHandle(publicDir: string, runId?: string): RunDirHandle {
     try {
-      parentFd = fs.openSync('/', fs.constants.O_RDONLY | directoryFlag() | noFollowFlag());
-      let parentSt = fs.fstatSync(parentFd);
-      if (!parentSt.isDirectory()) {
-        throw {
-          code: 'run_store_error',
-          runId,
-          message: 'root path is not a directory',
-        } satisfies RunStoreError;
-      }
-      for (const part of parts) {
-        if (part === '.' || part === '..' || part.includes('\0')) {
-          throw {
-            code: 'corrupt_run',
-            runId,
-            message: 'run path contains unsafe components',
-          } satisfies RunStoreError;
-        }
-        // Public path component must not be a symlink before open.
-        const publicParent = parentFd === undefined ? '/' : undefined;
-        void publicParent;
-        const childViaProc = path.join(procFdBase(parentFd), part);
-        let nextFd: number | undefined;
-        try {
-          // lstat through proc-fd path (no-follow) before opening.
-          let linkCheck: fs.Stats;
-          try {
-            linkCheck = fs.lstatSync(childViaProc);
-          } catch (err) {
-            const code = (err as NodeJS.ErrnoException).code;
-            if (code === 'ENOENT') {
-              throw {
-                code: 'run_not_found',
-                runId,
-                message: 'run directory path component missing',
-              } satisfies RunStoreError;
-            }
-            throw {
-              code: 'run_store_error',
-              runId,
-              message: `run path component lstat failed: ${messageOf(err)}`,
-            } satisfies RunStoreError;
-          }
-          if (linkCheck.isSymbolicLink()) {
-            throw {
-              code: 'corrupt_run',
-              runId,
-              message: 'run path component is a symlink',
-            } satisfies RunStoreError;
-          }
-          if (!linkCheck.isDirectory()) {
-            throw {
-              code: 'corrupt_run',
-              runId,
-              message: 'run path component is not a directory',
-            } satisfies RunStoreError;
-          }
-          nextFd = fs.openSync(
-            childViaProc,
-            fs.constants.O_RDONLY | directoryFlag() | noFollowFlag()
-          );
-          const nextSt = fs.fstatSync(nextFd);
-          if (!nextSt.isDirectory()) {
-            throw {
-              code: 'corrupt_run',
-              runId,
-              message: 'opened run path component is not a directory',
-            } satisfies RunStoreError;
-          }
-          if (!sameIdentity(identityOf(linkCheck), identityOf(nextSt))) {
-            throw {
-              code: 'corrupt_run',
-              runId,
-              message: 'run path component replaced during open',
-            } satisfies RunStoreError;
-          }
-          // Close previous parent; retain the newly opened component.
-          closeFdQuiet(parentFd);
-          parentFd = nextFd;
-          nextFd = undefined;
-          parentSt = nextSt;
-        } catch (err) {
-          closeFdQuiet(nextFd);
-          throw err;
-        }
-      }
-      const st = parentSt;
-      const procPath = procFdBase(parentFd);
-      let procStat: fs.Stats;
-      try {
-        procStat = fs.statSync(procPath);
-      } catch (err) {
-        throw {
-          code: 'run_store_error',
-          runId,
-          message: `proc-fd resolution unavailable: ${messageOf(err)}`,
-        } satisfies RunStoreError;
-      }
-      if (!sameIdentity(identityOf(st), identityOf(procStat))) {
-        throw {
-          code: 'run_store_error',
-          runId,
-          message: 'proc-fd path does not resolve to opened directory inode',
-        } satisfies RunStoreError;
-      }
-      const result = {
-        dirFd: parentFd,
-        identity: identityOf(st),
-        uid: st.uid,
-        mode: st.mode,
-      };
-      parentFd = undefined; // ownership transferred
-      return result;
-    } catch (err) {
-      closeFdQuiet(parentFd);
-      if (err && typeof err === 'object' && 'code' in err && 'message' in err) throw err;
-      throw {
-        code: 'run_store_error',
-        runId,
-        message: `open path components failed: ${messageOf(err)}`,
-      } satisfies RunStoreError;
-    }
-  }
-
-  function openRunDirSession(publicDir: string, runId?: string): RunDirSession {
-    if (!POSIX) {
-      throw {
-        code: 'run_store_error',
-        runId,
-        message: 'directory-fd transactions require a POSIX /proc platform',
-      } satisfies RunStoreError;
-    }
-    let dirFd: number | undefined;
-    try {
-      const opened = openPathComponentNoFollow(publicDir, runId);
-      dirFd = opened.dirFd;
-      const stMode = opened.mode;
-      if ((stMode & 0o777) !== DIR_MODE) {
+      const st = fs.lstatSync(publicDir);
+      if (!st.isDirectory()) {
         throw {
           code: 'corrupt_run',
           runId,
-          message: `run directory mode is not private 0o${DIR_MODE.toString(8)}`,
+          message: 'run path is not a directory',
         } satisfies RunStoreError;
       }
-      if (typeof process.getuid === 'function') {
-        const uid = process.getuid();
-        if (opened.uid !== uid) {
-          throw {
-            code: 'corrupt_run',
-            runId,
-            message: 'run directory ownership does not match process uid',
-          } satisfies RunStoreError;
-        }
-      }
-      // Revalidate public path component chain still names the same inode.
-      revalidatePublicRunDir(publicDir, opened.identity, runId);
-      const session: RunDirSession = {
-        publicDir,
-        dirFd,
-        identity: opened.identity,
-        uid: opened.uid,
-        mode: opened.mode,
-      };
-      dirFd = undefined;
-      return session;
+      return { publicDir };
     } catch (err) {
-      closeFdQuiet(dirFd);
-      if (err && typeof err === 'object' && 'code' in err && 'message' in err) throw err;
+      const errno = (err as NodeJS.ErrnoException).code;
+      if (errno === 'ENOENT') {
+        throw {
+          code: 'run_not_found',
+          runId,
+          message: 'run directory path component missing',
+        } satisfies RunStoreError;
+      }
+      if (
+        isRunStoreError(err) &&
+        typeof (err as { code: unknown }).code === 'string' &&
+        [
+          'run_not_found',
+          'corrupt_run',
+          'run_store_error',
+          'run_busy',
+          'durable_write_error',
+          'generation_mismatch',
+        ].includes(String((err as { code: unknown }).code))
+      ) {
+        throw err;
+      }
       throw {
         code: 'run_store_error',
         runId,
@@ -1218,37 +1119,25 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     }
   }
 
-  function revalidatePublicRunDir(publicDir: string, expected: FileIdentity, runId?: string): void {
-    try {
-      // Re-walk components without following; final inode must match.
-      const reopened = openPathComponentNoFollow(publicDir, runId);
-      try {
-        if (!sameIdentity(expected, reopened.identity)) {
-          throw {
-            code: 'corrupt_run',
-            runId,
-            message: 'run directory was replaced during the transaction',
-          } satisfies RunStoreError;
-        }
-      } finally {
-        closeFdQuiet(reopened.dirFd);
-      }
-    } catch (err) {
-      if (err && typeof err === 'object' && 'code' in err && 'message' in err) throw err;
-      throw {
-        code: 'durable_write_error',
-        runId,
-        message: `run directory revalidation failed: ${messageOf(err)}`,
-      } satisfies RunStoreError;
-    }
+  function revalidatePublicRunDir(
+    _publicDir: string,
+    _expected: FileIdentity | undefined,
+    _runId?: string
+  ): void {
+    // Pathname mode: cooperative generation checks remain on lock/intent identities.
+    // Hostile same-user pathname replacement is outside the trusted-runs threat model.
+    void _publicDir;
+    void _expected;
+    void _runId;
   }
 
-  function closeRunDirSession(session: RunDirSession): void {
-    closeFdQuiet(session.dirFd);
+  function closeRunDirHandle(_session: RunDirHandle): void {
+    void _session;
   }
 
-  function fsyncDirFdStrict(dirFd: number): void {
-    fsyncFdStrict(dirFd);
+  function fsyncRunDir(dirPath: string): void {
+    if (!capabilities.directoryFsync) return;
+    directorySyncImpl(dirPath);
   }
 
   function pathEntryKind(
@@ -1282,9 +1171,6 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       if (POSIX && (st.mode & 0o777) !== DIR_MODE) {
         return { ok: false, reason: 'wrong mode' };
       }
-    }
-    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
-      return { ok: false, reason: 'wrong uid' };
     }
     return { ok: true };
   }
@@ -1324,7 +1210,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   }
 
   /**
-   * Open a private transaction file with O_NOFOLLOW, verify lstat/fstat inode,
+   * Open a private transaction file with pathname, verify lstat/fstat inode,
    * uid/mode/type, and return identity + content digest + exact fd-read bytes.
    */
   function openVerifiedPrivateFile(
@@ -1403,7 +1289,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         phase,
       };
     } catch (err) {
-      if (err && typeof err === 'object' && 'code' in err && 'message' in err) throw err;
+      if (isRunStoreError(err)) throw err;
       throw {
         code: 'corrupt_run',
         message: `private transaction file unsafe: ${messageOf(err)}`,
@@ -1499,7 +1385,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         } satisfies RunStoreError;
       }
     } catch (err) {
-      if (err && typeof err === 'object' && 'code' in err && 'message' in err) throw err;
+      if (isRunStoreError(err)) throw err;
       throw {
         code: 'corrupt_run',
         message: `verified unlink failed: ${messageOf(err)}`,
@@ -1548,7 +1434,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   }
 
   /**
-   * Authority run.json read: O_NOFOLLOW + lstat/fstat match + uid/mode/type +
+   * Authority run.json read: pathname + lstat/fstat match + uid/mode/type +
    * same-fd bytes + post-read fstat. Never follows a replacement symlink.
    */
   function readAuthorityRunJson(
@@ -1582,21 +1468,20 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   }
 
   /**
-   * Fast-path authority read: open run directory component-by-component, retain
-   * dir fd, and read run.json through that fd (never follows intermediate symlinks).
+   * Fast-path authority read via ordinary pathnames under the trusted runs root.
    */
   function readRunJsonViaDirComponents(runId: string, publicDir: string): Buffer {
-    const session = openRunDirSession(publicDir, runId);
+    const session = openRunDirHandle(publicDir, runId);
     try {
-      const lockedFile = childViaDirFd(session.dirFd, 'run.json');
-      return readAuthorityRunJson(lockedFile, publicDir, { skipPathBound: true }).data;
+      const lockedFile = childInDir(session.publicDir, 'run.json');
+      return readAuthorityRunJson(lockedFile, publicDir).data;
     } finally {
-      closeRunDirSession(session);
+      closeRunDirHandle(session);
     }
   }
 
   /**
-   * Write private transaction bytes via O_CREAT|O_EXCL|O_NOFOLLOW temp + atomic rename.
+   * Write private transaction bytes via O_CREAT|O_EXCL|pathname temp + atomic rename.
    * Paths may be public or dir-fd-relative; identity is checked through open fd.
    */
   function writePrivateBytesAtomic(
@@ -1604,8 +1489,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     runDir: string,
     expectedBase: string,
     data: Buffer,
-    dirSync: (dirPath: string) => void = fsyncDirStrict,
-    session?: RunDirSession
+    dirSync: (dirPath: string) => void = fsyncRunDir,
+    session?: RunDirHandle
   ): void {
     if (path.basename(destPath) !== expectedBase) {
       throw {
@@ -1613,7 +1498,6 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         message: 'transaction write destination basename mismatch',
       } satisfies RunStoreError;
     }
-    // When session is provided, dest is under /proc/self/fd/<dirFd>/...
     if (!session) {
       if (path.dirname(destPath) !== runDir) {
         throw {
@@ -1641,7 +1525,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           } satisfies RunStoreError;
         }
       } catch (err) {
-        if (err && typeof err === 'object' && 'code' in err && 'message' in err) throw err;
+        if (isRunStoreError(err)) throw err;
         throw {
           code: 'corrupt_run',
           message: `transaction destination is unsafe: ${messageOf(err)}`,
@@ -1650,7 +1534,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     }
 
     const tmpName = `.${expectedBase}.${instanceId}.${randomUUID()}.tmp`;
-    const tmp = session ? childViaDirFd(session.dirFd, tmpName) : path.join(runDir, tmpName);
+    const tmp = session ? childInDir(session.publicDir, tmpName) : path.join(runDir, tmpName);
     let fd: number | undefined;
     let writtenIdentity: FileIdentity | undefined;
     try {
@@ -1665,7 +1549,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         applyMode(tmp, FILE_MODE);
       }
       fs.writeFileSync(fd, data);
-      fsyncFdStrict(fd);
+      fileFsyncImpl(fd);
       writtenIdentity = identityOf(fs.fstatSync(fd));
       fs.closeSync(fd);
       fd = undefined;
@@ -1708,8 +1592,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       }
 
       if (session) {
-        fsyncDirFdStrict(session.dirFd);
-        revalidatePublicRunDir(session.publicDir, session.identity);
+        fsyncRunDir(session.publicDir);
+        revalidatePublicRunDir(session.publicDir, undefined);
       } else {
         dirSync(runDir);
       }
@@ -1731,15 +1615,15 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   function writeMarkerStrict(
     dir: string,
     marker: TxMarker,
-    dirSync: (dirPath: string) => void = fsyncDirStrict,
-    session?: RunDirSession
+    dirSync: (dirPath: string) => void = fsyncRunDir,
+    session?: RunDirHandle
   ): MarkerPublishResult {
     const markerPath = session
-      ? childViaDirFd(session.dirFd, TX_MARKER_NAME)
+      ? childInDir(session.publicDir, TX_MARKER_NAME)
       : path.join(dir, TX_MARKER_NAME);
     const payload = Buffer.from(`${JSON.stringify(marker)}\n`);
     const tmpName = `.${TX_MARKER_NAME}.${instanceId}.${randomUUID()}.tmp`;
-    const tmp = session ? childViaDirFd(session.dirFd, tmpName) : path.join(dir, tmpName);
+    const tmp = session ? childInDir(session.publicDir, tmpName) : path.join(dir, tmpName);
     let fd: number | undefined;
     let writtenIdentity: FileIdentity | undefined;
     try {
@@ -1765,7 +1649,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         applyMode(tmp, FILE_MODE);
       }
       fs.writeFileSync(fd, payload);
-      fsyncFdStrict(fd);
+      fileFsyncImpl(fd);
       writtenIdentity = identityOf(fs.fstatSync(fd));
       fs.closeSync(fd);
       fd = undefined;
@@ -1798,8 +1682,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       }
       try {
         if (session) {
-          fsyncDirFdStrict(session.dirFd);
-          revalidatePublicRunDir(session.publicDir, session.identity);
+          fsyncRunDir(session.publicDir);
+          revalidatePublicRunDir(session.publicDir, undefined);
         }
         // Always invoke the provided directory sync seam (may be the real fsync
         // or a test injection for committed-marker publication uncertainty).
@@ -1877,21 +1761,21 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   function cleanupTxPhase(
     dir: string,
     phase: TxPhase,
-    session?: RunDirSession,
+    session?: RunDirHandle,
     expected?: {
       marker?: VerifiedPrivateFile;
       rollback?: VerifiedPrivateFile;
     }
   ): { ok: true } | { ok: false; error: unknown } {
     const marker = session
-      ? childViaDirFd(session.dirFd, TX_MARKER_NAME)
+      ? childInDir(session.publicDir, TX_MARKER_NAME)
       : path.join(dir, TX_MARKER_NAME);
     const rollback = session
-      ? childViaDirFd(session.dirFd, TX_ROLLBACK_NAME)
+      ? childInDir(session.publicDir, TX_ROLLBACK_NAME)
       : path.join(dir, TX_ROLLBACK_NAME);
     const syncDir = (): void => {
-      if (session) fsyncDirFdStrict(session.dirFd);
-      else fsyncDirStrict(dir);
+      if (session) fsyncRunDir(session.publicDir);
+      else fsyncRunDir(dir);
     };
     const unlinkEntry = (
       filePath: string,
@@ -1964,26 +1848,26 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   /**
    * After committed cleanup fails, re-read marker/rollback/run.json and accept
    * success only when remaining artifacts unambiguously recover to the new run.json.
-   * Every authority read is O_NOFOLLOW + inode/digest verified.
+   * Every authority read is pathname + inode/digest verified.
    * When expected marker/rollback identities are provided, any present entry with
    * different dev/ino is rejected as generation_mismatch (replacement never washes).
    */
   function revalidateCommittedState(
     dir: string,
     expectedNew: { sha256: string; bytes: number },
-    session?: RunDirSession,
+    session?: RunDirHandle,
     expected?: {
       markerIdentity?: FileIdentity;
       rollbackIdentity?: FileIdentity;
     }
   ): { ok: true } | { ok: false; error: RunStoreError } {
     const marker = session
-      ? childViaDirFd(session.dirFd, TX_MARKER_NAME)
+      ? childInDir(session.publicDir, TX_MARKER_NAME)
       : path.join(dir, TX_MARKER_NAME);
     const rollback = session
-      ? childViaDirFd(session.dirFd, TX_ROLLBACK_NAME)
+      ? childInDir(session.publicDir, TX_ROLLBACK_NAME)
       : path.join(dir, TX_ROLLBACK_NAME);
-    const target = session ? childViaDirFd(session.dirFd, 'run.json') : path.join(dir, 'run.json');
+    const target = session ? childInDir(session.publicDir, 'run.json') : path.join(dir, 'run.json');
 
     const checkGeneration = (
       filePath: string,
@@ -2143,7 +2027,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         },
       };
     } catch (err) {
-      if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+      if (isRunStoreError(err)) {
         return { ok: false, error: err as RunStoreError };
       }
       return {
@@ -2156,7 +2040,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     }
   }
 
-  function removeTxFiles(dir: string, phase: TxPhase = 'prepared', session?: RunDirSession): void {
+  function removeTxFiles(dir: string, phase: TxPhase = 'prepared', session?: RunDirHandle): void {
     const result = cleanupTxPhase(dir, phase, session);
     if (!result.ok) {
       // Best-effort only for non-strict leftover sweeps; leave evidence on failure.
@@ -2167,7 +2051,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     let fd: number | undefined;
     try {
       fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollowFlag());
-      fsyncFdStrict(fd);
+      fileFsyncImpl(fd);
     } finally {
       closeFdQuiet(fd);
     }
@@ -2275,6 +2159,13 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     if (/[\x00-\x1f\x7f]/.test(token)) return false;
     return true;
   }
+  /** Exact steal-intent owner temp grammar: `.owner.<strict-token>.tmp`. */
+  function isValidOwnerTempName(name: string): boolean {
+    if (typeof name !== 'string') return false;
+    if (!name.startsWith(TX_OWNER_TMP_PREFIX) || !name.endsWith('.tmp')) return false;
+    const middle = name.slice(TX_OWNER_TMP_PREFIX.length, name.length - '.tmp'.length);
+    return isStrictLockToken(middle);
+  }
 
   function assertStrictLockToken(token: string, label: string): void {
     if (!isStrictLockToken(token)) {
@@ -2314,16 +2205,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     }
     if (typeof o.contenderProcessStart !== 'string' || !o.contenderProcessStart) return undefined;
     if (typeof o.ownerProcessStart !== 'string' || !o.ownerProcessStart) return undefined;
-    if (typeof o.newOwnerTempName !== 'string' || !o.newOwnerTempName) return undefined;
-    // Temp name must be a locally-shaped safe basename under TX_OWNER_TMP_PREFIX.
-    if (
-      !o.newOwnerTempName.startsWith(TX_OWNER_TMP_PREFIX) ||
-      o.newOwnerTempName.includes('/') ||
-      o.newOwnerTempName.includes('\\') ||
-      o.newOwnerTempName.includes('\0') ||
-      o.newOwnerTempName.includes('..') ||
-      o.newOwnerTempName.length > 96
-    ) {
+    if (typeof o.newOwnerTempName !== 'string' || !isValidOwnerTempName(o.newOwnerTempName)) {
       return undefined;
     }
     for (const k of [
@@ -2428,41 +2310,32 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     };
   }
 
-  function openLockDirFd(lockDirPath: string): number {
-    return fs.openSync(lockDirPath, fs.constants.O_RDONLY | directoryFlag() | noFollowFlag());
-  }
-
   function readLockOwnerVia(lockDirPath: string):
     | {
         owner: TxLockOwner;
         ownerIdentity: FileIdentity;
         lockIdentity: FileIdentity;
-        lockFd?: number;
       }
     | undefined {
-    let lockFd: number | undefined;
     try {
       const lockSt = fs.lstatSync(lockDirPath);
       if (!lockSt.isDirectory() || lockSt.isSymbolicLink()) return undefined;
       const lockIdentity = identityOf(lockSt);
       const lockMode = validatePrivateEntryStats(lockSt, 'directory');
       if (!lockMode.ok) return undefined;
-      lockFd = openLockDirFd(lockDirPath);
-      const lockFdSt = fs.fstatSync(lockFd);
-      if (!sameIdentity(lockIdentity, identityOf(lockFdSt))) {
-        closeFdQuiet(lockFd);
+      // Re-lstat to detect replacement without directory-fd open.
+      const lockSt2 = fs.lstatSync(lockDirPath);
+      if (!sameIdentity(lockIdentity, identityOf(lockSt2)) || !lockSt2.isDirectory()) {
         return undefined;
       }
-      const ownerPath = path.join(procFdBase(lockFd), TX_LOCK_OWNER_NAME);
+      const ownerPath = path.join(lockDirPath, TX_LOCK_OWNER_NAME);
       const kind = pathEntryKind(ownerPath);
       if (kind !== 'regular') {
-        closeFdQuiet(lockFd);
         return undefined;
       }
       const before = fs.lstatSync(ownerPath);
       const v = validatePrivateEntryStats(before, 'file');
       if (!v.ok) {
-        closeFdQuiet(lockFd);
         return undefined;
       }
       let fd: number | undefined;
@@ -2470,29 +2343,22 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         fd = fs.openSync(ownerPath, fs.constants.O_RDONLY | noFollowFlag());
         const after = fs.fstatSync(fd);
         if (after.ino !== before.ino || after.dev !== before.dev || !after.isFile()) {
-          closeFdQuiet(lockFd);
           return undefined;
         }
         const bytes = fs.readFileSync(fd);
         const owner = parseTxLockOwner(JSON.parse(bytes.toString('utf8')));
         if (!owner) {
-          closeFdQuiet(lockFd);
           return undefined;
         }
-        // Retain lockFd only if caller needs it; close for simple reads.
-        const result = {
+        return {
           owner,
           ownerIdentity: identityOf(after),
           lockIdentity,
         };
-        closeFdQuiet(lockFd);
-        lockFd = undefined;
-        return result;
       } finally {
         closeFdQuiet(fd);
       }
     } catch {
-      closeFdQuiet(lockFd);
       return undefined;
     }
   }
@@ -2501,10 +2367,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     lockDirPath: string,
     name: typeof TX_STEAL_INTENT_NAME | typeof TX_RELEASE_INTENT_NAME
   ): { raw: Buffer; identity: FileIdentity } | undefined {
-    let lockFd: number | undefined;
     try {
-      lockFd = openLockDirFd(lockDirPath);
-      const intentPath = path.join(procFdBase(lockFd), name);
+      const intentPath = path.join(lockDirPath, name);
       if (pathEntryKind(intentPath) !== 'regular') return undefined;
       const before = fs.lstatSync(intentPath);
       const v = validatePrivateEntryStats(before, 'file');
@@ -2520,8 +2384,6 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       }
     } catch {
       return undefined;
-    } finally {
-      closeFdQuiet(lockFd);
     }
   }
 
@@ -2530,10 +2392,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
    * Never follows symlinks; never recursive.
    */
   function unlinkNamedInDir(lockDirPath: string, name: string, expected?: FileIdentity): boolean {
-    let lockFd: number | undefined;
     try {
-      lockFd = openLockDirFd(lockDirPath);
-      const child = path.join(procFdBase(lockFd), name);
+      const child = path.join(lockDirPath, name);
       if (pathEntryKind(child) === 'absent') return true;
       if (pathEntryKind(child) !== 'regular') return false;
       const st = fs.lstatSync(child);
@@ -2541,12 +2401,10 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       if (!v.ok) return false;
       if (expected && !sameIdentity(expected, identityOf(st))) return false;
       fs.unlinkSync(child);
-      fsyncFdStrict(lockFd);
+      fsyncRunDir(lockDirPath);
       return true;
     } catch {
       return false;
-    } finally {
-      closeFdQuiet(lockFd);
     }
   }
 
@@ -2558,7 +2416,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     sidePath: string,
     expected?: { token?: string; lockIdentity?: FileIdentity }
   ): { ok: true } | { ok: false; reason: string } {
-    let lockFd: number | undefined;
+    const lockDirPath = sidePath;
     try {
       const lockSt = fs.lstatSync(sidePath);
       if (!lockSt.isDirectory() || lockSt.isSymbolicLink()) {
@@ -2569,12 +2427,12 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       if (expected?.lockIdentity && !sameIdentity(expected.lockIdentity, identityOf(lockSt))) {
         return { ok: false, reason: 'lock identity mismatch' };
       }
-      lockFd = openLockDirFd(sidePath);
-      const fdSt = fs.fstatSync(lockFd);
-      if (!sameIdentity(identityOf(lockSt), identityOf(fdSt))) {
+      // Pathname re-lstat for cooperative replacement detection (no directory-fd).
+      const lockSt2 = fs.lstatSync(sidePath);
+      if (!sameIdentity(identityOf(lockSt), identityOf(lockSt2)) || !lockSt2.isDirectory()) {
         return { ok: false, reason: 'lock dir replaced during open' };
       }
-      const names = fs.readdirSync(procFdBase(lockFd));
+      const names = fs.readdirSync(lockDirPath);
       // Only allow known private basenames inside a side directory.
       const allowed = new Set([
         TX_LOCK_OWNER_NAME,
@@ -2593,7 +2451,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         ) {
           // Locally generated intent temp files (orphaned only — winner is removed)
           try {
-            const child = path.join(procFdBase(lockFd), name);
+            const child = path.join(lockDirPath, name);
             if (pathEntryKind(child) === 'regular') {
               fs.unlinkSync(child);
             }
@@ -2608,7 +2466,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         }
       }
       // Verify owner if present and token expected.
-      const ownerPath = path.join(procFdBase(lockFd), TX_LOCK_OWNER_NAME);
+      const ownerPath = path.join(lockDirPath, TX_LOCK_OWNER_NAME);
       if (pathEntryKind(ownerPath) === 'regular') {
         const before = fs.lstatSync(ownerPath);
         const v = validatePrivateEntryStats(before, 'file');
@@ -2636,8 +2494,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         fs.unlinkSync(ownerPath);
       }
       // Unlink only regular private files we recognize; never recurse into subdirs.
-      for (const name of fs.readdirSync(procFdBase(lockFd))) {
-        const child = path.join(procFdBase(lockFd), name);
+      for (const name of fs.readdirSync(lockDirPath)) {
+        const child = path.join(lockDirPath, name);
         const kind = pathEntryKind(child);
         if (kind === 'regular') {
           const st = fs.lstatSync(child);
@@ -2648,9 +2506,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           return { ok: false, reason: `non-file entry ${name}` };
         }
       }
-      fsyncFdStrict(lockFd);
-      closeFdQuiet(lockFd);
-      lockFd = undefined;
+      fsyncRunDir(sidePath);
       // Final rmdir of empty side directory by identity.
       const finalSt = fs.lstatSync(sidePath);
       if (!sameIdentity(identityOf(lockSt), identityOf(finalSt))) {
@@ -2660,15 +2516,9 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       return { ok: true };
     } catch (err) {
       return { ok: false, reason: messageOf(err) };
-    } finally {
-      closeFdQuiet(lockFd);
     }
   }
 
-  /**
-   * Remove only the current candidate built by this process (held path + identity).
-   * No prefix sweeps; no recursive deletion of unknown trees.
-   */
   function removeOwnCandidate(
     candidatePath: string,
     lockIdentity: FileIdentity,
@@ -2688,10 +2538,10 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
    * directory inode, uid, mode are fully verified AND owner is dead or token-matched.
    * Unknown/unsafe prefixed entries are preserved and cause no recursive cleanup.
    */
-  function collectSafeLockLeftovers(session: RunDirSession, _runId: string): void {
+  function collectSafeLockLeftovers(session: RunDirHandle, _runId: string): void {
     let names: string[];
     try {
-      names = fs.readdirSync(procFdBase(session.dirFd));
+      names = fs.readdirSync(session.publicDir);
     } catch {
       return;
     }
@@ -2705,7 +2555,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       if (name.includes('/') || name.includes('\\') || name.includes('\0') || name.includes('..')) {
         continue;
       }
-      const sidePath = childViaDirFd(session.dirFd, name);
+      const sidePath = childInDir(session.publicDir, name);
       // Symlink candidate/tombstone: never follow; leave evidence.
       if (pathEntryKind(sidePath) === 'symlink') {
         // Bounded failure only if this blocks acquisition of fixed lock — ignore.
@@ -2737,7 +2587,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           lockIdentity: inspected.lockIdentity,
         });
         try {
-          fsyncDirFdStrict(session.dirFd);
+          fsyncRunDir(session.publicDir);
         } catch {
           /* leave for next attempt */
         }
@@ -2753,92 +2603,85 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
    * Never uses rename onto an existing fixed intent name.
    */
   function writeExclusiveInLockDir(lockDirPath: string, name: string, data: Buffer): FileIdentity {
-    let lockFd: number | undefined;
+    const dest = path.join(lockDirPath, name);
+    if (pathEntryKind(dest) !== 'absent') {
+      throw {
+        code: 'run_busy',
+        message: `lock intent already present: ${name}`,
+      } satisfies RunStoreError;
+    }
+    // Locally generated random temp only — never from a read token.
+    const tmpName = `.${name}.${randomUUID()}.tmp`;
+    if (tmpName.includes('/') || tmpName.includes('..')) {
+      throw {
+        code: 'run_store_error',
+        message: 'invalid intent temp name',
+      } satisfies RunStoreError;
+    }
+    const tmp = path.join(lockDirPath, tmpName);
+    let fd: number | undefined;
     try {
-      lockFd = openLockDirFd(lockDirPath);
-      const dest = path.join(procFdBase(lockFd), name);
-      if (pathEntryKind(dest) !== 'absent') {
-        throw {
-          code: 'run_busy',
-          message: `lock intent already present: ${name}`,
-        } satisfies RunStoreError;
-      }
-      // Locally generated random temp only — never from a read token.
-      const tmpName = `.${name}.${randomUUID()}.tmp`;
-      if (tmpName.includes('/') || tmpName.includes('..')) {
-        throw {
-          code: 'run_store_error',
-          message: 'invalid intent temp name',
-        } satisfies RunStoreError;
-      }
-      const tmp = path.join(procFdBase(lockFd), tmpName);
-      let fd: number | undefined;
+      fd = fs.openSync(
+        tmp,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | noFollowFlag(),
+        FILE_MODE
+      );
       try {
-        fd = fs.openSync(
-          tmp,
-          fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | noFollowFlag(),
-          FILE_MODE
-        );
-        try {
-          fs.fchmodSync(fd, FILE_MODE);
-        } catch {
-          applyMode(tmp, FILE_MODE);
-        }
-        fs.writeFileSync(fd, data);
-        fsyncFdStrict(fd);
-        const written = identityOf(fs.fstatSync(fd));
-        fs.closeSync(fd);
-        fd = undefined;
-        const tmpStat = fs.lstatSync(tmp);
-        if (!sameIdentity(written, identityOf(tmpStat))) {
-          throw {
-            code: 'corrupt_run',
-            message: 'lock intent temp replaced',
-          } satisfies RunStoreError;
-        }
-        // Atomic no-replace publication: hard-link temp → fixed intent name.
-        try {
-          fs.linkSync(tmp, dest);
-        } catch (linkErr) {
-          const code = (linkErr as NodeJS.ErrnoException).code;
-          if (code === 'EEXIST') {
-            throw {
-              code: 'run_busy',
-              message: `lock intent already present: ${name}`,
-            } satisfies RunStoreError;
-          }
-          throw linkErr;
-        }
-        const destStat = fs.lstatSync(dest);
-        if (!sameIdentity(written, identityOf(destStat))) {
-          try {
-            fs.unlinkSync(dest);
-          } catch {
-            /* leave evidence */
-          }
-          throw {
-            code: 'corrupt_run',
-            message: 'lock intent identity mismatch after hard-link',
-          } satisfies RunStoreError;
-        }
-        // Linked intent and temp share inode; drop temp link, fsync lock dir.
-        try {
-          fs.unlinkSync(tmp);
-        } catch {
-          /* best-effort temp cleanup */
-        }
-        fsyncFdStrict(lockFd);
-        return written;
-      } finally {
-        closeFdQuiet(fd);
-        try {
-          if (pathEntryKind(tmp) !== 'absent') fs.unlinkSync(tmp);
-        } catch {
-          /* ignore */
-        }
+        fs.fchmodSync(fd, FILE_MODE);
+      } catch {
+        applyMode(tmp, FILE_MODE);
       }
+      fs.writeFileSync(fd, data);
+      fileFsyncImpl(fd);
+      const written = identityOf(fs.fstatSync(fd));
+      fs.closeSync(fd);
+      fd = undefined;
+      const tmpStat = fs.lstatSync(tmp);
+      if (!sameIdentity(written, identityOf(tmpStat))) {
+        throw {
+          code: 'corrupt_run',
+          message: 'lock intent temp replaced',
+        } satisfies RunStoreError;
+      }
+      // Atomic no-replace publication: hard-link temp → fixed intent name.
+      try {
+        fs.linkSync(tmp, dest);
+      } catch (linkErr) {
+        if (isNoReplaceContentionError(linkErr, () => pathEntryKind(dest) !== 'absent')) {
+          throw {
+            code: 'run_busy',
+            message: `lock intent already present: ${name}`,
+          } satisfies RunStoreError;
+        }
+        throw linkErr;
+      }
+      const destStat = fs.lstatSync(dest);
+      if (!sameIdentity(written, identityOf(destStat))) {
+        try {
+          fs.unlinkSync(dest);
+        } catch {
+          /* leave evidence */
+        }
+        throw {
+          code: 'corrupt_run',
+          message: 'lock intent identity mismatch after hard-link',
+        } satisfies RunStoreError;
+      }
+      // Linked intent and temp share inode; drop temp link, fsync lock dir when supported.
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        /* best-effort temp cleanup */
+      }
+      fsyncRunDir(lockDirPath);
+      return written;
     } finally {
-      closeFdQuiet(lockFd);
+      closeFdQuiet(fd);
+      try {
+        if (pathEntryKind(tmp) !== 'absent') fs.unlinkSync(tmp);
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -2848,49 +2691,37 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     tmpName?: string
   ): { tmpName: string; identity: FileIdentity } {
     assertStrictLockToken(owner.token, 'owner');
-    let lockFd: number | undefined;
+    const name =
+      tmpName ?? `${TX_OWNER_TMP_PREFIX}${randomUUID().replace(/-/g, '').slice(0, 16)}.tmp`;
+    if (!isValidOwnerTempName(name)) {
+      throw {
+        code: 'run_store_error',
+        message: 'invalid owner temp name',
+      } satisfies RunStoreError;
+    }
+    const tmp = path.join(lockDirPath, name);
+    const payload = Buffer.from(`${JSON.stringify(owner)}\n`);
+    let fd: number | undefined;
     try {
-      lockFd = openLockDirFd(lockDirPath);
-      const name =
-        tmpName ?? `${TX_OWNER_TMP_PREFIX}${randomUUID().replace(/-/g, '').slice(0, 16)}.tmp`;
-      if (
-        !name.startsWith(TX_OWNER_TMP_PREFIX) ||
-        name.includes('/') ||
-        name.includes('\\') ||
-        name.includes('\0') ||
-        name.includes('..')
-      ) {
-        throw {
-          code: 'run_store_error',
-          message: 'invalid owner temp name',
-        } satisfies RunStoreError;
-      }
-      const tmp = path.join(procFdBase(lockFd), name);
-      const payload = Buffer.from(`${JSON.stringify(owner)}\n`);
-      let fd: number | undefined;
+      fd = fs.openSync(
+        tmp,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | noFollowFlag(),
+        FILE_MODE
+      );
       try {
-        fd = fs.openSync(
-          tmp,
-          fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | noFollowFlag(),
-          FILE_MODE
-        );
-        try {
-          fs.fchmodSync(fd, FILE_MODE);
-        } catch {
-          applyMode(tmp, FILE_MODE);
-        }
-        fs.writeFileSync(fd, payload);
-        fsyncFdStrict(fd);
-        const written = identityOf(fs.fstatSync(fd));
-        fs.closeSync(fd);
-        fd = undefined;
-        fsyncFdStrict(lockFd);
-        return { tmpName: name, identity: written };
-      } finally {
-        closeFdQuiet(fd);
+        fs.fchmodSync(fd, FILE_MODE);
+      } catch {
+        applyMode(tmp, FILE_MODE);
       }
+      fs.writeFileSync(fd, payload);
+      fileFsyncImpl(fd);
+      const written = identityOf(fs.fstatSync(fd));
+      fs.closeSync(fd);
+      fd = undefined;
+      fsyncRunDir(lockDirPath);
+      return { tmpName: name, identity: written };
     } finally {
-      closeFdQuiet(lockFd);
+      closeFdQuiet(fd);
     }
   }
 
@@ -2900,7 +2731,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
    * All combinations restore the old owner and remove intent idempotently.
    */
   function recoverDeadStealIntent(
-    session: RunDirSession,
+    session: RunDirHandle,
     lockPath: string,
     intent: StealIntent,
     intentIdentity: FileIdentity
@@ -2914,15 +2745,14 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     const lockId: FileIdentity = { dev: intent.lockDev, ino: intent.lockIno };
     const ownerId: FileIdentity = { dev: intent.ownerDev, ino: intent.ownerIno };
     const tempId: FileIdentity = { dev: intent.newOwnerTempDev, ino: intent.newOwnerTempIno };
-    let lockFd: number | undefined;
+    const lockDirPath = lockPath;
     try {
-      lockFd = openLockDirFd(lockPath);
-      const lockSt = fs.fstatSync(lockFd);
-      if (!sameIdentity(lockId, identityOf(lockSt))) return 'busy';
+      const lockSt = fs.lstatSync(lockPath);
+      if (!lockSt.isDirectory() || !sameIdentity(lockId, identityOf(lockSt))) return 'busy';
 
-      const ownerPath = path.join(procFdBase(lockFd), TX_LOCK_OWNER_NAME);
-      const previousPath = path.join(procFdBase(lockFd), TX_OWNER_PREVIOUS_NAME);
-      const tempPath = path.join(procFdBase(lockFd), intent.newOwnerTempName);
+      const ownerPath = path.join(lockDirPath, TX_LOCK_OWNER_NAME);
+      const previousPath = path.join(lockDirPath, TX_OWNER_PREVIOUS_NAME);
+      const tempPath = path.join(lockDirPath, intent.newOwnerTempName);
       const ownerKind = pathEntryKind(ownerPath);
       const previousKind = pathEntryKind(previousPath);
       const tempKind = pathEntryKind(tempPath);
@@ -2935,7 +2765,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         if (!sameIdentity(tempId, identityOf(tempSt))) return 'busy';
         unlinkNamedInDir(lockPath, intent.newOwnerTempName, tempId);
         unlinkNamedInDir(lockPath, TX_STEAL_INTENT_NAME, intentIdentity);
-        fsyncDirFdStrict(session.dirFd);
+        fsyncRunDir(session.publicDir);
         return 'retry';
       }
 
@@ -2949,9 +2779,9 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         fs.renameSync(previousPath, ownerPath);
         const restored = fs.lstatSync(ownerPath);
         if (!sameIdentity(ownerId, identityOf(restored))) return 'busy';
-        fsyncFdStrict(lockFd);
+        fsyncRunDir(lockPath);
         unlinkNamedInDir(lockPath, TX_STEAL_INTENT_NAME, intentIdentity);
-        fsyncDirFdStrict(session.dirFd);
+        fsyncRunDir(session.publicDir);
         return 'retry';
       }
 
@@ -2968,9 +2798,9 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         fs.renameSync(previousPath, ownerPath);
         const restored = fs.lstatSync(ownerPath);
         if (!sameIdentity(ownerId, identityOf(restored))) return 'busy';
-        fsyncFdStrict(lockFd);
+        fsyncRunDir(lockPath);
         unlinkNamedInDir(lockPath, TX_STEAL_INTENT_NAME, intentIdentity);
-        fsyncDirFdStrict(session.dirFd);
+        fsyncRunDir(session.publicDir);
         return 'retry';
       }
 
@@ -2979,7 +2809,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         const ownerSt = fs.lstatSync(ownerPath);
         if (!sameIdentity(ownerId, identityOf(ownerSt))) return 'busy';
         unlinkNamedInDir(lockPath, TX_STEAL_INTENT_NAME, intentIdentity);
-        fsyncDirFdStrict(session.dirFd);
+        fsyncRunDir(session.publicDir);
         return 'retry';
       }
 
@@ -2987,8 +2817,6 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       return 'busy';
     } catch {
       return 'busy';
-    } finally {
-      closeFdQuiet(lockFd);
     }
   }
 
@@ -3001,12 +2829,12 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
    * Intent bytes never change after publication (no in-place phase updates).
    */
   function tryStealStaleLock(
-    session: RunDirSession,
+    session: RunDirHandle,
     contender: TxLockOwner,
     _runId: string
   ): 'stolen' | 'busy' | 'retry' {
     assertStrictLockToken(contender.token, 'contender');
-    const lockPath = childViaDirFd(session.dirFd, TX_LOCK_DIR_NAME);
+    const lockPath = childInDir(session.publicDir, TX_LOCK_DIR_NAME);
     if (pathEntryKind(lockPath) !== 'directory') return 'retry';
 
     // Foreign or dead steal intent present.
@@ -3070,14 +2898,14 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
             }
             // Tombstone name uses only the validated release token (exact equality).
             const tombName = tombstoneNameForToken(rel.token);
-            const tombPath = childViaDirFd(session.dirFd, tombName);
+            const tombPath = childInDir(session.publicDir, tombName);
             fs.renameSync(lockPath, tombPath);
-            fsyncDirFdStrict(session.dirFd);
+            fsyncRunDir(session.publicDir);
             removeVerifiedLockSideDir(tombPath, {
               token: rel.token,
               lockIdentity: inspected.lockIdentity,
             });
-            fsyncDirFdStrict(session.dirFd);
+            fsyncRunDir(session.publicDir);
             return 'retry';
           } catch {
             return 'busy';
@@ -3099,7 +2927,14 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     if (alive !== false) return 'busy';
 
     // 1. Create new-owner temp FIRST, before publishing immutable intent.
-    const newOwnerTempName = `${TX_OWNER_TMP_PREFIX}${randomUUID().replace(/-/g, '').slice(0, 16)}.tmp`;
+    const tempToken = randomUUID().replace(/-/g, '').slice(0, 16);
+    const newOwnerTempName = `${TX_OWNER_TMP_PREFIX}${tempToken}.tmp`;
+    if (!isValidOwnerTempName(newOwnerTempName)) {
+      throw {
+        code: 'run_store_error',
+        message: 'failed to generate valid owner temp name',
+      } satisfies RunStoreError;
+    }
     let tmpIdentity: FileIdentity;
     let tmpDigest: string;
     let tmpBytes: number;
@@ -3187,16 +3022,15 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     }
 
     // 4. Transfer: rename old owner → owner.previous, new temp → owner.json. Intent unchanged.
-    let lockFd: number | undefined;
     try {
-      lockFd = openLockDirFd(lockPath);
-      const lockSt = fs.fstatSync(lockFd);
-      if (!sameIdentity(inspected.lockIdentity, identityOf(lockSt))) {
+      const lockDirPath = lockPath;
+      const lockSt = fs.lstatSync(lockPath);
+      if (!lockSt.isDirectory() || !sameIdentity(inspected.lockIdentity, identityOf(lockSt))) {
         throw new Error('lock dir identity changed');
       }
-      const ownerPath = path.join(procFdBase(lockFd), TX_LOCK_OWNER_NAME);
-      const previousPath = path.join(procFdBase(lockFd), TX_OWNER_PREVIOUS_NAME);
-      const tmpPath = path.join(procFdBase(lockFd), newOwnerTempName);
+      const ownerPath = path.join(lockDirPath, TX_LOCK_OWNER_NAME);
+      const previousPath = path.join(lockDirPath, TX_OWNER_PREVIOUS_NAME);
+      const tmpPath = path.join(lockDirPath, newOwnerTempName);
       const ownerSt = fs.lstatSync(ownerPath);
       if (!sameIdentity(inspected.ownerIdentity, identityOf(ownerSt))) {
         throw new Error('owner identity changed');
@@ -3214,12 +3048,12 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       if (!sameIdentity(tmpIdentity, identityOf(newOwnerSt))) {
         throw new Error('new owner identity mismatch');
       }
-      fsyncFdStrict(lockFd);
+      fsyncRunDir(lockPath);
 
       // 5. Drop intent + previous entry with exact identity checks. Transfer complete.
       unlinkNamedInDir(lockPath, TX_OWNER_PREVIOUS_NAME, inspected.ownerIdentity);
       unlinkNamedInDir(lockPath, TX_STEAL_INTENT_NAME, intentIdentity);
-      fsyncDirFdStrict(session.dirFd);
+      fsyncRunDir(session.publicDir);
       return 'stolen';
     } catch {
       // Leave immutable intent + file evidence for dead-intent recovery; drop our temp if still named.
@@ -3229,17 +3063,15 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         /* ignore */
       }
       return 'busy';
-    } finally {
-      closeFdQuiet(lockFd);
     }
   }
 
   function buildCompleteLockCandidate(
-    session: RunDirSession,
+    session: RunDirHandle,
     owner: TxLockOwner
   ): { candidatePath: string; lockIdentity: FileIdentity } {
     const candName = `${TX_LOCK_DIR_NAME}.cand.${instanceId}.${randomUUID()}`;
-    const candidatePath = childViaDirFd(session.dirFd, candName);
+    const candidatePath = childInDir(session.publicDir, candName);
     fs.mkdirSync(candidatePath, { mode: DIR_MODE });
     applyMode(candidatePath, DIR_MODE);
     const candStat = fs.lstatSync(candidatePath);
@@ -3254,7 +3086,16 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     const lockIdentity = identityOf(candStat);
     const ownerPath = path.join(candidatePath, TX_LOCK_OWNER_NAME);
     const payload = Buffer.from(`${JSON.stringify(owner)}\n`);
-    const tmp = path.join(candidatePath, `${TX_OWNER_TMP_PREFIX}${randomUUID()}.tmp`);
+    const candTempToken = randomUUID().replace(/-/g, '').slice(0, 16);
+    const candTempName = `${TX_OWNER_TMP_PREFIX}${candTempToken}.tmp`;
+    if (!isValidOwnerTempName(candTempName)) {
+      removeOwnCandidate(candidatePath, lockIdentity, owner.token);
+      throw {
+        code: 'run_store_error',
+        message: 'failed to generate valid owner temp name',
+      } satisfies RunStoreError;
+    }
+    const tmp = path.join(candidatePath, candTempName);
     let fd: number | undefined;
     try {
       fd = fs.openSync(
@@ -3268,7 +3109,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         applyMode(tmp, FILE_MODE);
       }
       fs.writeFileSync(fd, payload);
-      fsyncFdStrict(fd);
+      fileFsyncImpl(fd);
       const written = identityOf(fs.fstatSync(fd));
       fs.closeSync(fd);
       fd = undefined;
@@ -3288,15 +3129,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         } satisfies RunStoreError;
       }
       fsyncPathStrict(ownerPath);
-      const candFd = fs.openSync(
-        candidatePath,
-        fs.constants.O_RDONLY | directoryFlag() | noFollowFlag()
-      );
-      try {
-        fsyncFdStrict(candFd);
-      } finally {
-        closeFdQuiet(candFd);
-      }
+      fsyncRunDir(candidatePath);
       return { candidatePath, lockIdentity };
     } catch (err) {
       closeFdQuiet(fd);
@@ -3317,13 +3150,13 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       timestamp: now(),
     };
 
-    const session = openRunDirSession(publicDir, runId);
+    const session = openRunDirHandle(publicDir, runId);
     try {
       collectSafeLockLeftovers(session, runId);
 
       for (;;) {
-        revalidatePublicRunDir(session.publicDir, session.identity, runId);
-        const lockPath = childViaDirFd(session.dirFd, TX_LOCK_DIR_NAME);
+        revalidatePublicRunDir(session.publicDir, undefined);
+        const lockPath = childInDir(session.publicDir, TX_LOCK_DIR_NAME);
         const lockKind = pathEntryKind(lockPath);
         if (lockKind === 'symlink' || lockKind === 'regular' || lockKind === 'other') {
           throw {
@@ -3344,8 +3177,9 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
               fs.renameSync(candidatePath, lockPath);
               candidatePath = undefined;
             } catch (renameErr) {
-              const code = (renameErr as NodeJS.ErrnoException).code;
-              if (code === 'EEXIST' || code === 'ENOTEMPTY') {
+              if (
+                isNoReplaceContentionError(renameErr, () => pathEntryKind(lockPath) === 'directory')
+              ) {
                 if (candidatePath && candIdentity) {
                   removeOwnCandidate(candidatePath, candIdentity, token);
                 }
@@ -3357,8 +3191,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
             if (candidatePath === undefined && pathEntryKind(lockPath) === 'directory') {
               const published = readLockOwnerVia(lockPath);
               if (published && published.owner.token === token) {
-                fsyncDirFdStrict(session.dirFd);
-                revalidatePublicRunDir(session.publicDir, session.identity, runId);
+                fsyncRunDir(session.publicDir);
+                revalidatePublicRunDir(session.publicDir, undefined);
                 return {
                   runId,
                   dir: publicDir,
@@ -3375,7 +3209,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
             }
             const code = (err as NodeJS.ErrnoException).code;
             if (code !== 'EEXIST' && code !== 'ENOTEMPTY') {
-              if (err && typeof err === 'object' && 'code' in err && 'message' in err) throw err;
+              if (isRunStoreError(err)) throw err;
               throw {
                 code: 'run_store_error',
                 runId,
@@ -3390,8 +3224,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
             // Confirm we own the fixed lock after in-place transfer.
             const published = readLockOwnerVia(lockPath);
             if (published && published.owner.token === token) {
-              fsyncDirFdStrict(session.dirFd);
-              revalidatePublicRunDir(session.publicDir, session.identity, runId);
+              fsyncRunDir(session.publicDir);
+              revalidatePublicRunDir(session.publicDir, undefined);
               return {
                 runId,
                 dir: publicDir,
@@ -3416,7 +3250,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         sleepMs(Math.min(txLockRetryMs, Math.max(1, remaining)));
       }
     } catch (err) {
-      closeRunDirSession(session);
+      closeRunDirHandle(session);
       throw err;
     }
   }
@@ -3430,8 +3264,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   function releaseTxLock(held: HeldTxLock): void {
     let releaseError: unknown;
     try {
-      revalidatePublicRunDir(held.session.publicDir, held.session.identity, held.runId);
-      const lockPath = childViaDirFd(held.session.dirFd, TX_LOCK_DIR_NAME);
+      revalidatePublicRunDir(held.session.publicDir, undefined);
+      const lockPath = childInDir(held.session.publicDir, TX_LOCK_DIR_NAME);
       const current = readLockOwnerVia(lockPath);
       if (
         !current ||
@@ -3494,7 +3328,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         if (!releaseError) {
           // Tombstone basename requires exact equality with held/release-intent token.
           const tombName = tombstoneNameForToken(held.token);
-          const tombPath = childViaDirFd(held.session.dirFd, tombName);
+          const tombPath = childInDir(held.session.publicDir, tombName);
           try {
             fs.renameSync(lockPath, tombPath);
           } catch (err) {
@@ -3502,7 +3336,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           }
           if (!releaseError) {
             try {
-              fsyncDirFdStrict(held.session.dirFd);
+              fsyncRunDir(held.session.publicDir);
             } catch (err) {
               releaseError = err;
             }
@@ -3524,14 +3358,14 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
               } satisfies RunStoreError);
           }
           try {
-            fsyncDirFdStrict(held.session.dirFd);
+            fsyncRunDir(held.session.publicDir);
           } catch (err) {
             releaseError = releaseError ?? err;
           }
 
           // Final public path check: replacement after release must surface.
           try {
-            revalidatePublicRunDir(held.session.publicDir, held.session.identity, held.runId);
+            revalidatePublicRunDir(held.session.publicDir, undefined);
           } catch (err) {
             releaseError = releaseError ?? err;
           }
@@ -3540,15 +3374,10 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     } catch (err) {
       releaseError = releaseError ?? err;
     } finally {
-      closeRunDirSession(held.session);
+      closeRunDirHandle(held.session);
     }
     if (releaseError) {
-      if (
-        releaseError &&
-        typeof releaseError === 'object' &&
-        'code' in releaseError &&
-        'message' in releaseError
-      ) {
+      if (isRunStoreError(releaseError)) {
         throw releaseError;
       }
       throw {
@@ -3579,7 +3408,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       // Deterministic combination: surface operation error with release context.
       const fnMsg = messageOf(fnError);
       const relMsg = messageOf(releaseError);
-      if (fnError && typeof fnError === 'object' && 'code' in fnError && 'message' in fnError) {
+      if (isRunStoreError(fnError)) {
         const e = fnError as RunStoreError;
         throw {
           ...e,
@@ -3614,26 +3443,26 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
    */
   function recoverStrictTransactionLocked(
     runId: string,
-    session?: RunDirSession
+    session?: RunDirHandle
   ): { ok: true } | { ok: false; error: RunStoreError } {
     const dir = runDirOf(runId);
     if (pathEntryKind(dir) === 'absent') return { ok: true };
     if (session) {
-      revalidatePublicRunDir(session.publicDir, session.identity, runId);
+      revalidatePublicRunDir(session.publicDir, undefined);
     }
-    const target = session ? childViaDirFd(session.dirFd, 'run.json') : path.join(dir, 'run.json');
+    const target = session ? childInDir(session.publicDir, 'run.json') : path.join(dir, 'run.json');
     const rollback = session
-      ? childViaDirFd(session.dirFd, TX_ROLLBACK_NAME)
+      ? childInDir(session.publicDir, TX_ROLLBACK_NAME)
       : path.join(dir, TX_ROLLBACK_NAME);
     const marker = session
-      ? childViaDirFd(session.dirFd, TX_MARKER_NAME)
+      ? childInDir(session.publicDir, TX_MARKER_NAME)
       : path.join(dir, TX_MARKER_NAME);
     const skipBound = !!session;
     const writeAtomic = (dest: string, base: string, data: Buffer) =>
-      writePrivateBytesAtomic(dest, dir, base, data, fsyncDirStrict, session);
+      writePrivateBytesAtomic(dest, dir, base, data, fsyncRunDir, session);
     const syncDir = () => {
-      if (session) fsyncDirFdStrict(session.dirFd);
-      else fsyncDirStrict(dir);
+      if (session) fsyncRunDir(session.publicDir);
+      else fsyncRunDir(dir);
     };
 
     const markerKind = pathEntryKind(marker);
@@ -3976,6 +3805,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   }
 
   function runSerial<T>(runId: string, task: QueuedTask<T>): Promise<T> {
+    assertValidRunId(runId);
     const q = getQueue(runId);
     const result = q.tail.then(task, task);
     q.tail = result.then(
@@ -3986,6 +3816,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   }
 
   function runDirOf(runId: string): string {
+    assertValidRunId(runId);
     return path.join(rootDir, runId);
   }
 
@@ -4979,14 +4810,13 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   ): { ok: true; loaded: LoadedRun } | { ok: false; error: RunStoreError } {
     const dir = runDirOf(runId);
 
-    // Fast path: no transaction artifacts → open run dir component-by-component and
-    // read run.json through retained dir fd (O_NOFOLLOW authority read).
+    // Fast path: no transaction artifacts → pathname authority read of run.json.
     if (!hasTxArtifacts(dir)) {
       let content: string;
       try {
         content = readRunJsonViaDirComponents(runId, dir).toString('utf-8');
       } catch (err) {
-        if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+        if (isRunStoreError(err)) {
           const e = err as RunStoreError;
           if (e.code === 'corrupt_run' && String(e.message).includes('not found')) {
             return {
@@ -5025,13 +4855,13 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       return withTxLock(runId, (held) => {
         const recovered = recoverStrictTransactionLocked(runId, held.session);
         if (!recovered.ok) return recovered;
-        revalidatePublicRunDir(held.session.publicDir, held.session.identity, runId);
-        const lockedFile = childViaDirFd(held.session.dirFd, 'run.json');
+        revalidatePublicRunDir(held.session.publicDir, undefined, runId);
+        const lockedFile = childInDir(held.session.publicDir, 'run.json');
         let content: string;
         try {
           content = readRunJsonNoFollow(lockedFile, dir, { skipPathBound: true }).toString('utf-8');
         } catch (err) {
-          if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+          if (isRunStoreError(err)) {
             const e = err as RunStoreError;
             if (e.code === 'corrupt_run' && String(e.message).includes('not found')) {
               return {
@@ -5060,7 +4890,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         return parseRunJsonBytes(runId, dir, content);
       });
     } catch (err) {
-      if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+      if (isRunStoreError(err)) {
         return { ok: false, error: err as RunStoreError };
       }
       return {
@@ -5082,14 +4912,14 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
   ): void {
     const dir = runDirOf(runId);
     const session = held?.session;
-    if (session) revalidatePublicRunDir(session.publicDir, session.identity, runId);
-    const target = session ? childViaDirFd(session.dirFd, 'run.json') : path.join(dir, 'run.json');
+    if (session) revalidatePublicRunDir(session.publicDir, undefined);
+    const target = session ? childInDir(session.publicDir, 'run.json') : path.join(dir, 'run.json');
     const tmpName = `.run.json.${instanceId}.${randomUUID()}.tmp`;
-    const tmp = session ? childViaDirFd(session.dirFd, tmpName) : path.join(dir, tmpName);
+    const tmp = session ? childInDir(session.publicDir, tmpName) : path.join(dir, tmpName);
     const dataBuf = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
     const targetExisted = pathEntryKind(target) !== 'absent';
     const rollbackPath = session
-      ? childViaDirFd(session.dirFd, TX_ROLLBACK_NAME)
+      ? childInDir(session.publicDir, TX_ROLLBACK_NAME)
       : path.join(dir, TX_ROLLBACK_NAME);
     let previousBytes: Buffer | undefined;
     let rollbackPublished = false;
@@ -5155,10 +4985,10 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
             message: `strict run.json update failed: ${causeMessage}; rollback bytes mismatch; recovery files preserved`,
           } satisfies RunStoreError;
         }
-        writePrivateBytesAtomic(target, dir, 'run.json', rb, fsyncDirStrict, session);
+        writePrivateBytesAtomic(target, dir, 'run.json', rb, fsyncRunDir, session);
         fsyncPathStrict(target);
-        if (session) fsyncDirFdStrict(session.dirFd);
-        else fsyncDirStrict(dir);
+        if (session) fsyncRunDir(session.publicDir);
+        else fsyncRunDir(dir);
         // Restore succeeded — drop transaction leftovers (prepared order).
         const cleaned = cleanupTxPhase(dir, 'prepared', session);
         if (!cleaned.ok) {
@@ -5212,7 +5042,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           dir,
           TX_ROLLBACK_NAME,
           previousBytes,
-          fsyncDirStrict,
+          fsyncRunDir,
           session
         );
         rollbackPublished = true;
@@ -5221,7 +5051,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         const preparedPub = writeMarkerStrict(
           dir,
           { ...markerBase, phase: 'prepared' },
-          fsyncDirStrict,
+          fsyncRunDir,
           session
         );
         if (!preparedPub.renameOccurred || !preparedPub.dirSyncCompleted) {
@@ -5242,7 +5072,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         fireStrictTxHook('after_prepared_marker');
       }
 
-      // Staging file: O_CREAT|O_EXCL|O_NOFOLLOW + identity-checked rename.
+      // Staging file: O_CREAT|O_EXCL|pathname + identity-checked rename.
       fd = fs.openSync(
         tmp,
         fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | noFollowFlag(),
@@ -5254,8 +5084,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         applyMode(tmp, FILE_MODE);
       }
       fs.writeFileSync(fd, dataBuf);
-      if (strict) fsyncFdStrict(fd);
-      else fsyncFd(fd);
+      fileFsyncImpl(fd);
       const stagingIdentity = identityOf(fs.fstatSync(fd));
       fs.closeSync(fd);
       fd = undefined;
@@ -5281,8 +5110,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
         if (preparedDurable) fireStrictTxHook('after_new_rename');
         try {
           if (session) {
-            fsyncDirFdStrict(session.dirFd);
-            revalidatePublicRunDir(session.publicDir, session.identity, runId);
+            fsyncRunDir(session.publicDir);
+            revalidatePublicRunDir(session.publicDir, undefined);
           }
           strictPostRenameDirectorySync(dir);
         } catch (syncErr) {
@@ -5340,7 +5169,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
               newSha256: sha256Hex(dataBuf),
               newBytes: dataBuf.byteLength,
             };
-            const reprepPub = writeMarkerStrict(dir, reprepare, fsyncDirStrict, session);
+            const reprepPub = writeMarkerStrict(dir, reprepare, fsyncRunDir, session);
             if (reprepPub.renameOccurred && reprepPub.dirSyncCompleted) {
               // Prepared durable again — safe to restore old authority.
               restoreFromRollback(
@@ -5362,7 +5191,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           // Verify committed marker and rollback identities before any cleanup hooks
           // can replace them. Pass exact generation to cleanup so replacement is detected.
           const markerPathForCleanup = session
-            ? childViaDirFd(session.dirFd, TX_MARKER_NAME)
+            ? childInDir(session.publicDir, TX_MARKER_NAME)
             : path.join(dir, TX_MARKER_NAME);
           const committedMarkerVerified: VerifiedPrivateFile | undefined =
             pathEntryKind(markerPathForCleanup) === 'regular'
@@ -5448,8 +5277,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           }
         }
       } else {
-        if (session) fsyncDirFdStrict(session.dirFd);
-        else fsyncDir(dir);
+        if (session) fsyncRunDir(session.publicDir);
+        else fsyncRunDir(dir);
       }
     } catch (err) {
       if (isBypassCleanupError(err)) throw err;
@@ -5501,18 +5330,31 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
 
   function appendEventLine(runId: string, event: RunLifecycleEvent, strict = false): Promise<void> {
     return runSerial(runId, async () => {
+      if (!isRunIdValid(runId)) {
+        throw {
+          code: 'run_not_found',
+          runId,
+          message: 'invalid run id',
+        } satisfies RunStoreError;
+      }
+      const dir = runDirOf(runId);
+      if (!fs.existsSync(dir)) {
+        throw {
+          code: 'run_not_found',
+          runId,
+          message: 'run directory missing',
+        } satisfies RunStoreError;
+      }
       const file = eventsPath(runId);
-      mkdirPrivate(runDirOf(runId));
       const line = `${JSON.stringify(event)}\n`;
       let fd: number | undefined;
       try {
         fd = fs.openSync(file, 'a', FILE_MODE);
         fs.writeFileSync(fd, line);
-        if (strict) fsyncFdStrict(fd);
-        else fsyncFd(fd);
+        fileFsyncImpl(fd);
         fs.closeSync(fd);
         fd = undefined;
-        if (strict) fsyncDirStrict(runDirOf(runId));
+        if (strict) fsyncRunDir(dir);
       } finally {
         if (fd !== undefined) {
           try {
@@ -5674,14 +5516,22 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       try {
         fd = fs.openSync(stagedPath, 'w', FILE_MODE);
         fs.writeFileSync(fd, payload);
-        fsyncFd(fd);
+        fileFsyncImpl(fd);
         fs.closeSync(fd);
         fd = undefined;
         try {
           fs.linkSync(stagedPath, terminalPath);
         } catch (err) {
-          const code = (err as NodeJS.ErrnoException).code;
-          if (code === 'EEXIST') {
+          if (
+            isNoReplaceContentionError(err, () => {
+              try {
+                fs.lstatSync(terminalPath);
+                return true;
+              } catch {
+                return false;
+              }
+            })
+          ) {
             const winner = readTerminal(ticket, runId);
             if ('ok' in winner && !winner.ok && !('missing' in winner)) {
               throw winner.error;
@@ -5697,7 +5547,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
             throw err;
           }
         }
-        fsyncDir(ticketDirectory);
+        fsyncRunDir(ticketDirectory);
       } finally {
         if (fd !== undefined) {
           try {
@@ -5715,6 +5565,28 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     });
   }
 
+  function cleanupStaging(stagingDir: string): void {
+    // Only remove the protocol-owned owner.json, then non-recursive rmdir. Preserve unknown entries.
+    try {
+      const ownerPath = path.join(stagingDir, 'owner.json');
+      try {
+        fs.unlinkSync(ownerPath);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+          /* leave evidence */
+        }
+      }
+      try {
+        fs.rmdirSync(stagingDir);
+      } catch {
+        /* not empty or missing — preserve foreign entries */
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   function stageOwner(
     runId: string,
     ticket: number,
@@ -5729,10 +5601,11 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     try {
       fd = fs.openSync(stagedOwnerPath, 'w', FILE_MODE);
       fs.writeFileSync(fd, data);
-      fsyncFd(fd);
+      fileFsyncImpl(fd);
       fs.closeSync(fd);
       fd = undefined;
-    } finally {
+      return { stagingDir, ticketDirectory, stagedOwnerPath };
+    } catch (err) {
       if (fd !== undefined) {
         try {
           fs.closeSync(fd);
@@ -5740,15 +5613,9 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
           /* ignore */
         }
       }
-    }
-    return { stagingDir, ticketDirectory, stagedOwnerPath };
-  }
-
-  function cleanupStaging(stagingDir: string): void {
-    try {
-      if (fs.existsSync(stagingDir)) fs.rmSync(stagingDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
+      // Exact best-effort cleanup of only this attempt's recognized staging residue.
+      cleanupStaging(stagingDir);
+      throw err;
     }
   }
 
@@ -5767,8 +5634,16 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       applyMode(ticketDirectory, DIR_MODE);
       return { ok: true };
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST' || code === 'ENOTEMPTY') {
+      if (
+        isNoReplaceContentionError(err, () => {
+          try {
+            fs.lstatSync(ticketDirectory);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+      ) {
         // A competing claimant won this ticket; retry with a higher ticket.
         return { ok: false, retry: true };
       }
@@ -5857,16 +5732,26 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     try {
       fd = fs.openSync(stagedPath, 'w', FILE_MODE);
       fs.writeFileSync(fd, payload);
-      fsyncFd(fd);
+      fileFsyncImpl(fd);
       fs.closeSync(fd);
       fd = undefined;
       try {
         fs.linkSync(stagedPath, terminalPath);
       } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'EEXIST') throw err;
+        if (
+          !isNoReplaceContentionError(err, () => {
+            try {
+              fs.lstatSync(terminalPath);
+              return true;
+            } catch {
+              return false;
+            }
+          })
+        ) {
+          throw err;
+        }
       }
-      fsyncDir(ticketDirectory);
+      fsyncRunDir(ticketDirectory);
     } finally {
       if (fd !== undefined) {
         try {
@@ -5887,15 +5772,13 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     if (pid <= 0) return false;
     if (pid === (options.pid ?? process.pid)) return true;
     try {
-      process.kill(pid, 0);
+      pidAliveKill(pid, 0);
       return true;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ESRCH' || code === 'ENOSYS' || code === 'EPERM') {
-        // EPERM means the process exists but we lack permission — treat as alive.
-        return code === 'EPERM';
-      }
-      return false;
+      // Only ESRCH proves death. EPERM/ENOSYS/unknown remain busy (alive).
+      if (code === 'ESRCH') return false;
+      return true;
     }
   }
 
@@ -5946,15 +5829,15 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       return withTxLock(runId, (held) => {
         const recovered = recoverStrictTransactionLocked(runId, held.session);
         if (!recovered.ok) throw recovered.error;
-        revalidatePublicRunDir(held.session.publicDir, held.session.identity, runId);
-        const lockedFile = childViaDirFd(held.session.dirFd, 'run.json');
+        revalidatePublicRunDir(held.session.publicDir, undefined, runId);
+        const lockedFile = childInDir(held.session.publicDir, 'run.json');
         let content: string;
         try {
           content = readRunJsonNoFollow(lockedFile, held.dir, { skipPathBound: true }).toString(
             'utf-8'
           );
         } catch (err) {
-          if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+          if (isRunStoreError(err)) {
             const e = err as RunStoreError;
             if (e.code === 'corrupt_run' && String(e.message).includes('not found')) {
               throw {
@@ -5999,15 +5882,15 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       return withTxLock(runId, (held) => {
         const recovered = recoverStrictTransactionLocked(runId, held.session);
         if (!recovered.ok) throw recovered.error;
-        revalidatePublicRunDir(held.session.publicDir, held.session.identity, runId);
-        const lockedFile = childViaDirFd(held.session.dirFd, 'run.json');
+        revalidatePublicRunDir(held.session.publicDir, undefined, runId);
+        const lockedFile = childInDir(held.session.publicDir, 'run.json');
         let content: string;
         try {
           content = readRunJsonNoFollow(lockedFile, held.dir, { skipPathBound: true }).toString(
             'utf-8'
           );
         } catch (err) {
-          if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+          if (isRunStoreError(err)) {
             const e = err as RunStoreError;
             if (e.code === 'corrupt_run' && String(e.message).includes('not found')) {
               throw {
@@ -6180,7 +6063,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
       const { stagingDir, stagedOwnerPath, owner } = writeOwnerForTicket(runId, ticket, claimId);
       const publish = publishStagedOwner(runId, ticket, stagingDir, stagedOwnerPath);
       if ('ok' in publish && publish.ok) {
-        fsyncDir(path.join(claimsDir(runId), ticketDirName(ticket)));
+        fsyncRunDir(path.join(claimsDir(runId), ticketDirName(ticket)));
         // We published a ticket. Determine if it is the lowest eligible.
         const lowest = lowestEligibleTicket(runId);
         cleanupStaging(stagingDir);
@@ -6245,6 +6128,8 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     claimId: string,
     state: 'released' | 'abandoned'
   ): Promise<void> {
+    // Validate before queue/path join; invalid IDs never touch the filesystem.
+    assertValidRunId(runId);
     // Resolve the ticket directory whose owner matches this claimId, and verify
     // the immutable owner payload belongs to *this* store instance. A foreign
     // caller must never terminate another owner's claim.
