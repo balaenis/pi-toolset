@@ -39,6 +39,22 @@ The `format` tool can also be called by the LLM when it needs to format files.
 Without `--formatter`, the extension picks a formatter by extension and PATH
 availability.
 
+## Toggle config from the TUI
+
+```sh
+/format config project
+/format config global
+```
+
+Opens a settings list for that scope's `config.json`:
+
+- Top-level flags: `enabled`, `formatOnWrite`
+- Per-formatter rows: built-ins plus any custom entries in that file
+
+Space toggles a row and writes the file immediately. Esc closes. Registration
+changes (`enabled` / `formatOnWrite`) need `pi reload` (or a restart) to take
+effect; formatter `disabled` is re-read on the next format call.
+
 ## Enable or disable format-on-write
 
 Set `formatOnWrite` to `false` to skip registering the automatic post-`write`/`edit`
@@ -48,8 +64,8 @@ hook while keeping explicit formatting available:
 { "formatOnWrite": false }
 ```
 
-Hook registration is decided at extension load. After changing this value, run
-`pi reload` (or restart Pi) so the extension re-reads config.
+Or toggle it via `/format config project` / `/format config global`. Hook
+registration is decided at extension load — reload after changing this value.
 
 ## Disable formatting for the model and auto-format
 
@@ -59,8 +75,8 @@ Hook registration is decided at extension load. After changing this value, run
 
 `enabled: false` skips registering the LLM-callable `format` tool and the
 auto-format hook, so the model never sees a format tool. The `/format` slash
-command still registers (for explicit use and future `/format config`). Reload
-the extension after changing this value.
+command still registers (for explicit use and `/format config`). Reload the
+extension after changing this value.
 
 ## Add a custom formatter
 

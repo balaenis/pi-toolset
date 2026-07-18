@@ -2,10 +2,19 @@
 // ABOUTME: Uses a temp agent dir and cwd to isolate global/project config state.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { getFormatConfig, normalizeExtension, normalizeFormatterConfig } from '../src/config.ts';
+import {
+  formatterSettingId,
+  getConfigFilePath,
+  getFormatConfig,
+  listConfigurableSettings,
+  normalizeExtension,
+  normalizeFormatterConfig,
+  setSettingEnabled,
+} from '../src/config.ts';
+import { BUILTIN_FORMATTER_RECIPES } from '../src/recipes.ts';
 
 let tmpRoot: string;
 let agentDir: string;
@@ -257,5 +266,119 @@ describe('normalizeFormatterConfig', () => {
     expect(result).toBeDefined();
     expect(result?.disabled).toBe(false);
     expect(result?.timeoutMs).toBe(30_000);
+  });
+});
+
+describe('listConfigurableSettings and setSettingEnabled', () => {
+  it('lists top-level flags and every built-in formatter by default', async () => {
+    const entries = await listConfigurableSettings('project', cwdDir);
+    expect(entries.find((entry) => entry.id === 'enabled')).toMatchObject({
+      enabled: true,
+      kind: 'flag',
+    });
+    expect(entries.find((entry) => entry.id === 'formatOnWrite')).toMatchObject({
+      enabled: true,
+      kind: 'flag',
+    });
+
+    const formatterNames = entries
+      .filter((entry) => entry.kind === 'formatter')
+      .map((entry) => entry.label.replace(/ \(.+\)$/, ''));
+    expect(formatterNames).toEqual(
+      [...BUILTIN_FORMATTER_RECIPES.map((recipe) => recipe.name)].sort()
+    );
+  });
+
+  it('applies same-scope overrides and includes custom formatters', async () => {
+    writeProjectSettings(
+      JSON.stringify({
+        enabled: false,
+        formatOnWrite: false,
+        formatters: {
+          prettier: { disabled: true },
+          custom: {
+            command: ['custom', '$FILE'],
+            extensions: ['.ts'],
+            disabled: false,
+          },
+        },
+      })
+    );
+
+    const entries = await listConfigurableSettings('project', cwdDir);
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    expect(byId.get('enabled')?.enabled).toBe(false);
+    expect(byId.get('formatOnWrite')?.enabled).toBe(false);
+    expect(byId.get(formatterSettingId('prettier'))).toMatchObject({
+      enabled: false,
+      kind: 'formatter',
+      label: 'prettier (override)',
+    });
+    expect(byId.get(formatterSettingId('custom'))).toMatchObject({
+      enabled: true,
+      kind: 'formatter',
+      label: 'custom (user)',
+      description: 'custom $FILE',
+    });
+
+    // Global scope does not see project-only overrides.
+    const globalEntries = await listConfigurableSettings('global', cwdDir);
+    expect(globalEntries.find((entry) => entry.id === 'enabled')?.enabled).toBe(true);
+    expect(
+      globalEntries.find((entry) => entry.id === formatterSettingId('custom'))
+    ).toBeUndefined();
+  });
+
+  it('writes flags and formatter disabled into the scope config file', async () => {
+    writeProjectSettings(
+      JSON.stringify({
+        formatters: {
+          prettier: {
+            command: ['bunx', 'prettier', '--write', '$FILE'],
+          },
+        },
+      })
+    );
+
+    await setSettingEnabled('project', cwdDir, 'enabled', false);
+    await setSettingEnabled('project', cwdDir, 'formatOnWrite', false);
+    await setSettingEnabled('project', cwdDir, formatterSettingId('prettier'), false);
+    await setSettingEnabled('project', cwdDir, formatterSettingId('biome'), true);
+
+    const filePath = getConfigFilePath('project', cwdDir);
+    const written = JSON.parse(readFileSync(filePath, 'utf-8')) as {
+      enabled: boolean;
+      formatOnWrite: boolean;
+      formatters: Record<string, Record<string, unknown>>;
+    };
+
+    expect(written.enabled).toBe(false);
+    expect(written.formatOnWrite).toBe(false);
+    expect(written.formatters.prettier).toEqual({
+      command: ['bunx', 'prettier', '--write', '$FILE'],
+      disabled: true,
+    });
+    // Turning a formatter "on" writes disabled:false even when enabling the default.
+    expect(written.formatters.biome).toEqual({ disabled: false });
+
+    const entries = await listConfigurableSettings('project', cwdDir);
+    expect(entries.find((entry) => entry.id === 'enabled')?.enabled).toBe(false);
+    expect(entries.find((entry) => entry.id === formatterSettingId('prettier'))?.enabled).toBe(
+      false
+    );
+  });
+
+  it('creates the global config file when toggling a flag', async () => {
+    await setSettingEnabled('global', cwdDir, 'enabled', false);
+    const filePath = getConfigFilePath('global', cwdDir);
+    const written = JSON.parse(readFileSync(filePath, 'utf-8')) as { enabled: boolean };
+    expect(written.enabled).toBe(false);
+  });
+
+  it('rejects unknown setting ids', async () => {
+    await expect(setSettingEnabled('project', cwdDir, 'not-a-setting', true)).rejects.toThrow(
+      'Unknown config setting id'
+    );
   });
 });

@@ -14,9 +14,10 @@ Registration is decided once at extension load (reload after config changes):
 | `enabled: false`                            | not registered    | registered        | not registered   |
 
 `enabled: false` deliberately omits the LLM tool so it does not occupy model
-attention. `/format` remains available for humans (and for a future
-`/format config` TUI). When the hook is registered, successful built-in
-`write`/`edit` results trigger formatting on the target file.
+attention. `/format` remains available for humans, including
+`/format config <global|project>` to edit the config files from the TUI. When
+the hook is registered, successful built-in `write`/`edit` results trigger
+formatting on the target file.
 
 When registered, the hook listens to `tool_result` events from Pi's built-in
 `write`/`edit` tools. When such a tool succeeds, the extension runs the matching

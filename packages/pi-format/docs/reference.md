@@ -40,10 +40,16 @@ used. Recipes are never installed implicitly.
 
 ```sh
 /format [--formatter <name>] <file...>
+/format config <global|project>
 ```
 
 Formats one or more files. Without `--formatter`, the formatter is chosen by
 extension and PATH availability. Appears in slash autocomplete.
+
+`/format config <global|project>` opens a TUI settings list for that scope's
+config file (requires interactive TUI mode). Toggle rows with space; changes
+are written immediately. Reload the session after changing `enabled` or
+`formatOnWrite` so tool/hook registration updates.
 
 ## `format` tool
 

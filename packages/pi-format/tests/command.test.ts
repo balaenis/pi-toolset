@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
-import { registerFormatCommand } from '../src/command.ts';
+import { getFormatArgumentCompletions, registerFormatCommand } from '../src/command.ts';
 
 let tmpRoot: string;
 let agentDir: string;
@@ -105,7 +105,60 @@ describe('registerFormatCommand', () => {
     registerFormatCommand(pi);
     const command = commands.get('format')!;
 
-    await command.handler('', fakeCtx('/project'));
+    let message = '';
+    const ctx = {
+      ...fakeCtx('/project'),
+      ui: {
+        notify: (text: string) => {
+          message = text;
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+
+    await command.handler('', ctx);
+    expect(message).toContain('/format config');
+  });
+
+  it('shows config usage when scope is missing', async () => {
+    const { pi, commands } = createFakePi();
+    registerFormatCommand(pi);
+    const command = commands.get('format')!;
+
+    let message = '';
+    const ctx = {
+      ...fakeCtx('/project'),
+      ui: {
+        notify: (text: string) => {
+          message = text;
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+
+    await command.handler('config', ctx);
+    expect(message).toBe('Usage: /format config <global|project>');
+  });
+
+  it('requires TUI mode for config', async () => {
+    const { pi, commands } = createFakePi();
+    registerFormatCommand(pi);
+    const command = commands.get('format')!;
+
+    let message = '';
+    let level = '';
+    const ctx = {
+      ...fakeCtx('/project'),
+      mode: 'rpc',
+      ui: {
+        notify: (text: string, severity?: string) => {
+          message = text;
+          level = severity ?? '';
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+
+    await command.handler('config project', ctx);
+    expect(message).toBe('/format config requires TUI mode.');
+    expect(level).toBe('error');
   });
 
   it('parses --formatter flag', async () => {
@@ -134,5 +187,24 @@ describe('registerFormatCommand', () => {
     const command = commands.get('format')!;
     await command.handler('--formatter custom file.ts', fakeCtx(cwd));
     expect(ran).toBe(true);
+  });
+});
+
+describe('getFormatArgumentCompletions', () => {
+  it('suggests the config subcommand', () => {
+    expect(getFormatArgumentCompletions('')).toEqual([{ value: 'config', label: 'config' }]);
+    expect(getFormatArgumentCompletions('c')).toEqual([{ value: 'config', label: 'config' }]);
+    expect(getFormatArgumentCompletions('src')).toBeNull();
+  });
+
+  it('completes config scopes', () => {
+    expect(getFormatArgumentCompletions('config')).toEqual([
+      { value: 'config global', label: 'config global' },
+      { value: 'config project', label: 'config project' },
+    ]);
+    expect(getFormatArgumentCompletions('config p')).toEqual([
+      { value: 'config project', label: 'config project' },
+    ]);
+    expect(getFormatArgumentCompletions('config x')).toBeNull();
   });
 });
