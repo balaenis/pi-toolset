@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import type { AgentToolResult, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { EventEmitter } from 'node:events';
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -2187,14 +2190,16 @@ describe('executeAgentTool public runId resume', () => {
     let releaseCount = 0;
     const realAbandon = store.abandonRun.bind(store);
     const realRelease = store.releaseRun.bind(store);
+    const realStrict = store.updateRunStrict.bind(store);
     const wrappedStore = {
       ...store,
-      updateRun: async (id: string, mutator: Parameters<typeof store.updateRun>[1]) => {
+      // Production post-claim running commit uses updateRunStrict.
+      updateRunStrict: async (id: string, mutator: Parameters<typeof store.updateRunStrict>[1]) => {
         if (failNextUpdate && id === runId) {
           failNextUpdate = false;
           throw new Error('injected post-claim write failure');
         }
-        return store.updateRun(id, mutator);
+        return realStrict(id, mutator);
       },
       abandonRun: async (id: string, claimId: string) => {
         abandonCount += 1;
@@ -5444,44 +5449,97 @@ Body.
       const { store, coordinator } = makeStore();
       // Seed chain fanout with a valid itemsRef for preflight; fail read after claim.
       const runId = await seedChainFanoutRun(store, null, { itemsRefValue: ['only-one'] });
+      const before = store.getRun(runId);
+      expect(before.ok).toBe(true);
+      if (!before.ok) return;
+      const beforeSnap = {
+        status: before.loaded.record.status,
+        attempts: before.loaded.record.units['chain-0002-fanout-0001']!.attempt,
+        unitStatus: before.loaded.record.units['chain-0002-fanout-0001']!.status,
+        itemsRef: before.loaded.record.workflowState?.fanouts?.['chain-0002-fanout']?.itemsRef,
+        continuationTasks: before.loaded.record.continuationTasks,
+      };
+
       const { wrapped, getAbandon, getRelease } = wrapAbandonRelease(store);
       let claimed = false;
+      let postClaimInspectReads = 0;
+      let postClaimResolveReads = 0;
+      let registerCount = 0;
+      let spawnCount = 0;
       const realClaim = store.claimRun.bind(store);
       const realReadJson = store.readJsonArtifact.bind(store);
+      const realRegister = coordinator.registerRun.bind(coordinator);
+      coordinator.registerRun = (id, record) => {
+        registerCount += 1;
+        return realRegister(id, record);
+      };
       wrapped.claimRun = async (id: string) => {
         const c = await realClaim(id);
         claimed = true;
         return c;
       };
+      // Inspection (verifyReachableRefs) must succeed; the subsequent
+      // resolveAndVerifyFanoutItems read is the intended failure boundary.
       wrapped.readJsonArtifact = async (id, r) => {
-        if (claimed) throw new Error('injected fanout ref resolution failure');
-        return realReadJson(id, r);
+        if (!claimed) return realReadJson(id, r);
+        if (postClaimInspectReads === 0) {
+          postClaimInspectReads += 1;
+          return realReadJson(id, r);
+        }
+        postClaimResolveReads += 1;
+        throw new Error('injected fanout ref resolution failure');
       };
 
       let workflowRan = false;
-      const result = await executeAgentTool(
-        { runId },
-        undefined,
-        undefined,
-        makeCtx({ cwd: tmpRoot }),
-        {
-          runWorkflow: async () => {
-            workflowRan = true;
-            return okResult('should not run');
-          },
-          runStore: wrapped as never,
-          runCoordinator: coordinator,
-        }
-      );
-      expect(result.isError).toBe(true);
-      expect(workflowRan).toBe(false);
-      await assertExactlyOneAbandonZeroRelease(
-        store,
-        runId,
-        getAbandon(),
-        getRelease(),
-        coordinator
-      );
+      try {
+        const result = await executeAgentTool(
+          { runId },
+          undefined,
+          undefined,
+          makeCtx({ cwd: tmpRoot }),
+          {
+            runWorkflow: async () => {
+              workflowRan = true;
+              return okResult('should not run');
+            },
+            runStore: wrapped as never,
+            runCoordinator: coordinator,
+            spawnFn: ((_cmd: string) => {
+              spawnCount += 1;
+              throw new Error('spawn must not run');
+            }) as never,
+          }
+        );
+        expect(result.isError).toBe(true);
+        expect(workflowRan).toBe(false);
+        expect(postClaimInspectReads).toBe(1);
+        expect(postClaimResolveReads).toBe(1);
+        expect(registerCount).toBe(0);
+        expect(spawnCount).toBe(0);
+        await assertExactlyOneAbandonZeroRelease(
+          store,
+          runId,
+          getAbandon(),
+          getRelease(),
+          coordinator
+        );
+        const after = store.getRun(runId);
+        expect(after.ok).toBe(true);
+        if (!after.ok) return;
+        expect(after.loaded.record.status).toBe(beforeSnap.status);
+        expect(after.loaded.record.units['chain-0002-fanout-0001']!.attempt).toBe(
+          beforeSnap.attempts
+        );
+        expect(after.loaded.record.units['chain-0002-fanout-0001']!.status).toBe(
+          beforeSnap.unitStatus
+        );
+        expect(after.loaded.record.workflowState?.fanouts?.['chain-0002-fanout']?.itemsRef).toEqual(
+          beforeSnap.itemsRef
+        );
+        expect(after.loaded.record.continuationTasks).toEqual(beforeSnap.continuationTasks);
+      } finally {
+        coordinator.registerRun = realRegister;
+      }
     });
 
     it('post-claim getRunDir failure: exactly one abandon, zero release', async () => {
@@ -5563,55 +5621,359 @@ Body.
     it('post-claim strict running update failure: exactly one abandon, zero release', async () => {
       const { store, coordinator } = makeStore();
       const runId = await seedInterruptedRun({ store });
+      const before = store.getRun(runId);
+      expect(before.ok).toBe(true);
+      if (!before.ok) return;
+      const beforeStatus = before.loaded.record.status;
+      const beforeAttempt = before.loaded.record.units.single.attempt;
+
       const { wrapped, getAbandon, getRelease } = wrapAbandonRelease(store);
       let claimed = false;
+      let strictUpdateHits = 0;
+      let registerCount = 0;
+      let spawnCount = 0;
       const realClaim = store.claimRun.bind(store);
-      const realUpdate = store.updateRun.bind(store);
+      const realStrict = store.updateRunStrict.bind(store);
+      const realRegister = coordinator.registerRun.bind(coordinator);
+      coordinator.registerRun = (id, record) => {
+        registerCount += 1;
+        return realRegister(id, record);
+      };
       wrapped.claimRun = async (id: string) => {
         const c = await realClaim(id);
         claimed = true;
         return c;
       };
-      // Fail the post-run_resumed running update (commit-phase mutation).
-      wrapped.updateRun = async (id, mutate) => {
-        if (claimed && id === runId) throw new Error('injected running update failure');
-        return realUpdate(id, mutate);
+      // Fail through updateRunStrict (production commit path), not updateRun.
+      wrapped.updateRunStrict = async (id, mutate) => {
+        if (claimed && id === runId) {
+          strictUpdateHits += 1;
+          throw new Error('injected running update failure');
+        }
+        return realStrict(id, mutate);
       };
 
       let workflowRan = false;
+      try {
+        const result = await executeAgentTool(
+          { runId },
+          undefined,
+          undefined,
+          makeCtx({ cwd: tmpRoot }),
+          {
+            runWorkflow: async () => {
+              workflowRan = true;
+              return okResult('should not run');
+            },
+            runStore: wrapped as never,
+            runCoordinator: coordinator,
+            spawnFn: ((_cmd: string) => {
+              spawnCount += 1;
+              throw new Error('spawn must not run');
+            }) as never,
+          }
+        );
+        expect(result.isError).toBe(true);
+        expect(workflowRan).toBe(false);
+        expect(strictUpdateHits).toBe(1);
+        expect(registerCount).toBe(0);
+        expect(spawnCount).toBe(0);
+        // run_resumed is appended before the running update; abandon still fires once.
+        await assertExactlyOneAbandonZeroRelease(
+          store,
+          runId,
+          getAbandon(),
+          getRelease(),
+          coordinator,
+          {
+            expectRunResumed: true,
+          }
+        );
+        // Running status must not stick after failed strict update.
+        const loaded = store.getRun(runId);
+        expect(loaded.ok).toBe(true);
+        if (loaded.ok) {
+          expect(loaded.loaded.record.status).not.toBe('running');
+          expect(loaded.loaded.record.status).toBe(beforeStatus);
+          expect(loaded.loaded.record.units.single.attempt).toBe(beforeAttempt);
+        }
+      } finally {
+        coordinator.registerRun = realRegister;
+      }
+    });
+
+    it('post-claim plain-object durable_write_error retains code/message (not [object Object])', async () => {
+      const { store, coordinator } = makeStore();
+      const runId = await seedInterruptedRun({ store });
+      const { wrapped, getAbandon, getRelease } = wrapAbandonRelease(store);
+      let claimed = false;
+      let strictUpdateHits = 0;
+      const realClaim = store.claimRun.bind(store);
+      const realStrict = store.updateRunStrict.bind(store);
+      wrapped.claimRun = async (id: string) => {
+        const c = await realClaim(id);
+        claimed = true;
+        return c;
+      };
+      // Inject a plain object through the real strict running-update path.
+      wrapped.updateRunStrict = async (id, mutate) => {
+        if (claimed && id === runId) {
+          strictUpdateHits += 1;
+          throw {
+            code: 'durable_write_error',
+            message: 'post-rename sync failed',
+          };
+        }
+        return realStrict(id, mutate);
+      };
+
       const result = await executeAgentTool(
         { runId },
         undefined,
         undefined,
         makeCtx({ cwd: tmpRoot }),
         {
-          runWorkflow: async () => {
-            workflowRan = true;
-            return okResult('should not run');
-          },
+          runWorkflow: async () => okResult('should not run'),
           runStore: wrapped as never,
           runCoordinator: coordinator,
         }
       );
       expect(result.isError).toBe(true);
-      expect(workflowRan).toBe(false);
-      // run_resumed is appended before the running update; abandon still fires once.
+      expect(strictUpdateHits).toBe(1);
+      const errText = Array.isArray(result.content)
+        ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+        : String(result.content);
+      expect(errText).not.toContain('[object Object]');
+      expect(errText).toMatch(/durable_write_error/);
+      expect(errText).toMatch(/post-rename sync failed/);
       await assertExactlyOneAbandonZeroRelease(
         store,
         runId,
         getAbandon(),
         getRelease(),
         coordinator,
+        { expectRunResumed: true }
+      );
+    });
+
+    it('post-claim multi-megabyte store error diagnostics stay UTF-8 bounded', async () => {
+      const { store, coordinator } = makeStore();
+      const runId = await seedInterruptedRun({ store });
+      const { wrapped, getAbandon, getRelease } = wrapAbandonRelease(store);
+      let claimed = false;
+      const realClaim = store.claimRun.bind(store);
+      const realStrict = store.updateRunStrict.bind(store);
+      const hugeMessage = '💥' + 'm'.repeat(2 * 1024 * 1024);
+      const hugeCode = 'durable_write_error_' + 'c'.repeat(1024 * 1024);
+      wrapped.claimRun = async (id: string) => {
+        const c = await realClaim(id);
+        claimed = true;
+        return c;
+      };
+      wrapped.updateRunStrict = async (id, mutate) => {
+        if (claimed && id === runId) {
+          throw {
+            code: hugeCode,
+            message: hugeMessage,
+          };
+        }
+        return realStrict(id, mutate);
+      };
+
+      const result = await executeAgentTool(
+        { runId },
+        undefined,
+        undefined,
+        makeCtx({ cwd: tmpRoot }),
         {
-          expectRunResumed: true,
+          runWorkflow: async () => okResult('should not run'),
+          runStore: wrapped as never,
+          runCoordinator: coordinator,
         }
       );
-      // Running status must not stick after failed update.
-      const loaded = store.getRun(runId);
-      expect(loaded.ok).toBe(true);
-      if (loaded.ok) {
-        expect(loaded.loaded.record.status).not.toBe('running');
-      }
+      expect(result.isError).toBe(true);
+      const errText = Array.isArray(result.content)
+        ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+        : String(result.content);
+      expect(errText).not.toContain('[object Object]');
+      expect(errText).toMatch(/durable_write_error/);
+      // Complete final diagnostic (prefix + body + omission) is strictly ≤ 64 KiB.
+      expect(Buffer.byteLength(errText, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+      expect(errText).toContain('…[truncated]');
+      // No broken UTF-8: re-decode round-trip equals.
+      expect(Buffer.from(errText, 'utf8').toString('utf8')).toBe(errText);
+      await assertExactlyOneAbandonZeroRelease(
+        store,
+        runId,
+        getAbandon(),
+        getRelease(),
+        coordinator,
+        { expectRunResumed: true }
+      );
+    });
+
+    const storeErrorShapes: Array<{ label: string; err: unknown; expectSubstr: RegExp }> = [
+      {
+        label: 'Error with own code',
+        err: Object.assign(new Error('boom-msg'), { code: 'durable_write_error' }),
+        expectSubstr: /durable_write_error:\s*boom-msg/,
+      },
+      {
+        label: 'code+message object',
+        err: { code: 'corrupt_run', message: 'object-msg' },
+        expectSubstr: /corrupt_run:\s*object-msg/,
+      },
+      {
+        label: 'message-only object',
+        err: { message: 'message-only-payload' },
+        expectSubstr: /message-only-payload/,
+      },
+      {
+        label: 'code-only object',
+        err: { code: 'run_busy' },
+        expectSubstr: /run_busy/,
+      },
+      {
+        label: 'primitive string',
+        err: 'primitive-store-failure',
+        expectSubstr: /primitive-store-failure/,
+      },
+      {
+        label: 'fallback object without code/message',
+        err: { nested: true, reason: 42 },
+        expectSubstr: /\{"nested":true,"reason":42\}/,
+      },
+      {
+        label: 'primitive number',
+        err: 404,
+        expectSubstr: /\b404\b/,
+      },
+      {
+        label: 'primitive boolean',
+        err: false,
+        expectSubstr: /false/,
+      },
+      {
+        label: 'null',
+        err: null,
+        expectSubstr: /null/,
+      },
+      {
+        label: 'undefined',
+        err: undefined,
+        expectSubstr: /undefined/,
+      },
+      {
+        label: 'empty object fallback',
+        err: {},
+        expectSubstr: /unserializable_Object/,
+      },
+    ];
+
+    for (const shape of storeErrorShapes) {
+      it(`post-claim store error shape ${shape.label}: exact code/prefix and bounded`, async () => {
+        const { store, coordinator } = makeStore();
+        const runId = await seedInterruptedRun({ store });
+        const { wrapped, getAbandon, getRelease } = wrapAbandonRelease(store);
+        let claimed = false;
+        const realClaim = store.claimRun.bind(store);
+        const realStrict = store.updateRunStrict.bind(store);
+        wrapped.claimRun = async (id: string) => {
+          const c = await realClaim(id);
+          claimed = true;
+          return c;
+        };
+        wrapped.updateRunStrict = async (id, mutate) => {
+          if (claimed && id === runId) throw shape.err;
+          return realStrict(id, mutate);
+        };
+
+        const result = await executeAgentTool(
+          { runId },
+          undefined,
+          undefined,
+          makeCtx({ cwd: tmpRoot }),
+          {
+            runWorkflow: async () => okResult('should not run'),
+            runStore: wrapped as never,
+            runCoordinator: coordinator,
+          }
+        );
+        expect(result.isError).toBe(true);
+        const errText = Array.isArray(result.content)
+          ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+          : String(result.content);
+        expect(errText).toMatch(/resume_setup_failed/);
+        expect(errText).toMatch(shape.expectSubstr);
+        expect(errText).not.toContain('[object Object]');
+        expect(Buffer.byteLength(errText, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+        expect(Buffer.from(errText, 'utf8').toString('utf8')).toBe(errText);
+        await assertExactlyOneAbandonZeroRelease(
+          store,
+          runId,
+          getAbandon(),
+          getRelease(),
+          coordinator,
+          { expectRunResumed: true }
+        );
+      });
+    }
+
+    it('post-claim multibyte boundary: exact budget, omission marker, useful code/prefix', async () => {
+      const { store, coordinator } = makeStore();
+      const runId = await seedInterruptedRun({ store });
+      const { wrapped, getAbandon, getRelease } = wrapAbandonRelease(store);
+      let claimed = false;
+      const realClaim = store.claimRun.bind(store);
+      const realStrict = store.updateRunStrict.bind(store);
+      // Multibyte code points that cross the 64KiB budget exactly when repeated.
+      const unit = '💥'; // 4 UTF-8 bytes
+      const hugeMessage = unit.repeat(20_000); // 80_000 bytes
+      wrapped.claimRun = async (id: string) => {
+        const c = await realClaim(id);
+        claimed = true;
+        return c;
+      };
+      wrapped.updateRunStrict = async (id, mutate) => {
+        if (claimed && id === runId) {
+          throw { code: 'durable_write_error', message: hugeMessage };
+        }
+        return realStrict(id, mutate);
+      };
+
+      const result = await executeAgentTool(
+        { runId },
+        undefined,
+        undefined,
+        makeCtx({ cwd: tmpRoot }),
+        {
+          runWorkflow: async () => okResult('should not run'),
+          runStore: wrapped as never,
+          runCoordinator: coordinator,
+        }
+      );
+      expect(result.isError).toBe(true);
+      const errText = Array.isArray(result.content)
+        ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+        : String(result.content);
+      expect(errText).toMatch(/resume_setup_failed/);
+      expect(errText).toMatch(/durable_write_error/);
+      expect(errText).toContain('…[truncated]');
+      // Exact complete final diagnostic budget including prefix + body + omission.
+      expect(Buffer.byteLength(errText, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+      expect(Buffer.byteLength(errText, 'utf8')).toBe(64 * 1024);
+      // Valid UTF-8 round-trip (no split code point).
+      expect(Buffer.from(errText, 'utf8').toString('utf8')).toBe(errText);
+      // Marker is complete (not a partial multi-byte split of the omission text).
+      expect(errText.endsWith('…[truncated]')).toBe(true);
+      await assertExactlyOneAbandonZeroRelease(
+        store,
+        runId,
+        getAbandon(),
+        getRelease(),
+        coordinator,
+        { expectRunResumed: true }
+      );
     });
 
     it('post-claim coordinator registration failure: exactly one abandon, zero release', async () => {
@@ -5926,6 +6288,8 @@ describe('spill-before-clone and parent ref orchestration', () => {
 describe('strict startUnit failure has zero launch side effects', () => {
   let tmpRoot: string;
   const AGENT_DIR_BEFORE = process.env.PI_CODING_AGENT_DIR;
+  /** Canonical second chain step unit id (exact event/live identity). */
+  const STEP2_UNIT_ID = 'chain-0002';
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'pi-agents-strict-launch-'));
@@ -5941,7 +6305,40 @@ describe('strict startUnit failure has zero launch side effects', () => {
     return sentinel + 'X'.repeat(300 * 1024);
   }
 
-  function fakeChild(output: string): EventEmitter {
+  function isReaderLaunchArgs(args: string[]): boolean {
+    return args.some(
+      (a) =>
+        a.includes('artifact-reader-extension') ||
+        a.includes('pi_agents_read_artifact') ||
+        a === '--extension'
+    );
+  }
+
+  /** Count stdin RPC prompt/activate independently of the spawn branch. */
+  function watchRpcActivation(child: EventEmitter & { stdin: Writable }, onRpc: () => void): void {
+    const stdin = child.stdin;
+    const originalWrite = stdin.write.bind(stdin);
+    (stdin as Writable).write = ((chunk: unknown, ...rest: unknown[]) => {
+      const text =
+        typeof chunk === 'string'
+          ? chunk
+          : Buffer.isBuffer(chunk)
+            ? chunk.toString('utf8')
+            : String(chunk ?? '');
+      if (
+        text.includes('"method":"prompt"') ||
+        text.includes('"method": "prompt"') ||
+        text.includes('"method":"activate"') ||
+        text.includes('pi_agents_read_artifact') ||
+        text.includes('"type":"prompt"')
+      ) {
+        onRpc();
+      }
+      return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof stdin.write;
+  }
+
+  function fakeChild(output: string, onRpc?: () => void): EventEmitter {
     const child = new (class extends EventEmitter {
       stdout = new Readable({ read() {} });
       stderr = new Readable({ read() {} });
@@ -5953,6 +6350,7 @@ describe('strict startUnit failure has zero launch side effects', () => {
         return true;
       }
     })();
+    if (onRpc) watchRpcActivation(child as never, onRpc);
     setImmediate(() => {
       child.stdout.push(
         `${JSON.stringify({
@@ -5969,27 +6367,98 @@ describe('strict startUnit failure has zero launch side effects', () => {
     return child;
   }
 
-  async function runChainWithStrictFail(failMessage: string): Promise<{
-    spawnCount: number;
+  async function runChainWithStrictFail(mode: 'strict-write' | 'directory-sync'): Promise<{
+    seedSpawnCount: number;
+    readerSpawnCount: number;
+    readerRpcActivationCount: number;
+    strictFaultHits: number;
     result: AgentResult;
     store: ReturnType<typeof createRunStore>;
+    coordinator: ReturnType<typeof createRunCoordinator>;
+    liveRecord: AgentRunRecordV1 | undefined;
+    /** Live step-2 snapshot at the strict-start fault (before tool cleanup). */
+    step2AtFault: AgentRunRecordV1['units'][string] | undefined;
+    step2AttemptBefore: number | undefined;
   }> {
-    const store = createRunStore({ rootDir: tmpRoot });
-    const coordinator = createRunCoordinator({ store });
     const sentinel = 'STRICT_START_SENTINEL_';
-    let spawnCount = 0;
-    const realStrict = store.updateRunStrict.bind(store);
-    store.updateRunStrict = async (runId, mutate) => {
-      const loaded = store.getRun(runId);
-      if (!loaded.ok) return realStrict(runId, mutate);
-      const clone = structuredClone(loaded.loaded.record);
-      mutate(clone);
-      const startingReader = Object.values(clone.units).some(
-        (u) => u.requireArtifactReader === true && u.status === 'running'
-      );
-      if (startingReader) throw new Error(failMessage);
-      return realStrict(runId, mutate);
+    let seedSpawnCount = 0;
+    let readerSpawnCount = 0;
+    let readerRpcActivationCount = 0;
+    let strictFaultHits = 0;
+    let liveRecord: AgentRunRecordV1 | undefined;
+    let step2AtFault: AgentRunRecordV1['units'][string] | undefined;
+    let step2AttemptBefore: number | undefined;
+
+    const snapshotStep2AtFault = (): void => {
+      if (liveRecord?.units[STEP2_UNIT_ID]) {
+        step2AtFault = structuredClone(liveRecord.units[STEP2_UNIT_ID]);
+      }
     };
+
+    const store =
+      mode === 'directory-sync'
+        ? createRunStore({
+            rootDir: tmpRoot,
+            strictPostRenameDirectorySync: (dirPath) => {
+              // Fail only the reader-handoff publication (requireArtifactReader + running).
+              // Seed start/finish and other strict writes still get a real directory sync.
+              const runJson = path.join(dirPath, 'run.json');
+              let hasReaderStart: boolean;
+              try {
+                const parsed = JSON.parse(readFileSync(runJson, 'utf8')) as AgentRunRecordV1;
+                hasReaderStart = Object.values(parsed.units ?? {}).some(
+                  (u) => u.requireArtifactReader === true && u.status === 'running'
+                );
+              } catch {
+                hasReaderStart = false;
+              }
+              if (hasReaderStart) {
+                strictFaultHits += 1;
+                // startUnit applies live mutation only after durable success; snapshot now.
+                snapshotStep2AtFault();
+                throw {
+                  code: 'run_store_error' as const,
+                  message: 'directory fsync failed: injected',
+                };
+              }
+              if (process.platform !== 'win32') {
+                const dirFd = openSync(dirPath, 'r');
+                try {
+                  fsyncSync(dirFd);
+                } finally {
+                  closeSync(dirFd);
+                }
+              }
+            },
+          })
+        : createRunStore({ rootDir: tmpRoot });
+
+    const coordinator = createRunCoordinator({ store });
+    const realRegister = coordinator.registerRun.bind(coordinator);
+    coordinator.registerRun = (id, record) => {
+      liveRecord = record;
+      step2AttemptBefore = record.units[STEP2_UNIT_ID]?.attempt;
+      return realRegister(id, record);
+    };
+
+    if (mode === 'strict-write') {
+      const realStrict = store.updateRunStrict.bind(store);
+      store.updateRunStrict = async (runId, mutate) => {
+        const loaded = store.getRun(runId);
+        if (!loaded.ok) return realStrict(runId, mutate);
+        const clone = structuredClone(loaded.loaded.record);
+        mutate(clone);
+        const startingReader = Object.values(clone.units).some(
+          (u) => u.requireArtifactReader === true && u.status === 'running'
+        );
+        if (startingReader) {
+          strictFaultHits += 1;
+          snapshotStep2AtFault();
+          throw new Error('strict write failed');
+        }
+        return realStrict(runId, mutate);
+      };
+    }
 
     const result = await executeAgentTool(
       {
@@ -6005,45 +6474,149 @@ describe('strict startUnit failure has zero launch side effects', () => {
       {
         runStore: store,
         runCoordinator: coordinator,
-        spawnFn: ((_cmd: string, _args: string[]) => {
-          spawnCount += 1;
-          // First spawn is the seed step (oversized). A second spawn would be the reader unit.
-          return fakeChild(oversizedText(sentinel)) as never;
+        spawnFn: ((_cmd: string, args: string[]) => {
+          const isReader = isReaderLaunchArgs(args);
+          if (isReader) {
+            readerSpawnCount += 1;
+            // RPC activation counted only via stdin observation, not spawn branch.
+            return fakeChild(oversizedText(sentinel), () => {
+              readerRpcActivationCount += 1;
+            }) as never;
+          }
+          seedSpawnCount += 1;
+          return fakeChild(oversizedText(sentinel), () => {
+            /* seed prompt traffic ignored for reader-activation counter */
+          }) as never;
         }) as import('../src/execution.ts').SpawnFn,
       }
     );
-    return { spawnCount, result, store };
+    return {
+      seedSpawnCount,
+      readerSpawnCount,
+      readerRpcActivationCount,
+      strictFaultHits,
+      result,
+      store,
+      coordinator,
+      liveRecord,
+      step2AtFault,
+      step2AttemptBefore,
+    };
   }
 
   it('strict write failure on reader-requiring handoff: zero second-step launch', async () => {
-    const { spawnCount, result, store } = await runChainWithStrictFail('strict write failed');
-    // Seed may spawn once; the reader-requiring second step must not launch.
-    expect(spawnCount).toBeLessThanOrEqual(1);
-    // Unit start failure bubbles as a chain/tool error (or no launch at all).
-    if (spawnCount === 0) {
-      // Failed before any child process.
-      expect(result.isError).toBeTruthy();
-    } else {
-      expect(Boolean(result.isError) || spawnCount === 1).toBe(true);
-    }
-    // No live registration left for incomplete reader unit.
+    const {
+      seedSpawnCount,
+      readerSpawnCount,
+      readerRpcActivationCount,
+      strictFaultHits,
+      result,
+      store,
+      liveRecord,
+      step2AtFault,
+      step2AttemptBefore,
+    } = await runChainWithStrictFail('strict-write');
+
+    // Exact independent counters — never conditional.
+    expect(seedSpawnCount).toBe(1);
+    expect(readerSpawnCount).toBe(0);
+    expect(readerRpcActivationCount).toBe(0);
+    expect(strictFaultHits).toBe(1);
+    expect(result.isError).toBeTruthy();
+    const errText = Array.isArray(result.content)
+      ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+      : String(result.content);
+    expect(errText).toMatch(/strict write failed/);
+
+    // Known registered live record; step-2 snapshot at fault is exact queued.
+    expect(liveRecord).toBeDefined();
+    expect(step2AtFault).toBeDefined();
+    if (!step2AtFault) return;
+    expect(step2AtFault.status).toBe('queued');
+    expect(step2AtFault.requireArtifactReader).toBeUndefined();
+    expect(step2AtFault.attempts.filter((a) => a.status === 'running')).toHaveLength(0);
+    expect(typeof step2AttemptBefore).toBe('number');
+    expect(step2AtFault.attempt).toBe(step2AttemptBefore as number);
+
     const runs = await store.listRuns();
     const entry = runs.find((r) => 'record' in r) as { record: AgentRunRecordV1 } | undefined;
     expect(entry).toBeDefined();
     if (!entry) return;
-    for (const unit of Object.values(entry.record.units)) {
-      if (unit.requireArtifactReader) {
-        expect(unit.status).not.toBe('running');
-      }
-    }
+
+    const diskUnit = entry.record.units[STEP2_UNIT_ID];
+    expect(diskUnit).toBeDefined();
+    // Durable start never published: no running attempt / reader flag from startUnit.
+    // Tool failure cleanup may terminalize the unit, but never unit_started.
+    expect(diskUnit!.status).not.toBe('running');
+    expect(diskUnit!.attempts.filter((a) => a.status === 'running')).toHaveLength(0);
+    expect(diskUnit!.requireArtifactReader).toBeUndefined();
+
+    const eventsFile = path.join(store.getRunDir(entry.record.runId), 'events.jsonl');
+    expect(existsSync(eventsFile)).toBe(true);
+    const events = readFileSync(eventsFile, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { event?: string; unitId?: string });
+    // Exact second-unit identity — no unit_started for chain-0002.
+    expect(events.some((e) => e.event === 'unit_started' && e.unitId === STEP2_UNIT_ID)).toBe(
+      false
+    );
   }, 60_000);
 
   it('directory-sync failure on reader-requiring handoff: zero second-step launch', async () => {
-    const { spawnCount, result } = await runChainWithStrictFail('directory fsync failed: injected');
-    expect(spawnCount).toBeLessThanOrEqual(1);
-    // At most the seed step launches; reader step never spawns.
-    expect(spawnCount).toBeLessThan(2);
-    void result;
+    const {
+      seedSpawnCount,
+      readerSpawnCount,
+      readerRpcActivationCount,
+      strictFaultHits,
+      result,
+      store,
+      liveRecord,
+      step2AtFault,
+      step2AttemptBefore,
+    } = await runChainWithStrictFail('directory-sync');
+
+    expect(seedSpawnCount).toBe(1);
+    expect(readerSpawnCount).toBe(0);
+    expect(readerRpcActivationCount).toBe(0);
+    expect(strictFaultHits).toBe(1);
+    expect(result.isError).toBeTruthy();
+    const errText = Array.isArray(result.content)
+      ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
+      : String(result.content);
+    expect(errText).toMatch(/directory fsync failed/);
+    expect(errText).toMatch(/prior run\.json restored|directory fsync failed/);
+
+    expect(liveRecord).toBeDefined();
+    expect(step2AtFault).toBeDefined();
+    if (!step2AtFault) return;
+    expect(step2AtFault.status).toBe('queued');
+    expect(step2AtFault.requireArtifactReader).toBeUndefined();
+    expect(step2AtFault.attempts.filter((a) => a.status === 'running')).toHaveLength(0);
+    expect(typeof step2AttemptBefore).toBe('number');
+    expect(step2AtFault.attempt).toBe(step2AttemptBefore as number);
+
+    const runs = await store.listRuns();
+    const entry = runs.find((r) => 'record' in r) as { record: AgentRunRecordV1 } | undefined;
+    expect(entry).toBeDefined();
+    if (!entry) return;
+
+    const diskUnit = entry.record.units[STEP2_UNIT_ID];
+    expect(diskUnit).toBeDefined();
+    // After durable rollback the start never committed; cleanup may terminalize.
+    expect(diskUnit!.status).not.toBe('running');
+    expect(diskUnit!.attempts.filter((a) => a.status === 'running')).toHaveLength(0);
+    expect(diskUnit!.requireArtifactReader).toBeUndefined();
+
+    const eventsFile = path.join(store.getRunDir(entry.record.runId), 'events.jsonl');
+    expect(existsSync(eventsFile)).toBe(true);
+    const events = readFileSync(eventsFile, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { event?: string; unitId?: string });
+    expect(events.some((e) => e.event === 'unit_started' && e.unitId === STEP2_UNIT_ID)).toBe(
+      false
+    );
   }, 60_000);
 });
 
@@ -6092,10 +6665,13 @@ describe('real executeAgentTool Chain/Parallel artifact orchestration', () => {
   it('real two-step Chain: second child receives artifact descriptor, final content is bounded', async () => {
     const store = createRunStore({ rootDir: tmpRoot });
     const coordinator = createRunCoordinator({ store });
-    const sentinel = 'REAL_CHAIN_SENTINEL_';
-    const oversized = sentinel + 'C'.repeat(300 * 1024);
+    const sentinel1 = 'REAL_CHAIN_SENTINEL1_';
+    const sentinel2 = 'REAL_CHAIN_SENTINEL2_';
+    const oversized1 = sentinel1 + 'C'.repeat(300 * 1024);
+    const oversized2 = sentinel2 + 'D'.repeat(300 * 1024);
     let spawnIndex = 0;
-    const capturedTasks: string[] = [];
+    /** Tasks captured by spawn index (1-based) for identity-exact correlation. */
+    const tasksBySpawnIndex = new Map<number, string[]>();
 
     const result = await executeAgentTool(
       {
@@ -6114,24 +6690,41 @@ describe('real executeAgentTool Chain/Parallel artifact orchestration', () => {
         // No runWorkflow shortcut — production chain orchestration only.
         spawnFn: ((_cmd: string, args: string[]) => {
           spawnIndex += 1;
-          // Capture task argv when present (JSON path) or any artifact descriptor hint.
+          const idx = spawnIndex;
+          const captured: string[] = [];
           for (const a of args) {
-            if (a.startsWith('Task:') || a.includes('run-artifact') || a.includes('{previous}')) {
-              capturedTasks.push(a);
+            if (
+              a.startsWith('Task:') ||
+              a.includes('run-artifact') ||
+              a.includes('{previous}') ||
+              a.includes('pi_agents_read_artifact')
+            ) {
+              captured.push(a);
             }
           }
-          const output = spawnIndex === 1 ? oversized : 'step2-done';
+          tasksBySpawnIndex.set(idx, captured);
+          // Both steps emit oversized terminal output so intermediate and final
+          // assembly must be ref-backed.
+          const output = idx === 1 ? oversized1 : oversized2;
           return fakeChild(output) as never;
         }) as import('../src/execution.ts').SpawnFn,
       }
     );
 
+    // Exactly two spawns — identity-exact chain orchestration.
+    expect(spawnIndex).toBe(2);
+    expect(tasksBySpawnIndex.size).toBe(2);
+    expect(tasksBySpawnIndex.has(1)).toBe(true);
+    expect(tasksBySpawnIndex.has(2)).toBe(true);
+
     const text = Array.isArray(result.content)
       ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
       : String(result.content);
 
-    expect(text).not.toContain(sentinel);
+    expect(text).not.toContain(sentinel1);
+    expect(text).not.toContain(sentinel2);
     expect(text).not.toBe('(no output)');
+    expect(text).toContain('run-artifact');
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(2048);
 
     const details = result.details;
@@ -6141,12 +6734,39 @@ describe('real executeAgentTool Chain/Parallel artifact orchestration', () => {
     // First step authority spilled to a ref.
     expect(results[0]!.finalOutput).toBeUndefined();
     expect(results[0]!.finalOutputRef).toBeDefined();
-    // Second step task must reference the artifact descriptor, not raw sentinel.
+    const step1Digest = results[0]!.finalOutputRef!.sha256;
+    expect(step1Digest).toHaveLength(64);
+    // Second step also spills oversized terminal output.
+    expect(results[1]!.finalOutput).toBeUndefined();
+    expect(results[1]!.finalOutputRef).toBeDefined();
+    const step2Digest = results[1]!.finalOutputRef!.sha256;
+    expect(step2Digest).toHaveLength(64);
+    expect(step2Digest).not.toBe(step1Digest);
+
+    // Second step task must contain step 1's exact digest and reader instruction, no sentinel.
     const step2Task = results[1]!.task ?? '';
-    expect(step2Task).toContain('run-artifact');
-    expect(step2Task).not.toContain(sentinel);
-    // Durable detail JSON must not embed the sentinel.
-    expect(JSON.stringify(details)).not.toContain(sentinel);
+    expect(step2Task).toContain(step1Digest);
+    expect(step2Task).toContain('pi_agents_read_artifact');
+    expect(step2Task).not.toContain(sentinel1);
+    expect(step2Task).not.toContain(step2Digest);
+
+    // Directly inspect spawn-index 2 invocation: step 1 digest only.
+    const secondChildArgs = (tasksBySpawnIndex.get(2) ?? []).join('\n');
+    expect(secondChildArgs).toContain(step1Digest);
+    expect(secondChildArgs).toContain('run-artifact');
+    expect(secondChildArgs).not.toContain(sentinel1);
+    expect(secondChildArgs).not.toContain(step2Digest);
+
+    // Terminal tool content must be step 2's ref specifically (digest prefix).
+    const step2Prefix = step2Digest.slice(0, 16);
+    const step1Prefix = step1Digest.slice(0, 16);
+    expect(text).toContain(step2Prefix);
+    // Parent descriptor uses first 16 hex of terminal authority digest — not step 1.
+    expect(text).not.toContain(step1Prefix);
+    expect(JSON.stringify(details)).not.toContain(sentinel1);
+    expect(JSON.stringify(details)).not.toContain(sentinel2);
+    expect(results[0]!.finalOutputRef!.sha256).toBe(step1Digest);
+    expect(results[1]!.finalOutputRef!.sha256).toBe(step2Digest);
   }, 60_000);
 
   it('real Parallel children with oversized outputs return bounded aggregate metadata', async () => {
@@ -6179,17 +6799,21 @@ describe('real executeAgentTool Chain/Parallel artifact orchestration', () => {
       : String(result.content);
 
     expect(text).not.toContain(sentinel);
+    expect(text).not.toContain('(no output)');
     expect(text).toMatch(/Parallel:/);
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(2048);
 
     const results = result.details?.results ?? [];
     expect(results.length).toBeGreaterThanOrEqual(2);
-    for (const r of results) {
-      if (r.status === 'completed') {
-        expect(r.finalOutputRef).toBeDefined();
-        expect(r.finalOutput).toBeUndefined();
-      }
+    const successful = results.filter((r) => r.status === 'completed');
+    expect(successful.length).toBeGreaterThanOrEqual(2);
+    for (const r of successful) {
+      expect(r.finalOutputRef).toBeDefined();
+      expect(r.finalOutput).toBeUndefined();
       expect(JSON.stringify(r)).not.toContain(sentinel);
     }
+    // One bounded run-artifact descriptor in tool content per successful child.
+    const descriptors = text.match(/\[run-artifact[^\]]*\]/g) ?? [];
+    expect(descriptors.length).toBe(successful.length);
   }, 60_000);
 });

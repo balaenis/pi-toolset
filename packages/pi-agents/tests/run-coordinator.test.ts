@@ -5915,13 +5915,16 @@ describe('expandFanout identity-matched mirror preserves mutable payload', () =>
 });
 
 describe('startUnit disk-first strict failures', () => {
-  async function createQueuedRun(root: string): Promise<{
+  async function createQueuedRun(
+    root: string,
+    storeOptions?: Omit<import('../src/run-store.ts').CreateRunStoreOptions, 'rootDir'>
+  ): Promise<{
     store: ReturnType<typeof createRunStore>;
     coord: ReturnType<typeof createRunCoordinator>;
     runId: string;
     live: AgentRunRecordV1;
   }> {
-    const store = createRunStore({ rootDir: root });
+    const store = createRunStore({ rootDir: root, ...storeOptions });
     const coord = createRunCoordinator({ store });
     const { runId, record } = await store.createRun({
       mode: 'single',
@@ -5982,8 +5985,11 @@ describe('startUnit disk-first strict failures', () => {
 
       // Live must remain queued with no reader flag and no running attempt.
       expect(live.units.single.status).toBe('queued');
+      expect(live.units.single.unitId).toBe('single');
+      expect(live.units.single.agent).toBe('noop');
       expect(live.units.single.requireArtifactReader).toBeUndefined();
       expect(live.units.single.attempts).toHaveLength(0);
+      expect(live.units.single.attempt).toBe(1);
 
       // Durable record unchanged.
       const loaded = store.getRun(runId);
@@ -6007,10 +6013,29 @@ describe('startUnit disk-first strict failures', () => {
   it('directory-sync rejection leaves durable/live queued, no unit_started, propagates error', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-strict-start-sync-'));
     try {
-      const { store, coord, runId, live } = await createQueuedRun(root);
-      store.updateRunStrict = async () => {
-        throw new Error('directory fsync failed: injected');
-      };
+      let postRenameHits = 0;
+      const beforeCreate = await createQueuedRun(root);
+      const beforePath = path.join(beforeCreate.store.getRunDir(beforeCreate.runId), 'run.json');
+      const beforeBytes = fs.readFileSync(beforePath);
+      // Rebuild store with one-shot post-rename directory-sync fault so the real
+      // updateRunStrict rollback path runs (not a mock of updateRunStrict).
+      const store = createRunStore({
+        rootDir: root,
+        strictPostRenameDirectorySync: () => {
+          postRenameHits += 1;
+          throw {
+            code: 'run_store_error' as const,
+            message: 'directory fsync failed: injected',
+          };
+        },
+      });
+      const coord = createRunCoordinator({ store });
+      const loadedBefore = store.getRun(beforeCreate.runId);
+      expect(loadedBefore.ok).toBe(true);
+      if (!loadedBefore.ok) return;
+      const live = structuredClone(loadedBefore.loaded.record);
+      coord.registerRun(beforeCreate.runId, live);
+      const runId = beforeCreate.runId;
 
       await expect(
         coord.startUnit(runId, {
@@ -6023,7 +6048,13 @@ describe('startUnit disk-first strict failures', () => {
           attempt: 1,
           requireArtifactReader: true,
         })
-      ).rejects.toThrow(/directory fsync failed/);
+      ).rejects.toMatchObject({
+        code: 'run_store_error',
+        message: expect.stringMatching(/directory fsync failed.*prior run\.json restored/),
+      });
+
+      expect(postRenameHits).toBe(1);
+      expect(fs.readFileSync(beforePath).equals(beforeBytes)).toBe(true);
 
       expect(live.units.single.status).toBe('queued');
       expect(live.units.single.requireArtifactReader).toBeUndefined();
@@ -6033,6 +6064,7 @@ describe('startUnit disk-first strict failures', () => {
       expect(loaded.ok).toBe(true);
       if (!loaded.ok) return;
       expect(loaded.loaded.record.units.single.status).toBe('queued');
+      expect(loaded.loaded.record.units.single.requireArtifactReader).toBeUndefined();
       expect(loaded.loaded.record.units.single.attempts).toHaveLength(0);
 
       const events = readEvents(store, runId);

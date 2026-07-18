@@ -1347,7 +1347,9 @@ export function createRunCoordinator(options: RunCoordinatorOptions): RunCoordin
         merged.status = 'running';
         merged.attempt = ctx.attempt;
         merged.worktreePath = stagedWorktreePath;
-        merged.attempts.push({ ...stagedAttempt });
+        // Reassign attempts so a shallow merge cannot mutate live's array when
+        // the strict write later fails and live must remain queued/unchanged.
+        merged.attempts = [...(merged.attempts ?? []), { ...stagedAttempt }];
         if (stagedRequireReader) {
           merged.requireArtifactReader = true;
         }

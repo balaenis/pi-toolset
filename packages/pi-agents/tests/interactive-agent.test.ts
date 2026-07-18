@@ -9975,21 +9975,31 @@ describe('TUI restore reader extension launch paths', () => {
     cap: { args: string[]; env: Record<string, string | undefined> },
     opts: { required: boolean; runId: string; runDir: string }
   ): void {
-    const extIndex = cap.args.indexOf('--extension');
-    const toolsIndex = cap.args.indexOf('--tools');
+    // Scan every --extension and --tools value (not just the first).
+    const extensionValues: string[] = [];
+    const toolsValues: string[] = [];
+    for (let i = 0; i < cap.args.length; i++) {
+      if (cap.args[i] === '--extension' && cap.args[i + 1] !== undefined) {
+        extensionValues.push(cap.args[i + 1]!);
+      }
+      if (cap.args[i] === '--tools' && cap.args[i + 1] !== undefined) {
+        toolsValues.push(cap.args[i + 1]!);
+      }
+    }
     if (opts.required) {
-      expect(extIndex).not.toBe(-1);
-      expect(cap.args[extIndex + 1]).toContain('artifact-reader-extension');
-      expect(toolsIndex).not.toBe(-1);
-      expect(cap.args[toolsIndex + 1]!).toContain('pi_agents_read_artifact');
+      const readerExts = extensionValues.filter((v) => v.includes('artifact-reader-extension'));
+      expect(readerExts.length).toBe(1);
+      expect(readerExts[0]).toBe(resolveArtifactReaderExtensionPath());
+      const readerTools = toolsValues.filter((v) => v.includes('pi_agents_read_artifact'));
+      expect(readerTools.length).toBe(1);
       expect(cap.env.PI_AGENTS_RUN_ID).toBe(opts.runId);
       expect(cap.env.PI_AGENTS_RUN_ARTIFACT_DIR).toBe(opts.runDir);
     } else {
-      if (extIndex !== -1) {
-        expect(cap.args[extIndex + 1]).not.toContain('artifact-reader-extension');
+      for (const v of extensionValues) {
+        expect(v).not.toContain('artifact-reader-extension');
       }
-      if (toolsIndex !== -1) {
-        expect(cap.args[toolsIndex + 1]!).not.toContain('pi_agents_read_artifact');
+      for (const v of toolsValues) {
+        expect(v).not.toContain('pi_agents_read_artifact');
       }
       expect(cap.env.PI_AGENTS_RUN_ID).toBeUndefined();
       expect(cap.env.PI_AGENTS_RUN_ARTIFACT_DIR).toBeUndefined();
@@ -10013,6 +10023,7 @@ describe('TUI restore reader extension launch paths', () => {
       args: string[];
       env: Record<string, string | undefined>;
     }> = [];
+    let transportCreations = 0;
 
     const registry = createInteractiveAgentRegistry({
       runStore: store,
@@ -10023,6 +10034,7 @@ describe('TUI restore reader extension launch paths', () => {
         builtinAgentsDir: '/b',
       }),
       transportFactory: async (tOpts) => {
+        transportCreations += 1;
         captured.push({
           command: tOpts.command,
           args: [...tOpts.args],
@@ -10035,7 +10047,9 @@ describe('TUI restore reader extension launch paths', () => {
 
     try {
       if (opts.path === 'existing-refresh') {
-        // Pre-register so restore refreshes an existing endpoint.
+        // Pre-register with the OPPOSITE reader requirement so restore must
+        // install durable state (including clearing a stale true).
+        const opposite = opts.reader === true ? false : true; // durable false/absent → stale existing true
         const initial = await registry.registerInitial({
           runId,
           unitId: 'single',
@@ -10052,11 +10066,7 @@ describe('TUI restore reader extension launch paths', () => {
             effectiveCwd: root,
             agentScope: 'both',
             registrationKind: 'initial',
-            ...(opts.reader === true
-              ? { requireArtifactReader: true }
-              : opts.reader === false
-                ? { requireArtifactReader: false }
-                : {}),
+            ...(opposite ? { requireArtifactReader: true } : { requireArtifactReader: false }),
           },
           getBranchEntries: () => [
             { type: 'custom', customType: INTERACTIVE_LINK_TYPE, data: link },
@@ -10074,8 +10084,9 @@ describe('TUI restore reader extension launch paths', () => {
       });
       expect(restored.length).toBe(1);
       const snap = restored[0]!;
-      // Must not be unavailable before activate.
+      // Must not be unavailable before activate; durable refresh must apply.
       expect(snap.status).not.toBe('unavailable');
+      expect(snap.status).toBeDefined();
       expect(snap.runId).toBe(runId);
       expect(snap.unitId).toBe('single');
 
@@ -10085,7 +10096,8 @@ describe('TUI restore reader extension launch paths', () => {
         // transportFactory throws by design
       }
 
-      expect(captured.length).toBeGreaterThanOrEqual(1);
+      expect(transportCreations).toBe(1);
+      expect(captured.length).toBe(1);
       assertReaderLaunch(captured[0]!, {
         required: opts.reader === true,
         runId,

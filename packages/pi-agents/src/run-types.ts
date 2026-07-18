@@ -264,7 +264,15 @@ export type RunLifecycleEvent =
 
 /** Error codes returned by the run store. */
 export type RunStoreErrorCode =
-  'corrupt_run' | 'run_not_found' | 'run_active' | 'claim_corrupt' | 'run_store_error';
+  | 'corrupt_run'
+  | 'run_not_found'
+  | 'run_active'
+  | 'claim_corrupt'
+  | 'run_store_error'
+  | 'durable_write_error'
+  | 'durable_commit_uncertain'
+  | 'run_busy'
+  | 'generation_mismatch';
 
 export interface RunStoreError {
   code: RunStoreErrorCode;
@@ -278,11 +286,19 @@ export interface LoadedRun {
   record: AgentRunRecordV1;
 }
 
-/** A corrupt or unreadable run surfaced as a diagnostic by listRuns. */
+/**
+ * List diagnostics for unreadable runs. Permanent corruption stays `corrupt_run`;
+ * temporary recovery/lock failures preserve their store codes.
+ */
 export interface CorruptRunEntry {
   runId: string;
   runDir: string;
-  code: 'corrupt_run';
+  code:
+    | 'corrupt_run'
+    | 'durable_write_error'
+    | 'durable_commit_uncertain'
+    | 'run_busy'
+    | 'run_store_error';
   message: string;
 }
 

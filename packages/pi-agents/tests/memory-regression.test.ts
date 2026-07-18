@@ -1678,20 +1678,24 @@ describe('memory regressions', () => {
 
       // Parallel content is an aggregate status line, not the raw output.
       expect(text).not.toContain(sentinel);
+      expect(text).not.toContain('(no output)');
       expect(text).toMatch(/Parallel:/);
       expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(2048);
 
-      // Detail records must use refs.
+      // Detail records must use refs; one descriptor per successful child in content.
       const details = result.details;
       expect(details).toBeDefined();
       const results = details?.results ?? [];
       expect(results.length).toBeGreaterThanOrEqual(2);
-      for (const r of results) {
-        if (r.finalOutputRef) {
-          const refJson = JSON.stringify(r);
-          expect(refJson).not.toContain(sentinel);
-        }
+      const successful = results.filter((r) => r.status === 'completed');
+      expect(successful.length).toBeGreaterThanOrEqual(2);
+      for (const r of successful) {
+        expect(r.finalOutputRef).toBeDefined();
+        expect(r.finalOutput).toBeUndefined();
+        expect(JSON.stringify(r)).not.toContain(sentinel);
       }
+      const descriptors = text.match(/\[run-artifact[^\]]*\]/g) ?? [];
+      expect(descriptors.length).toBe(successful.length);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -1702,9 +1706,12 @@ describe('memory regressions', () => {
     try {
       const store = createRunStore({ rootDir: root });
       const coordinator = createRunCoordinator({ store });
-      const sentinel = 'EAT_CHAIN_SENTINEL_';
-      const oversized = sentinel + 'C'.repeat(300 * 1024);
+      const sentinel1 = 'EAT_CHAIN_SENTINEL1_';
+      const sentinel2 = 'EAT_CHAIN_SENTINEL2_';
+      const oversized1 = sentinel1 + 'C'.repeat(300 * 1024);
+      const oversized2 = sentinel2 + 'D'.repeat(300 * 1024);
       let spawnIndex = 0;
+      const tasksBySpawnIndex = new Map<number, string[]>();
 
       // Real production chain path — no runWorkflow shortcut.
       const result = await executeAgentTool(
@@ -1731,8 +1738,16 @@ describe('memory regressions', () => {
         {
           runStore: store,
           runCoordinator: coordinator,
-          spawnFn: ((_command: string, _args: string[]) => {
+          spawnFn: ((_command: string, args: string[]) => {
             spawnIndex += 1;
+            const idx = spawnIndex;
+            const captured: string[] = [];
+            for (const a of args) {
+              if (a.includes('run-artifact') || a.startsWith('Task:') || a.includes('{previous}')) {
+                captured.push(a);
+              }
+            }
+            tasksBySpawnIndex.set(idx, captured);
             const child = new (class extends EventEmitter {
               stdout = new Readable({ read() {} });
               stderr = new Readable({ read() {} });
@@ -1746,7 +1761,7 @@ describe('memory regressions', () => {
                 return true;
               }
             })();
-            const text = spawnIndex === 1 ? oversized : 'chain-step2-done';
+            const text = idx === 1 ? oversized1 : oversized2;
             setImmediate(() => {
               child.stdout.push(
                 JSON.stringify({
@@ -1765,25 +1780,48 @@ describe('memory regressions', () => {
         }
       );
 
+      expect(spawnIndex).toBe(2);
+      expect(tasksBySpawnIndex.size).toBe(2);
+      expect(tasksBySpawnIndex.has(2)).toBe(true);
+
       const text = Array.isArray(result.content)
         ? result.content.map((c) => ('text' in c ? String(c.text) : '')).join('\n')
         : String(result.content);
 
-      expect(text).not.toContain(sentinel);
+      expect(text).not.toContain(sentinel1);
+      expect(text).not.toContain(sentinel2);
       expect(text).not.toBe('(no output)');
+      expect(text).toContain('run-artifact');
       expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(2048);
 
       const details = result.details;
       expect(details).toBeDefined();
       const results = details?.results ?? [];
       expect(results.length).toBeGreaterThanOrEqual(2);
-      // Step 1 spilled to a ref; step 2 task carries the descriptor, not raw sentinel.
+      // Step 1 and step 2 both spill oversized authority to refs.
       expect(results[0]!.finalOutputRef).toBeDefined();
       expect(results[0]!.finalOutput).toBeUndefined();
-      expect(results[1]!.task).toContain('run-artifact');
-      expect(results[1]!.task).not.toContain(sentinel);
+      expect(results[1]!.finalOutputRef).toBeDefined();
+      expect(results[1]!.finalOutput).toBeUndefined();
+      const step1Digest = results[0]!.finalOutputRef!.sha256;
+      const step2Digest = results[1]!.finalOutputRef!.sha256;
+      expect(step1Digest).toHaveLength(64);
+      expect(step2Digest).toHaveLength(64);
+      expect(step2Digest).not.toBe(step1Digest);
+      expect(results[1]!.task).toContain(step1Digest);
+      expect(results[1]!.task).toContain('pi_agents_read_artifact');
+      expect(results[1]!.task).not.toContain(sentinel1);
+      // Directly inspect invocation 2 against step 1's exact ref digest.
+      const secondChild = (tasksBySpawnIndex.get(2) ?? []).join('\n');
+      expect(secondChild).toContain(step1Digest);
+      expect(secondChild).not.toContain(sentinel1);
+      expect(secondChild).not.toContain(step2Digest);
+      // Terminal tool content correlates to step 2 digest prefix specifically.
+      expect(text).toContain(step2Digest.slice(0, 16));
+      expect(text).not.toContain(step1Digest.slice(0, 16));
       // Durable details use refs only for spilled authority.
-      expect(JSON.stringify(details)).not.toContain(sentinel);
+      expect(JSON.stringify(details)).not.toContain(sentinel1);
+      expect(JSON.stringify(details)).not.toContain(sentinel2);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

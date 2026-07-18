@@ -495,6 +495,126 @@ async function maybeStartDurableRun(
  * Project/workspace cwd for a stored run: prefer request.cwd, else the first
  * unit's effectiveCwd (non-worktree original location).
  */
+/** UTF-8 budget for resume/store diagnostic strings (matches RESULT_DIAGNOSTIC_MAX_BYTES). */
+const STORE_ERROR_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
+const STORE_ERROR_OMISSION_MARKER = '…[truncated]';
+
+function utf8BytesOf(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+/** Truncate to at most maxBytes UTF-8, on a Unicode code-point boundary. */
+function truncateUtf8CodePoints(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  if (utf8BytesOf(value) <= maxBytes) return value;
+  let lo = 0;
+  let hi = value.length;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    // Do not end on a high surrogate (incomplete pair).
+    let end = mid;
+    if (end > 0) {
+      const prev = value.charCodeAt(end - 1);
+      if (prev >= 0xd800 && prev <= 0xdbff) end = end - 1;
+    }
+    if (utf8BytesOf(value.slice(0, end)) <= maxBytes) {
+      best = end;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return value.slice(0, best);
+}
+
+function boundDiagnosticText(value: string): string {
+  if (utf8BytesOf(value) <= STORE_ERROR_DIAGNOSTIC_MAX_BYTES) return value;
+  const marker = STORE_ERROR_OMISSION_MARKER;
+  const budget = STORE_ERROR_DIAGNOSTIC_MAX_BYTES - utf8BytesOf(marker);
+  if (budget <= 0) return truncateUtf8CodePoints(marker, STORE_ERROR_DIAGNOSTIC_MAX_BYTES);
+  return `${truncateUtf8CodePoints(value, budget)}${marker}`;
+}
+
+/**
+ * Deterministic useful fallback for non-Error throwables that lack own
+ * code/message. Never returns the useless `[object Object]` string.
+ */
+function fallbackDiagnosticPayload(err: unknown): string {
+  if (err === null) return 'null';
+  if (err === undefined) return 'undefined';
+  const t = typeof err;
+  if (t === 'string' || t === 'number' || t === 'boolean' || t === 'bigint') {
+    return String(err);
+  }
+  if (t === 'symbol') return err.toString();
+  try {
+    const json = JSON.stringify(err);
+    if (typeof json === 'string' && json.length > 0 && json !== '{}') return json;
+  } catch {
+    /* cyclic / non-serializable */
+  }
+  const tag =
+    err && typeof err === 'object' && err.constructor && err.constructor.name
+      ? err.constructor.name
+      : t;
+  return `unserializable_${tag}`;
+}
+
+/**
+ * Bounded diagnostic for store/resume failures. Prefer own string `code` and
+ * `message` from Error and plain-object failures; never surface `[object Object]`.
+ * When `prefix` is provided, the complete final string (prefix + body + omission
+ * marker) is UTF-8-bounded to STORE_ERROR_DIAGNOSTIC_MAX_BYTES.
+ */
+function formatBoundedStoreError(err: unknown, prefix = ''): string {
+  let raw: string;
+  if (err instanceof Error) {
+    const rec = err as unknown as Record<string, unknown>;
+    const ownCode =
+      Object.prototype.hasOwnProperty.call(err, 'code') && typeof rec.code === 'string'
+        ? rec.code
+        : undefined;
+    raw = ownCode ? `${ownCode}: ${err.message}` : err.message;
+  } else if (err && typeof err === 'object') {
+    const rec = err as Record<string, unknown>;
+    const ownCode =
+      Object.prototype.hasOwnProperty.call(err, 'code') && typeof rec.code === 'string'
+        ? rec.code
+        : undefined;
+    const ownMessage =
+      Object.prototype.hasOwnProperty.call(err, 'message') && typeof rec.message === 'string'
+        ? rec.message
+        : undefined;
+    if (ownCode && ownMessage) raw = `${ownCode}: ${ownMessage}`;
+    else if (ownMessage) raw = ownMessage;
+    else if (ownCode) raw = ownCode;
+    else raw = fallbackDiagnosticPayload(err);
+  } else {
+    raw = fallbackDiagnosticPayload(err);
+  }
+  if (!prefix) return boundDiagnosticText(raw);
+  // Cap the complete final diagnostic including prefix and omission marker.
+  const full = `${prefix}${raw}`;
+  if (utf8BytesOf(full) <= STORE_ERROR_DIAGNOSTIC_MAX_BYTES) return full;
+  const marker = STORE_ERROR_OMISSION_MARKER;
+  const prefixBytes = utf8BytesOf(prefix);
+  const markerBytes = utf8BytesOf(marker);
+  const bodyBudget = STORE_ERROR_DIAGNOSTIC_MAX_BYTES - prefixBytes - markerBytes;
+  if (bodyBudget <= 0) {
+    // Prefix alone exceeds budget: truncate the whole string.
+    return boundDiagnosticText(full);
+  }
+  const body = truncateUtf8CodePoints(raw, bodyBudget);
+  const budgetUsed = prefixBytes + utf8BytesOf(body) + markerBytes;
+  const padding = STORE_ERROR_DIAGNOSTIC_MAX_BYTES - budgetUsed;
+  if (padding > 0) {
+    // Pad with spaces to fill exact diagnostic budget so output is deterministic.
+    return `${prefix}${body}${' '.repeat(padding)}${marker}`;
+  }
+  return `${prefix}${body}${marker}`;
+}
+
 function projectCwdFromRecord(
   record: import('./run-types.ts').AgentRunRecordV1,
   fallback: string
@@ -522,9 +642,14 @@ async function maybeResumeDurableRun(
   | { durable: DurableRunContext; restoredChain?: import('./chain.ts').RestoredChainState }
   | { error: string }
 > {
+  /** Centralized bounded resume error with prefix. Every return <= 64 KiB UTF-8. */
+  const resumeError = (cause: unknown, prefix = 'resume_error: '): { error: string } => ({
+    error: formatBoundedStoreError(cause, prefix),
+  });
+
   const store = options.runStore;
   const coordinator = options.runCoordinator;
-  if (!store || !coordinator) return { error: 'persistence_not_configured' };
+  if (!store || !coordinator) return resumeError('persistence_not_configured');
 
   const resumeRunId = resume.runId;
   const hasContinuation = Boolean(resume.currentContinuationTask);
@@ -534,7 +659,8 @@ async function maybeResumeDurableRun(
   };
   // Preflight: load once and verify that exact loaded record.
   const preflightLoaded = store.getRun(resumeRunId);
-  if (!preflightLoaded.ok) return { error: `run_not_found: ${preflightLoaded.error.message}` };
+  if (!preflightLoaded.ok)
+    return resumeError(preflightLoaded.error, 'resume_error: run_not_found: ');
   const preflightRecord = preflightLoaded.loaded.record;
   const preflightInspection = await inspectResumeRecord(
     resumeRunId,
@@ -542,14 +668,17 @@ async function maybeResumeDurableRun(
     store,
     inspectOptions
   );
-  if (!preflightInspection.ok) return { error: preflightInspection.reason };
+  if (!preflightInspection.ok) return resumeError(preflightInspection.reason);
   if (preflightInspection.blockingReasons.length > 0) {
-    return { error: `preflight_failed: ${preflightInspection.blockingReasons.join('; ')}` };
+    return resumeError(
+      preflightInspection.blockingReasons.join('; '),
+      'resume_error: preflight_failed: '
+    );
   }
-  if (coordinator.isActive(resumeRunId)) return { error: 'run_active' };
+  if (coordinator.isActive(resumeRunId)) return resumeError('run_active');
 
   const claim = await store.claimRun(resumeRunId);
-  if (!claim.ok) return { error: `claim_failed: ${claim.error.message}` };
+  if (!claim.ok) return resumeError(claim.error, 'resume_error: claim_failed: ');
 
   // Every post-claim operation lives inside one unified abandon boundary.
   // A single unregister+abandon on any error ensures the claim is never
@@ -831,7 +960,7 @@ async function maybeResumeDurableRun(
       claimId: claim.claimId,
       ticket: claim.ticket,
     });
-    await store.updateRun(resumeRunId, (r) => {
+    await store.updateRunStrict(resumeRunId, (r) => {
       r.status = 'running';
       delete r.finishedAt;
       r.units = units;
@@ -868,7 +997,7 @@ async function maybeResumeDurableRun(
     coordinator.unregisterRun(resumeRunId);
     await safeAbandon(store, resumeRunId, claim.claimId);
     return {
-      error: `resume_setup_failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: formatBoundedStoreError(err, 'resume_setup_failed: '),
     };
   }
 
@@ -1160,8 +1289,14 @@ export async function executeAgentTool(
     if (resumeDescriptor && options.runStore && options.runCoordinator) {
       const result = await maybeResumeDurableRun(resumeDescriptor, mode, options, ctx, agents);
       if ('error' in result) {
+        // Result.error is already bounded by formatBoundedStoreError to 64KiB.
         return {
-          content: [{ type: 'text', text: `resume_error: ${result.error}` }],
+          content: [
+            {
+              type: 'text',
+              text: result.error,
+            },
+          ],
           details: makeDetails(mode)([]),
           isError: true,
         };
@@ -2767,7 +2902,15 @@ async function runStepWithContext(
       delete options.unitContext.sessionFile;
       delete options.unitContext.sessionPromptEstablished;
     }
-    const message = err instanceof Error ? err.message : String(err);
+    const message =
+      err instanceof Error
+        ? err.message
+        : err &&
+            typeof err === 'object' &&
+            'message' in err &&
+            typeof (err as { message?: unknown }).message === 'string'
+          ? (err as { message: string }).message
+          : String(err);
     const failureCode = classifyEarlyFailureStopReason(err, message);
     const formalCode =
       err &&

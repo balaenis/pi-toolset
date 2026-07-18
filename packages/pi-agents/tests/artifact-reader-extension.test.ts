@@ -673,9 +673,17 @@ describe('artifact-reader-extension', () => {
     const prefixDir = path.join(runDir, 'artifacts', 'sha256', ref.sha256.slice(0, 2));
     const absolute = path.join(prefixDir, `${ref.sha256}.txt`);
     const expectedBuf = Buffer.from(text, 'utf8');
+    // Outside the run root entirely so realpath escapes containment.
     const outsideRoot = fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'pi-agents-outside-'));
+    const movedPrefix = path.join(outsideRoot, `prefix-${ref.sha256.slice(0, 2)}`);
 
     let fdDigestAfterSwap: string | undefined;
+    let preSwapIno: number | undefined;
+    let preSwapDev: number | undefined;
+    let postSwapFdIno: number | undefined;
+    let postSwapPathIno: number | undefined;
+    let postSwapFdDev: number | undefined;
+    let postSwapPathDev: number | undefined;
 
     const execute = await loadExecute({
       fstatSync: (fd: number) => fs.fstatSync(fd),
@@ -689,24 +697,34 @@ describe('artifact-reader-extension', () => {
         expect(probe.equals(expectedBuf)).toBe(true);
         fdDigestAfterSwap = crypto.createHash('sha256').update(probe).digest('hex');
         expect(fdDigestAfterSwap).toBe(ref.sha256);
+        const pre = fs.fstatSync(fd);
+        preSwapIno = pre.ino;
+        preSwapDev = pre.dev;
 
-        // Move the real prefix directory aside and replace its pathname with a
-        // symlink into an outside-root tree that holds an identical artifact.
-        const moved = `${prefixDir}.moved-${process.pid}`;
-        fs.renameSync(prefixDir, moved);
-        const outsidePrefix = path.join(outsideRoot, 'artifacts', 'sha256', ref.sha256.slice(0, 2));
-        fs.mkdirSync(outsidePrefix, { recursive: true });
-        fs.copyFileSync(
-          path.join(moved, `${ref.sha256}.txt`),
-          path.join(outsidePrefix, `${ref.sha256}.txt`)
-        );
-        fs.symlinkSync(outsidePrefix, prefixDir);
+        // Move the original prefix directory outside the run root (same inode for
+        // the artifact file) and replace the original pathname with a symlink to
+        // that moved directory. Digest/size/bytes/dev/ino stay equal; only realpath
+        // containment escapes the run root.
+        fs.renameSync(prefixDir, movedPrefix);
+        fs.symlinkSync(movedPrefix, prefixDir);
 
-        // Original fd still valid after parent redirect.
+        // Original fd still valid after parent redirect; path and fd share identity.
         const still = Buffer.alloc(expectedBuf.length);
         fs.readSync(fd, still, 0, expectedBuf.length, 0);
         expect(still.equals(expectedBuf)).toBe(true);
         expect(crypto.createHash('sha256').update(still).digest('hex')).toBe(ref.sha256);
+        const fdStat = fs.fstatSync(fd);
+        const pathStat = fs.lstatSync(absolute);
+        postSwapFdIno = fdStat.ino;
+        postSwapPathIno = pathStat.ino;
+        postSwapFdDev = fdStat.dev;
+        postSwapPathDev = pathStat.dev;
+        expect(postSwapFdIno).toBe(preSwapIno);
+        expect(postSwapPathIno).toBe(preSwapIno);
+        expect(postSwapFdDev).toBe(preSwapDev);
+        expect(postSwapPathDev).toBe(preSwapDev);
+        expect(fdStat.size).toBe(expectedBuf.length);
+        expect(pathStat.size).toBe(expectedBuf.length);
         return fd;
       },
       readFileSync: (fd: number) => fs.readFileSync(fd),
@@ -731,7 +749,12 @@ describe('artifact-reader-extension', () => {
       expect(msg).not.toContain(absolute);
     }
 
+    // Same-inode equality was recorded: rejection is containment/realpath, not identity.
     expect(fdDigestAfterSwap).toBe(ref.sha256);
+    expect(postSwapFdIno).toBe(preSwapIno);
+    expect(postSwapPathIno).toBe(preSwapIno);
+    expect(postSwapFdDev).toBe(preSwapDev);
+    expect(postSwapPathDev).toBe(preSwapDev);
 
     delete process.env.PI_AGENTS_RUN_ID;
     delete process.env.PI_AGENTS_RUN_ARTIFACT_DIR;
