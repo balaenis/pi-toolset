@@ -8,6 +8,8 @@ import {
   activeSpinnerCount,
   type AgentRenderState,
   type AgentToolRenderContext,
+  collapseToSingleLine,
+  formatToolCall,
   installSpinnerScheduler,
   isSharedSpinnerTickerActive,
   renderCall,
@@ -371,6 +373,35 @@ describe('renderResult single', () => {
     expect(text).toContain('└─');
     expect(text).toContain('first real line');
     expect(text).not.toContain('second');
+  });
+
+  it('keeps multi-line bash tool activity on one collapsed row', () => {
+    const { context } = makeContext();
+    const multi =
+      "node <<'NODE'\nconst fs = require('fs');\nconsole.log(fs.readFileSync('x').length);\nNODE";
+    const r = singleResult({
+      status: 'running',
+      exitCode: -1,
+      messages: [],
+      presentation: {
+        transcript: [{ type: 'toolCall', name: 'bash', args: { command: multi } }],
+        latestActivity: { type: 'toolCall', name: 'bash', args: { command: multi } },
+      },
+    });
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'running' }], details: singleDetails(r) },
+        { expanded: false, isPartial: true },
+        theme,
+        context
+      )
+    );
+    const activity = text.split('\n').find((l) => l.includes('└─')) ?? '';
+    expect(activity).toContain('└─');
+    expect(activity).toContain('$');
+    expect(activity).not.toMatch(/\r|\n/);
+    // One logical activity row: no extra terminal rows from embedded command newlines.
+    expect(text.split('\n').filter((l) => l.includes('└─')).length).toBe(1);
   });
 
   it('hides latest activity and final output when completed', () => {
@@ -1947,5 +1978,33 @@ describe('renderResult empty-details fallback', () => {
       undefined
     );
     expect(renderText(comp)).toContain('Explore');
+  });
+});
+
+describe('collapseToSingleLine / formatToolCall single-row previews', () => {
+  const themeFg = (_c: string, t: string) => t;
+
+  it('replaces CR/LF and Unicode line separators with spaces', () => {
+    expect(collapseToSingleLine('a\nb\rc\r\nd')).toBe('a b c d');
+    expect(collapseToSingleLine('a\u2028b\u2029c\u0085d')).toBe('a b c d');
+  });
+
+  it('formatToolCall bash collapses multi-line commands to one preview row', () => {
+    const multi = "node <<'NODE'\nconst fs = require('fs');\nconsole.log(1);\nNODE";
+    const line = formatToolCall('bash', { command: multi }, themeFg as never);
+    expect(line).toContain('$');
+    expect(line).toContain('node');
+    expect(line).not.toMatch(/\r|\n|\u2028|\u2029|\u0085/);
+    expect(line.split('\n')).toHaveLength(1);
+  });
+
+  it('formatToolCall grep/find collapse multi-line patterns', () => {
+    const grep = formatToolCall('grep', { pattern: 'foo\nbar', path: '/tmp' }, themeFg as never);
+    expect(grep).not.toMatch(/\r|\n/);
+    expect(grep).toContain('foo bar');
+
+    const find = formatToolCall('find', { pattern: '*.ts\n*.tsx', path: '/tmp' }, themeFg as never);
+    expect(find).not.toMatch(/\r|\n/);
+    expect(find).toContain('*.ts *.tsx');
   });
 });

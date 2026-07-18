@@ -23,7 +23,7 @@ import {
   type InteractiveOutboundMode,
   type InteractiveRegistryEvent,
 } from './interactive-agent.ts';
-import { formatToolCall } from './render.ts';
+import { collapseToSingleLine, formatToolCall } from './render.ts';
 
 const WIDGET_KEY = 'pi-agents-interactive-nav';
 const TOOL_RESULT_MAX_LINES = 5;
@@ -591,6 +591,7 @@ export class AgentDetailPanel implements Component, Focusable {
       for (const tool of snap.activeTools) {
         const call = formatToolCall(tool.toolName, tool.args, (c, t) => fg(c, t));
         // Append status first, then truncate so · error/done cannot exceed width.
+        // formatToolCall already collapses CR/LF; keep a single terminal row here.
         const withStatus = tool.ended
           ? tool.isError
             ? `${call} · error`
@@ -602,19 +603,31 @@ export class AgentDetailPanel implements Component, Focusable {
             : truncateToWidth(withStatus, width)
         );
         // Surface partial tool output so same-count content replacement is visible.
+        // Always one row: multi-line stdout would desync pi-tui differential repaint.
         if (tool.partialResult !== undefined) {
-          const partial =
+          const partial = collapseToSingleLine(
             typeof tool.partialResult === 'string'
               ? tool.partialResult
-              : JSON.stringify(tool.partialResult);
+              : JSON.stringify(tool.partialResult)
+          );
           lines.push(fg('dim', truncateToWidth(partial, Math.max(10, width))));
         }
       }
       for (const q of snap.steeringQueue) {
-        lines.push(fg('dim', truncateToWidth(`queued steer: ${q}`, Math.max(10, width))));
+        lines.push(
+          fg(
+            'dim',
+            truncateToWidth(collapseToSingleLine(`queued steer: ${q}`), Math.max(10, width))
+          )
+        );
       }
       for (const q of snap.followUpQueue) {
-        lines.push(fg('dim', truncateToWidth(`queued follow-up: ${q}`, Math.max(10, width))));
+        lines.push(
+          fg(
+            'dim',
+            truncateToWidth(collapseToSingleLine(`queued follow-up: ${q}`), Math.max(10, width))
+          )
+        );
       }
       this.dynamicLines = lines;
       this.dynamicCacheKey = dynamicKey;
@@ -727,7 +740,11 @@ export class AgentDetailPanel implements Component, Focusable {
             const line = l.startsWith('> ') ? `❱ ${l.slice(2)}` : l;
             return visibleWidth(line) > width ? truncateToWidth(line, width) : line;
           });
-    const safeView = view.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width) : l));
+    // Last-chance single-row guard: residual CR/LF in any content line desyncs TUI rows.
+    const safeView = view.map((l) => {
+      const single = collapseToSingleLine(l);
+      return visibleWidth(single) > width ? truncateToWidth(single, width) : single;
+    });
     const separator = this.opts.theme.fg('accent', '─'.repeat(Math.max(1, width)));
     return [border, header, ...safeView, separator, statusLine, ...inputLines, help, border];
   }
@@ -1330,12 +1347,27 @@ export const __test = {
           ? fg('dim', truncateToWidth(withStatus, width))
           : truncateToWidth(withStatus, width)
       );
+      if (tool.partialResult !== undefined) {
+        const partial = collapseToSingleLine(
+          typeof tool.partialResult === 'string'
+            ? tool.partialResult
+            : JSON.stringify(tool.partialResult)
+        );
+        dynamic.push(fg('dim', truncateToWidth(partial, Math.max(10, width))));
+      }
     }
     for (const q of snap.steeringQueue ?? []) {
-      dynamic.push(fg('dim', truncateToWidth(`queued steer: ${q}`, Math.max(10, width))));
+      dynamic.push(
+        fg('dim', truncateToWidth(collapseToSingleLine(`queued steer: ${q}`), Math.max(10, width)))
+      );
     }
     for (const q of snap.followUpQueue ?? []) {
-      dynamic.push(fg('dim', truncateToWidth(`queued follow-up: ${q}`, Math.max(10, width))));
+      dynamic.push(
+        fg(
+          'dim',
+          truncateToWidth(collapseToSingleLine(`queued follow-up: ${q}`), Math.max(10, width))
+        )
+      );
     }
     return { finalized, dynamic };
   },

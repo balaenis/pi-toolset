@@ -2375,3 +2375,107 @@ describe('Agent View host resume (Ctrl+R)', () => {
     panel.dispose();
   });
 });
+
+describe('interactive-view single-row tool/partial/queue lines', () => {
+  const fg = (_c: string, t: string) => t;
+
+  function assertNoEmbeddedBreaks(lines: string[]) {
+    for (const line of lines) {
+      expect(line).not.toMatch(/\r|\n|\u2028|\u2029|\u0085/);
+    }
+  }
+
+  it('collapses multi-line bash commands and partialResult to one dynamic row each', () => {
+    const multiCmd = "node <<'NODE'\nconst fs = require('fs');\nconsole.log(1);\nNODE";
+    const multiPartial = 'phase A done\nRunDirSession 5\nheld.session 3';
+    const { dynamic } = __test.formatTranscriptSegments(
+      {
+        messages: [],
+        messagesRevision: 0,
+        streamRevision: 1,
+        queueCount: 0,
+        activeTools: [
+          {
+            toolCallId: 't1',
+            toolName: 'bash',
+            args: { command: multiCmd },
+            ended: false,
+            isError: false,
+            partialResult: multiPartial,
+          },
+        ],
+        steeringQueue: [],
+        followUpQueue: [],
+      },
+      80,
+      fg as never
+    );
+    expect(dynamic.length).toBe(2); // tool call + partial
+    assertNoEmbeddedBreaks(dynamic);
+    expect(dynamic[0]).toContain('node');
+    expect(dynamic[1]).toContain('phase A done');
+    expect(dynamic[1]).toContain('RunDirSession 5');
+  });
+
+  it('collapses multi-line steer/follow-up queue entries', () => {
+    const { dynamic } = __test.formatTranscriptSegments(
+      {
+        messages: [],
+        messagesRevision: 0,
+        streamRevision: 1,
+        queueCount: 2,
+        activeTools: [],
+        steeringQueue: ['fix\nthe\nbug'],
+        followUpQueue: ['after\rdone'],
+      },
+      80,
+      fg as never
+    );
+    expect(dynamic.length).toBe(2);
+    assertNoEmbeddedBreaks(dynamic);
+    expect(dynamic[0]).toContain('queued steer: fix the bug');
+    expect(dynamic[1]).toContain('queued follow-up: after done');
+  });
+
+  it('AgentDetailPanel render keeps multi-line tool output on single terminal rows', () => {
+    const multiCmd = "rg -n 'session'\n--glob '*.ts'\npackages/pi-agents";
+    const multiPartial = '{"content":[{"type":"text","text":"line1\nline2"}]}';
+    const current = snap({
+      key: 'run:u',
+      linkCreatedAt: 1,
+      status: 'running',
+      agent: 'general',
+      title: 'general',
+      streamRevision: 3,
+      activeTools: [
+        {
+          toolCallId: 'bash-1',
+          toolName: 'bash',
+          args: { command: multiCmd },
+          ended: true,
+          isError: false,
+          partialResult: multiPartial,
+        },
+      ],
+    });
+    const panel = new AgentDetailPanel({
+      tui: { requestRender: () => undefined, terminal: { rows: 24 } } as never,
+      theme: fakeTheme() as never,
+      registry: {
+        get: () => current,
+        subscribe: () => () => undefined,
+        send: async () => undefined,
+        abort: async () => undefined,
+      } as never,
+      endpointKey: 'run:u',
+      onBack: () => undefined,
+      onResume: () => undefined,
+    });
+    const rows = panel.render(80);
+    assertNoEmbeddedBreaks(rows);
+    const joined = rows.join('\n');
+    expect(joined).toContain('rg -n');
+    expect(joined).toContain('line1 line2');
+    panel.dispose();
+  });
+});

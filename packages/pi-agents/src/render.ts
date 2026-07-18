@@ -229,6 +229,15 @@ class WidthText implements Component {
   }
 }
 
+/**
+ * Collapse CR/LF (and Unicode line/paragraph separators) to spaces.
+ * pi-tui differential rendering assumes one array entry = one terminal row;
+ * visibleWidth treats these as zero-width, but the terminal still advances.
+ */
+export function collapseToSingleLine(text: string): string {
+  return text.replace(/\r\n|\r|\n|\u0085|\u2028|\u2029/g, ' ');
+}
+
 export function formatToolCall(
   toolName: string,
   args: Record<string, unknown>,
@@ -236,12 +245,13 @@ export function formatToolCall(
 ): string {
   const shortenPath = (p: string) => {
     const home = os.homedir();
-    return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+    const collapsed = collapseToSingleLine(p);
+    return collapsed.startsWith(home) ? `~${collapsed.slice(home.length)}` : collapsed;
   };
 
   switch (toolName) {
     case 'bash': {
-      const command = (args.command as string) || '...';
+      const command = collapseToSingleLine((args.command as string) || '...');
       const preview =
         command.length > PRESENTATION_COMMAND_PREVIEW_CHARS
           ? `${command.slice(0, PRESENTATION_COMMAND_PREVIEW_CHARS)}...`
@@ -279,7 +289,7 @@ export function formatToolCall(
       return themeFg('muted', 'ls ') + themeFg('accent', shortenPath(rawPath));
     }
     case 'find': {
-      const pattern = (args.pattern || '*') as string;
+      const pattern = collapseToSingleLine((args.pattern as string) || '*');
       const rawPath = (args.path || '.') as string;
       return (
         themeFg('muted', 'find ') +
@@ -288,7 +298,7 @@ export function formatToolCall(
       );
     }
     case 'grep': {
-      const pattern = (args.pattern || '') as string;
+      const pattern = collapseToSingleLine((args.pattern as string) || '');
       const rawPath = (args.path || '.') as string;
       return (
         themeFg('muted', 'grep ') +
@@ -297,7 +307,7 @@ export function formatToolCall(
       );
     }
     default: {
-      const argsStr = JSON.stringify(args);
+      const argsStr = collapseToSingleLine(JSON.stringify(args));
       const preview =
         argsStr.length > PRESENTATION_ARGS_PREVIEW_CHARS
           ? `${argsStr.slice(0, PRESENTATION_ARGS_PREVIEW_CHARS)}...`
@@ -423,7 +433,7 @@ function emptyUsageAggregate(): UsageStats {
 
 /** First non-empty line of assistant text for collapsed activity preview. */
 function textActivityPreview(text: string): string | undefined {
-  for (const line of text.split('\n')) {
+  for (const line of text.split(/\r\n|\r|\n|\u0085|\u2028|\u2029/)) {
     if (line.trim().length > 0) return line;
   }
   return undefined;
@@ -452,7 +462,10 @@ function formatActivityLine(
 
 /** Truncate a collapsed activity line to the available width (ANSI-safe, single `…`). */
 function fitActivityLine(line: string, width: number): string {
-  return width > 0 ? truncateDisplayToWidth(line, width) : line;
+  // Defense in depth: activity rows must stay one terminal row even if a
+  // tool-call formatter or text preview still embeds a line break.
+  const single = collapseToSingleLine(line);
+  return width > 0 ? truncateDisplayToWidth(single, width) : single;
 }
 
 /** Append a collapsed activity line only when it has visible content. */
