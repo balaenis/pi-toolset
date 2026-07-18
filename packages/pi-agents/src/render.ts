@@ -421,6 +421,20 @@ function emptyUsageAggregate(): UsageStats {
   };
 }
 
+/** First non-empty line of assistant text for collapsed activity preview. */
+function textActivityPreview(text: string): string | undefined {
+  for (const line of text.split('\n')) {
+    if (line.trim().length > 0) return line;
+  }
+  return undefined;
+}
+
+/** True when collapsed view should render a `└─` activity row. */
+function isVisibleActivity(item: DisplayItem): boolean {
+  if (item.type === 'toolCall') return item.name.trim().length > 0;
+  return textActivityPreview(item.text) !== undefined;
+}
+
 function formatActivityLine(
   item: DisplayItem,
   theme: Theme,
@@ -432,13 +446,26 @@ function formatActivityLine(
   if (item.type === 'toolCall') {
     return fitActivityLine(prefixStr + formatToolCall(item.name, item.args, themeFg), width);
   }
-  const preview = item.text.split('\n')[0] ?? '';
+  const preview = textActivityPreview(item.text) ?? '';
   return fitActivityLine(prefixStr + theme.fg('toolOutput', preview), width);
 }
 
 /** Truncate a collapsed activity line to the available width (ANSI-safe, single `…`). */
 function fitActivityLine(line: string, width: number): string {
   return width > 0 ? truncateDisplayToWidth(line, width) : line;
+}
+
+/** Append a collapsed activity line only when it has visible content. */
+function appendCollapsedActivity(
+  lines: string[],
+  item: DisplayItem | undefined,
+  theme: Theme,
+  themeFg: ThemeFg,
+  width: number,
+  prefix = ''
+): void {
+  if (!item || !isVisibleActivity(item)) return;
+  lines.push(formatActivityLine(item, theme, themeFg, width, prefix));
 }
 
 interface SummaryParts {
@@ -674,7 +701,9 @@ function renderSingleCollapsed(
 
     if (status === 'running') {
       const latest = getResultLatestActivity(r);
-      if (latest) text += `\n${formatActivityLine(latest, theme, themeFg, width)}`;
+      if (latest && isVisibleActivity(latest)) {
+        text += `\n${formatActivityLine(latest, theme, themeFg, width)}`;
+      }
     } else if (status === 'failed' && r.errorMessage) {
       text += `\n${theme.fg('error', `  Error: ${r.errorMessage}`)}`;
     }
@@ -709,8 +738,7 @@ function renderParallelCollapsed(
         formatSummaryLine(resultSummaryParts(r, theme, { animateContext: context }), width, theme)
       );
       if (status === 'running') {
-        const latest = getResultLatestActivity(r);
-        if (latest) lines.push(formatActivityLine(latest, theme, themeFg, width));
+        appendCollapsedActivity(lines, getResultLatestActivity(r), theme, themeFg, width);
       }
     }
     const completed = results.filter((r) => resolveExecutionStatus(r) === 'completed').length;
@@ -870,8 +898,7 @@ function renderChainCollapsed(
         parts.glyph = statusGlyph(step.status, theme, context);
         lines.push(formatSummaryLine(parts, width, theme));
         if (step.status === 'running' && r) {
-          const latest = getResultLatestActivity(r);
-          if (latest) lines.push(formatActivityLine(latest, theme, themeFg, width));
+          appendCollapsedActivity(lines, getResultLatestActivity(r), theme, themeFg, width);
         }
       } else {
         const items = fanoutResultsForStep(details.results, step.step);
@@ -889,7 +916,7 @@ function renderChainCollapsed(
           const latestItem = items.find((it) => it.fanout?.index === step.latestIndex);
           if (latestItem) {
             const activity = getResultLatestActivity(latestItem);
-            if (activity) {
+            if (activity && isVisibleActivity(activity)) {
               const total = step.executedCount || latestItem.fanout?.count || items.length;
               const oneBased = (step.latestIndex ?? 0) + 1;
               lines.push(

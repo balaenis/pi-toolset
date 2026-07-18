@@ -298,6 +298,81 @@ describe('renderResult single', () => {
     expect(text).not.toContain('subagent');
   });
 
+  it('hides empty latest activity so startup does not show a bare └─', () => {
+    const { context } = makeContext();
+    const r = singleResult({
+      status: 'running',
+      exitCode: -1,
+      task: 'Audit plan-relevant code state',
+      title: 'Audit plan-relevant code state',
+      model: 'opencode-go/deepseek-v4-flash',
+      thinking: 'high',
+      messages: assistantMessages([{ type: 'text', text: '' }]),
+    });
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'running' }], details: singleDetails(r) },
+        { expanded: false, isPartial: true },
+        theme,
+        context
+      )
+    );
+    expect(startsWithSpinnerFrame(text)).toBe(true);
+    expect(text).toContain('Explore');
+    expect(text).not.toContain('└─');
+    expect(text).toContain('(ctrl+o to expand)');
+  });
+
+  it('hides whitespace-only latest activity and blank compact finalOutput synthesis', () => {
+    const { context } = makeContext();
+    const legacy = singleResult({
+      status: 'running',
+      exitCode: -1,
+      messages: assistantMessages([{ type: 'text', text: '\n  \n' }]),
+    });
+    const compact = singleResult({
+      status: 'running',
+      exitCode: -1,
+      messages: [],
+      finalOutput: '',
+      presentation: {
+        transcript: [{ type: 'text', text: 'older retained note' }],
+      },
+    });
+
+    for (const r of [legacy, compact]) {
+      const text = renderText(
+        renderResult(
+          { content: [{ type: 'text', text: 'running' }], details: singleDetails(r) },
+          { expanded: false, isPartial: true },
+          theme,
+          context
+        )
+      );
+      expect(text).not.toContain('└─');
+    }
+  });
+
+  it('uses the first non-empty line for multi-line text activity', () => {
+    const { context } = makeContext();
+    const r = singleResult({
+      status: 'running',
+      exitCode: -1,
+      messages: assistantMessages([{ type: 'text', text: '\n\nfirst real line\nsecond' }]),
+    });
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'running' }], details: singleDetails(r) },
+        { expanded: false, isPartial: true },
+        theme,
+        context
+      )
+    );
+    expect(text).toContain('└─');
+    expect(text).toContain('first real line');
+    expect(text).not.toContain('second');
+  });
+
   it('hides latest activity and final output when completed', () => {
     const { context } = makeContext();
     const r = singleResult({
