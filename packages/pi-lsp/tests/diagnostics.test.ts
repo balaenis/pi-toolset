@@ -1,13 +1,13 @@
 // ABOUTME: Tests for multi-server diagnostic registry behavior.
-// ABOUTME: Verifies that diagnostics from multiple servers coexist per URI and per-server clearing.
+// ABOUTME: Verifies pending invalidation, cross-edit dedup, and clean-report clearing.
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Diagnostic as LspDiagnostic } from 'vscode-languageserver-types';
 import {
-  clearForFile,
   drain,
   formatDiagnosticsState,
   hasDiagnostics,
+  invalidatePendingForFile,
   onChanged,
   register,
   resetAll,
@@ -103,14 +103,53 @@ describe('multi-server diagnostics', () => {
     expect(block!).toContain('server: eslint');
   });
 
-  it('clearForFile removes pending entries from every server for that URI', () => {
+  it('invalidatePendingForFile removes pending entries from every server for that URI', () => {
     const uri = 'file:///tmp/d.ts';
     register('typescript', uri, [diag('TS error', 'ts', 0)]);
     register('eslint', uri, [diag('lint error', 'eslint', 1)]);
 
-    clearForFile(uri);
+    invalidatePendingForFile(uri);
 
     expect(drain()).toBeNull();
+    expect(hasDiagnostics()).toBe(false);
+  });
+
+  it('suppresses unchanged diagnostics across pending invalidation after delivery', () => {
+    const uri = 'file:///tmp/e.ts';
+    const issue = diag('unchanged error', 'ts', 3);
+
+    register('typescript', uri, [issue]);
+    expect(drain()).not.toBeNull();
+
+    // Edit invalidates pending only; delivered keys remain for cross-turn dedup.
+    invalidatePendingForFile(uri);
+    register('typescript', uri, [issue]);
+    expect(drain()).toBeNull();
+
+    // Clean publish from the same server clears that server's delivered keys.
+    register('typescript', uri, []);
+    register('typescript', uri, [issue]);
+    const reintroduced = drain();
+    expect(reintroduced).not.toBeNull();
+    expect(reintroduced!).toContain('unchanged error');
+  });
+
+  it('clean publish clears delivered keys only for the publishing server', () => {
+    const uri = 'file:///tmp/f.ts';
+    register('typescript', uri, [diag('TS error', 'ts', 0)]);
+    register('eslint', uri, [diag('lint error', 'eslint', 1)]);
+    drain();
+
+    // Only TypeScript reports clean; ESLint delivered keys stay.
+    register('typescript', uri, []);
+
+    register('typescript', uri, [diag('TS error', 'ts', 0)]);
+    register('eslint', uri, [diag('lint error', 'eslint', 1)]);
+
+    const block = drain();
+    expect(block).not.toBeNull();
+    expect(block!).toContain('TS error');
+    expect(block!).not.toContain('lint error');
   });
 });
 
@@ -124,7 +163,20 @@ describe('diagnostic presence indicator', () => {
     drain();
     expect(hasDiagnostics()).toBe(true);
 
-    clearForFile('file:///x.ts');
+    // Pending invalidation must not clear delivered presence.
+    invalidatePendingForFile('file:///x.ts');
+    expect(hasDiagnostics()).toBe(true);
+
+    // Clean publish clears the final state.
+    register('ts', 'file:///x.ts', []);
+    expect(hasDiagnostics()).toBe(false);
+  });
+
+  it('clears presence on resetAll after delivery', () => {
+    register('ts', 'file:///x.ts', [diag('e')]);
+    drain();
+    expect(hasDiagnostics()).toBe(true);
+    resetAll();
     expect(hasDiagnostics()).toBe(false);
   });
 
@@ -153,6 +205,21 @@ describe('diagnostic presence indicator', () => {
     calls.length = 0;
 
     drain();
+    expect(calls).toEqual([]);
+    expect(hasDiagnostics()).toBe(true);
+
+    off();
+  });
+
+  it('does not notify when invalidatePendingForFile leaves delivered state', () => {
+    const calls: number[] = [];
+    const off = onChanged(() => calls.push(1));
+
+    register('ts', 'file:///x.ts', [diag('e')]);
+    drain();
+    calls.length = 0;
+
+    invalidatePendingForFile('file:///x.ts');
     expect(calls).toEqual([]);
     expect(hasDiagnostics()).toBe(true);
 
@@ -196,12 +263,15 @@ describe('formatDiagnosticsState', () => {
     expect(uriOccurrences.length).toBe(1);
   });
 
-  it('clears delivered diagnostics for a file on clearForFile', () => {
+  it('keeps delivered diagnostics after pending invalidation', () => {
     const uri = 'file:///x.ts';
     register('ts', uri, [diag('e')]);
     drain();
-    clearForFile(uri);
-    expect(formatDiagnosticsState()).toContain('No pending or delivered diagnostics.');
+    invalidatePendingForFile(uri);
+    const output = formatDiagnosticsState();
+    expect(output).toContain('Delivered (1 issue across 1 file):');
+    expect(output).toContain('e');
+    expect(output).not.toContain('Pending');
   });
 
   it('shows the originating server for delivered diagnostics without a source', () => {

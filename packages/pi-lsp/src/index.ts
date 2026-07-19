@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { isEditToolResult, isWriteToolResult } from '@earendil-works/pi-coding-agent';
+import { drainDiagnosticMessage } from './diagnostic-delivery.ts';
 import * as diagnostics from './diagnostics.ts';
 import {
   initializeManager,
@@ -18,9 +19,6 @@ import { formatLspStatus } from './statusline.ts';
 import { registerLspTool } from './tools.ts';
 import { logForDebugging } from './log.ts';
 
-/** customType tag used for hidden diagnostic messages. */
-const DIAGNOSTIC_CUSTOM_TYPE = 'lsp-diagnostics';
-
 /** Status segment key used to identify the LSP indicator in setStatus. */
 const LSP_STATUS_KEY = 'lsp';
 
@@ -32,34 +30,6 @@ export default function (pi: ExtensionAPI): void {
 
   let unsubscribeLspStatus: (() => void) | undefined;
   let unsubscribeDiagnostics: (() => void) | undefined;
-  let unsubscribeDiagnosticRegistered: (() => void) | undefined;
-  let diagnosticFlushScheduled = false;
-  let diagnosticFlushGeneration = 0;
-
-  const scheduleDiagnosticFlush = (cwd: string): void => {
-    logForDebugging(`diagnostics: scheduling flush for ${cwd}`);
-    if (diagnosticFlushScheduled) return;
-    diagnosticFlushScheduled = true;
-    const generation = diagnosticFlushGeneration;
-
-    queueMicrotask(() => {
-      diagnosticFlushScheduled = false;
-      if (generation !== diagnosticFlushGeneration) return;
-
-      const block = diagnostics.drain(cwd);
-      if (!block) return;
-
-      logForDebugging(`diagnostics: injecting block for ${cwd}`);
-      pi.sendMessage(
-        {
-          customType: DIAGNOSTIC_CUSTOM_TYPE,
-          content: block,
-          display: false,
-        },
-        { deliverAs: 'steer' }
-      );
-    });
-  };
 
   pi.on('session_start', (_event, ctx) => {
     // Synchronous, non-blocking, idempotent. Servers are lazily started on the
@@ -83,14 +53,6 @@ export default function (pi: ExtensionAPI): void {
     unsubscribeDiagnostics?.();
     unsubscribeDiagnostics = diagnostics.onChanged(render);
     render();
-
-    diagnosticFlushGeneration += 1;
-    diagnosticFlushScheduled = false;
-
-    unsubscribeDiagnosticRegistered?.();
-    unsubscribeDiagnosticRegistered = diagnostics.onDiagnosticRegistered(() => {
-      scheduleDiagnosticFlush(ctx.cwd);
-    });
   });
 
   pi.on('session_shutdown', async (_event, ctx) => {
@@ -100,10 +62,6 @@ export default function (pi: ExtensionAPI): void {
     unsubscribeLspStatus = undefined;
     unsubscribeDiagnostics?.();
     unsubscribeDiagnostics = undefined;
-    unsubscribeDiagnosticRegistered?.();
-    unsubscribeDiagnosticRegistered = undefined;
-    diagnosticFlushGeneration += 1;
-    diagnosticFlushScheduled = false;
 
     ctx.ui.setStatus(LSP_STATUS_KEY, undefined);
 
@@ -111,9 +69,18 @@ export default function (pi: ExtensionAPI): void {
     diagnostics.resetAll();
   });
 
-  // After the agent edits or writes a file, re-sync it to the LSP server so it
-  // re-publishes diagnostics, and clear the file's dedup cache so new issues can
-  // surface even if they match previously delivered ones.
+  // Passive diagnostics are next-run context: drain once at the start of a
+  // user-initiated agent run into one durable hidden custom message.
+  pi.on('before_agent_start', (_event, ctx) => {
+    const message = drainDiagnosticMessage(ctx.cwd);
+    if (!message) return;
+    logForDebugging(`diagnostics: injecting durable block for ${ctx.cwd}`);
+    return { message };
+  });
+
+  // After the agent edits or writes a file, drop stale pre-edit pending
+  // snapshots and re-sync disk content so the server can publish a fresh set.
+  // Delivered dedup keys are left intact until a clean server publish.
   pi.on('tool_result', async (event, ctx) => {
     if (!isEditToolResult(event) && !isWriteToolResult(event)) return;
     if (event.isError) return;
@@ -124,7 +91,7 @@ export default function (pi: ExtensionAPI): void {
     const absolutePath = path.resolve(ctx.cwd, input.path);
     const uri = pathToFileURL(absolutePath).href;
 
-    diagnostics.clearForFile(uri);
+    diagnostics.invalidatePendingForFile(uri);
 
     // Make sure the manager is ready, then push the disk content to the server.
     // Best-effort: never let a sync failure disrupt the agent.

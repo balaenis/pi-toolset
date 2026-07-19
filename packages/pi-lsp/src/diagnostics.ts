@@ -1,4 +1,4 @@
-// ABOUTME: Passive LSP diagnostic registry — dedup, throttle, edit-aware cleanup.
+// ABOUTME: Passive LSP diagnostic registry — dedup, throttle, pending invalidation.
 // ABOUTME: Port of Claude Code's LSPDiagnosticRegistry, adapted to Pi (internal LRU, text drain).
 
 import { formatUri } from './formatters.ts';
@@ -138,7 +138,6 @@ const deliveredDiagnostics = new LruMap<string, Set<string>>(MAX_DELIVERED_FILES
 // empty <-> non-empty transition so a high-frequency publish stream doesn't
 // thrash the UI.
 const listeners = new Set<() => void>();
-const diagnosticRegisteredListeners = new Set<() => void>();
 
 function diagnosticsPresent(): boolean {
   return pendingDiagnostics.size > 0 || deliveredDiagnostics.size > 0;
@@ -151,16 +150,6 @@ function notifyIfChanged(before: boolean): void {
       listener();
     } catch (error) {
       logError(new Error(`diagnostics listener threw: ${errorMessage(error)}`));
-    }
-  }
-}
-
-function notifyOnDiagnosticRegistered() {
-  for (const listener of diagnosticRegisteredListeners) {
-    try {
-      listener();
-    } catch (error) {
-      logError(new Error(`diagnostic registered listener threw: ${errorMessage(error)}`));
     }
   }
 }
@@ -291,7 +280,6 @@ export function register(serverName: string, uri: string, diagnostics: LspDiagno
   const stored: StoredDiagnostic[] = diagnostics.map(toStoredDiagnostic);
   pendingDiagnostics.set(key, { serverName, uri, diagnostics: stored });
   notifyIfChanged(before);
-  notifyOnDiagnosticRegistered();
 
   logForDebugging(
     `diagnostics: registered ${stored.length} diagnostic(s) for ${uri} from ${serverName}`
@@ -382,8 +370,8 @@ export function drain(cwd?: string): string | null {
     return null;
   }
 
-  // Track delivered diagnostics for cross-turn dedup so we don't re-inject the
-  // same issue without an edit in between.
+  // Track delivered diagnostics for cross-turn dedup. Keys remain until the
+  // originating server publishes a clean result or resetAll() runs.
   for (const file of deliveredFiles) {
     const delivered = deliveredDiagnostics.get(file.uri) ?? new Set<string>();
     for (const diag of file.diagnostics) {
@@ -554,22 +542,21 @@ export function formatDiagnosticsState(cwd?: string): string {
 }
 
 /**
- * Clear delivered-diagnostic tracking and any pending entry for a file.
+ * Drop stale pending snapshots for a file after an edit/write.
  *
- * Called after the agent edits a file so that fresh diagnostics for it can be
- * shown again even if they match previously delivered ones.
+ * Removes every pending `(server, URI)` entry for the URI while leaving
+ * `deliveredDiagnostics` unchanged. Cross-turn history is cleared only by a
+ * clean server publish or `resetAll()`.
  */
-export function clearForFile(uri: string): void {
+export function invalidatePendingForFile(uri: string): void {
   const before = diagnosticsPresent();
-  // Drop pending entries for this URI from any server.
   const toDelete: string[] = [];
   for (const [key, entry] of pendingDiagnostics) {
     if (entry.uri === uri) toDelete.push(key);
   }
   for (const key of toDelete) pendingDiagnostics.delete(key);
-  if (deliveredDiagnostics.has(uri)) {
-    deliveredDiagnostics.delete(uri);
-    logForDebugging(`diagnostics: cleared delivered tracking for ${uri}`);
+  if (toDelete.length > 0) {
+    logForDebugging(`diagnostics: invalidated ${toDelete.length} pending snapshot(s) for ${uri}`);
   }
   notifyIfChanged(before);
 }
@@ -588,7 +575,7 @@ export function resetAll(): void {
 
 /**
  * Whether any diagnostics are currently tracked: pending (awaiting drain) or
- * delivered (already injected but not cleared by a file edit).
+ * delivered (already injected; cleared only by a clean publish or reset).
  */
 export function hasDiagnostics(): boolean {
   return diagnosticsPresent();
@@ -602,12 +589,5 @@ export function onChanged(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
-  };
-}
-
-export function onDiagnosticRegistered(listener: () => void): () => void {
-  diagnosticRegisteredListeners.add(listener);
-  return () => {
-    diagnosticRegisteredListeners.delete(listener);
   };
 }

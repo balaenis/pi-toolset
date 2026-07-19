@@ -140,9 +140,9 @@ out of the box. The built-in Tailwind CSS recipe is a companion with
 
 `…n` counts starting servers; `✕n` counts servers in error. The bolt uses the
 theme's `error` color whenever one or more diagnostics are tracked (from the
-initial LSP publish until the file is edited or the diagnostic state is reset);
-otherwise it keeps the accent color. The segment is hidden when all tracked
-counts are zero.
+initial LSP publish until the originating server reports the diagnostic clean or
+diagnostic state is reset); otherwise it keeps the accent color. The segment is
+hidden when all tracked counts are zero.
 
 ## Slash commands
 

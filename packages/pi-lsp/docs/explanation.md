@@ -62,8 +62,23 @@ Diagnostics come from two sources:
 
 Passive diagnostics are collected from every configured server covering the file
 (primary + companions), so lint/type/etc. issues from different servers can
-coexist. Diagnostics are deduplicated across turns after they are delivered to
-the LLM.
+coexist. Delivery is lifecycle-batched, not mid-run steering:
+
+1. **Registration** — push (`publishDiagnostics`) and pull (`textDocument/diagnostic`)
+   results update the registry's latest `(server, URI)` snapshot.
+2. **Pending** — snapshots wait until the next user-initiated agent run.
+3. **`before_agent_start` drain** — one durable hidden custom message
+   (`customType: lsp-diagnostics`, `display: false`) is injected for that run.
+4. **Delivered dedup** — drained keys are retained so an unchanged diagnostic is
+   not re-injected merely because the file was edited again.
+5. **Clean publish clearing** — an empty publish from a server clears that
+   server's pending and delivered keys for the URI; other servers are unaffected.
+
+Edits/writes invalidate stale **pending** snapshots for the file before
+re-syncing the LSP server; they do **not** erase delivered history. A later
+clean report, then reintroduction of the same issue, makes it deliverable again.
+Publishes that arrive after `before_agent_start` stay pending for the following
+user run rather than interrupting the active run.
 
 ## Autodetection merge precedence
 

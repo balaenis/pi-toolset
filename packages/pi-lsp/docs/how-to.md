@@ -130,10 +130,16 @@ defaults. Space toggles `enabled` and writes it to the corresponding
 ## Inspect diagnostics
 
 Run `/lsp diagnostics` to see every diagnostic currently tracked by the
-extension. It shows pending diagnostics (waiting to be delivered to the LLM) and
-delivered diagnostics (already injected and tracked for cross-turn dedup),
-grouped by file and tagged with severity, line/column, message, code, source,
-and originating server.
+extension. It shows:
+
+- **Pending** — waiting for the next user-initiated agent run; drained once via
+  `before_agent_start` into one hidden durable message (not mid-run steering).
+- **Delivered** — already persisted in session history and retained for
+  cross-turn deduplication until the originating server reports the diagnostic
+  clean or diagnostic state is reset.
+
+Entries are grouped by file and tagged with severity, line/column, message,
+code, source, and originating server.
 
 ## Set a custom workspace root or environment
 
