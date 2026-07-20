@@ -143,6 +143,9 @@ export interface ExecuteAgentToolOptions {
   runCoordinator?: RunCoordinator;
   /** Interactive TUI registry; when present, eligible Pi units register before spawn. */
   interactiveRegistry?: import('./interactive-agent.ts').InteractiveAgentRegistry;
+  /** Session-scoped agent config overrides (from /agent config). */
+  getSessionOverrides?: () => ReadonlyMap<string, import('./agent-config.ts').AgentOverride>;
+  getSessionUnsets?: () => ReadonlyMap<string, ReadonlySet<string> | readonly string[]>;
   /** Test seam: inject child process spawn for orchestration-path tests. */
   spawnFn?: import('./execution.ts').SpawnFn;
   /**
@@ -1226,7 +1229,12 @@ export async function executeAgentTool(
     };
   }
 
-  const discovery = discoverAgents(discoveryCwd, agentScope);
+  const sessionOverrides = options.getSessionOverrides?.();
+  const sessionUnsets = options.getSessionUnsets?.();
+  const discovery = discoverAgents(discoveryCwd, agentScope, {
+    sessionOverrides,
+    sessionUnsets,
+  });
   const agents = discovery.agents;
 
   const hasChain = (effectiveParams.chain?.length ?? 0) > 0;
@@ -1505,7 +1513,11 @@ async function runWithBackgroundOption(
   const title = extractLaunchTitle(params, mode);
   const projectAgentsDir = discoverAgents(
     durable?.projectCwd ?? ctx.cwd,
-    params.agentScope ?? 'user'
+    params.agentScope ?? 'user',
+    {
+      sessionOverrides: options.getSessionOverrides?.(),
+      sessionUnsets: options.getSessionUnsets?.(),
+    }
   ).projectAgentsDir;
 
   const launchResult = manager.launch({

@@ -33,6 +33,21 @@ enable project sources for repositories you trust.
 the project on `isolation: "worktree"` agents - treat it like any other agent
 body and only declare it for trusted sources.
 
+## Config override stack
+
+Effective agent settings merge field-level as:
+
+`frontmatter < user config.json < project config.json < session`
+
+Session overrides come from `/agent config` (TUI) and are stored in the host
+session branch (`pi-agents-agent-config` v1). Disk save writes the current
+agent's full session overlay (including restored fields after restart). Saving
+does **not** clear the session layer — only unsaved marks clear — so the badge
+stays `session` until the field is cleared or the session overlay is replaced.
+
+Changing config after a durable unit was fingerprinted can make resume fail
+closed with `fingerprint_mismatch`; session edits apply to new launches.
+
 ## Tool permissions
 
 Agent permissions map directly onto the Pi CLI:

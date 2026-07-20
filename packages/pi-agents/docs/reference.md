@@ -40,17 +40,41 @@ numeric fields. Empty comma lists are ignored.
 ## Config overrides
 
 Override fields of any discovered agent without editing its source via a
-`config.json`:
+`config.json` and optional session overlay:
 
 - User scope: `~/.pi/agent/@balaenis/pi-agents/config.json`
 - Project scope: `<repo>/.pi/@balaenis/pi-agents/config.json`
+- Session scope: in-memory map persisted as host session custom entry
+  `pi-agents-agent-config` version `1` (`{ version: 1, agents: { [name]: override } }`)
 
-Merge is field-level: project overrides only the fields it specifies; omitted
-fields fall back to the user value, then to the agent's frontmatter. Key is the
-full catalogue name (package agents are namespaced `<packageName>.<localName>`).
-Allowed fields match the frontmatter set above. `name`, `systemPrompt` (the
-markdown body), `source`, and `filePath` are not overridable. Invalid values are
-dropped with the same rules as frontmatter parsing.
+Merge order (field-level, later wins): **frontmatter < user < project < session**.
+Key is the full catalogue name (package agents are namespaced
+`<packageName>.<localName>`).
+
+Allowed overridable fields: `description`, `model`, `thinking`, `tools`,
+`excludeTools`, `systemPromptMode`, `maxTurns`, `noContextFiles`, `noSkills`,
+`skills`, `defaultContext`, `isolation`, `completionCheck`, `maxSubagentDepth`,
+`worktreeSetupHook`, `runtime`.
+
+Not overridable: `name`, `systemPrompt` (markdown body), `source`, `filePath`,
+`localName`, `packageName`. Invalid values are dropped with the same rules as
+frontmatter parsing. Unknown/newer session entry versions are ignored (empty
+session overlay).
+
+### Session save (`/agent config`)
+
+- Default edits are session-only and apply to new launches.
+- `Ctrl+D` unsets the selected field for the session: effective value uses
+  frontmatter/builtin only (user/project values are ignored until the field is
+  set again). The next `Ctrl+S` / `Ctrl+P` deletes that key from the target
+  `config.json` if present.
+- `Ctrl+S` writes session fields of the current agent to user `config.json` and
+  applies pending unsets; `Ctrl+P` does the same for project `config.json`
+  (project requires `isProjectTrusted()`).
+- Save source is the session overlay (including fields restored after restart),
+  not only fields edited since the last UI open.
+- After disk save, remaining session overrides are kept; only unsaved (`*`) marks clear.
+- Restored session fields are re-marked unsaved so they can be saved without re-edit.
 
 ## Tool modes
 
@@ -337,17 +361,17 @@ invocation.
 
 ## Slash commands
 
-| Command                         | Action                                                   |
-| ------------------------------- | -------------------------------------------------------- |
-| `/agent list`                   | List every discovered agent with source and description. |
-| `/agent:<name> <task...>`       | Invoke a specific agent in the foreground.               |
-| `/agent runs`                   | List durable runs.                                       |
-| `/agent status <run-id>`        | Show detailed status for a durable run.                  |
-| `/agent resume <run-id>`        | Resume guidance for an interrupted run.                  |
-| `/implement <query>`            | Run the explore -> planner -> general chain.             |
-| `/explore-and-plan <query>`     | Run the explore -> planner chain.                        |
-| `/implement-and-review <query>` | Run the general -> reviewer -> general chain.            |
-| `/work-with-grok <task>`        | Delegate a task to general on the Grok ACP runtime.      |
+| Command                         | Action                                                                              |
+| ------------------------------- | ----------------------------------------------------------------------------------- |
+| `/agent config [name]`          | TUI browse/edit session overrides; Ctrl+S/Ctrl+P save; Ctrl+D unset selected field. |
+| `/agent:<name> <task...>`       | Invoke a specific agent in the foreground.                                          |
+| `/agent runs`                   | List durable runs.                                                                  |
+| `/agent status <run-id>`        | Show detailed status for a durable run.                                             |
+| `/agent resume <run-id>`        | Resume guidance for an interrupted run.                                             |
+| `/implement <query>`            | Run the explore -> planner -> general chain.                                        |
+| `/explore-and-plan <query>`     | Run the explore -> planner chain.                                                   |
+| `/implement-and-review <query>` | Run the general -> reviewer -> general chain.                                       |
+| `/work-with-grok <task>`        | Delegate a task to general on the Grok ACP runtime.                                 |
 
 `/agent:<name>` uses the full catalogue name; package agents are namespaced
 (e.g. `@acme/pi-frontend.reviewer`). Per-agent commands are registered at load

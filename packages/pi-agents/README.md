@@ -11,7 +11,8 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 - **Structured chain outputs** - per-step `outputSchema` extracts and validates JSON before passing it forward as `{outputs.<name>}`
 - **Dynamic fanout** - chain steps expand a prior step's array output into parallel subtasks with a collected result
 - **Package agents** - install agents from npm packages that declare `pi.agents`
-- **Slash-command invocation** - `/agent:<name> <task>` runs a discovered agent directly; `/agent list` enumerates them
+- **Slash-command invocation** - `/agent:<name> <task>` runs a discovered agent directly; `/agent config` browses/edits them
+- **Agent config editor (TUI)** - `/agent config [name]` edits session-scoped overrides with layer provenance; `Ctrl+S`/`Ctrl+P` save to user/project, `Ctrl+D` unsets the selected field
 - **Interactive agent view (TUI)** - `/agent view` or `Ctrl+Alt+Down` opens a navigator for current-session Pi and Grok ACP subagents; Pi supports steer/follow-up, Grok ACP supports idle prompt and cancel
 - **Worktree isolation + setup hook** - run agents in a throw-away git worktree with an optional shell `worktreeSetupHook` and per-run diff metadata
 - **Completion check** - require final-message headings via frontmatter

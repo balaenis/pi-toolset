@@ -287,23 +287,51 @@ Project overrides user overrides frontmatter, field-level. Key is the full
 catalogue name (package agents are namespaced as `<packageName>.<localName>`).
 `name`, `systemPrompt`, `source`, and `filePath` are not overridable.
 
+## Edit agent config interactively (TUI)
+
+Use `/agent config` (optional agent name) in TUI mode:
+
+```
+/agent config
+/agent config explore
+```
+
+1. Select an agent from the discovered catalogue.
+2. Edit fields; each row shows the effective value and a layer badge
+   (`frontmatter` / `user` / `project` / `session`).
+3. Edits apply immediately as **session overrides** (new launches only).
+4. `Ctrl+D` unsets the selected field: effective value falls back to the agent
+   `.md` frontmatter / built-in default **even if user or project config still
+   has the key**. `Ctrl+S` / `Ctrl+P` then deletes that key from the
+   corresponding `config.json`.
+5. `Ctrl+S` writes **session fields of the current agent** to user
+   `~/.pi/agent/@balaenis/pi-agents/config.json` (and applies pending unsets).
+6. `Ctrl+P` writes those session fields/unsets to project
+   `<repo>/.pi/@balaenis/pi-agents/config.json` (requires project trust).
+7. After save, remaining session overrides stay; only unsaved (`*`) marks clear.
+   Restart/restore keeps session fields saveable without re-editing them.
+
+Session overrides persist on the host session branch as custom entry type
+`pi-agents-agent-config` (version 1), so they survive `/tree` navigation within
+the same branch. Disk `config.json` files remain manually editable.
+
+`systemPrompt` is not editable here. Non-TUI modes notify that the editor is
+TUI-only.
+
 ## Invoke agents via slash commands
 
 Bypass the model and run a discovered agent directly:
 
 ```
-/agent list
+/agent config
 /agent:explore find all authentication code
 /agent:@balaenis/pi-agents.reviewer review the recent changes
 ```
 
-- `/agent list` enumerates every discovered agent (builtin, user, project,
-  package) with source and description.
+- `/agent config [name]` opens the TUI config editor (browse + session overrides + save).
 - `/agent:<name> <task...>` invokes a specific agent; `<name>` is the full
   catalogue name (package agents are namespaced, e.g.
   `@acme/pi-frontend.reviewer`).
-- `/agent` only accepts the `list` subcommand. To invoke an agent, use the
-  `/agent:<name>` form.
 
 Slash invocations run in the foreground with live progress, then report the
 final output via `ctx.ui.notify`. The per-agent `/agent:<name>` commands are

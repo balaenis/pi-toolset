@@ -5,12 +5,18 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from '@earendil-works/pi-coding-agent';
+import { type AgentOverride, loadDiskOverrideMaps, mergeAgentOverride } from './agent-config.ts';
 import { DEFAULT_RUNTIME, GROK_ACP_RUNTIME } from './constants.ts';
 import { discoverPackageAgentDirs } from './package-agents.ts';
 import type { DefaultContext, IsolationMode, SystemPromptMode } from './types.ts';
 
-const CONFIG_PACKAGE_DIR = path.join('@balaenis', 'pi-agents');
-const CONFIG_FILE_NAME = 'config.json';
+export type { AgentOverride } from './agent-config.ts';
+export {
+  parseAgentOverride,
+  projectAgentConfigPath,
+  resolveProjectConfigDir,
+  userAgentConfigPath,
+} from './agent-config.ts';
 
 export type AgentScope = 'user' | 'project' | 'both';
 export type AgentSource = 'builtin' | 'package' | 'user' | 'project';
@@ -102,6 +108,14 @@ export interface AgentDiscoveryResult {
   builtinAgentsDir: string;
 }
 
+export interface DiscoverAgentsOptions {
+  sessionOverrides?: ReadonlyMap<string, AgentOverride>;
+  /** Session Ctrl+D unsets: force frontmatter/builtin for these fields (skip user/project). */
+  sessionUnsets?: ReadonlyMap<string, ReadonlySet<string> | readonly string[]>;
+  /** When false, skip user/project config.json merges. Default true. */
+  applyDiskOverrides?: boolean;
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const BUILTIN_AGENTS_DIR = path.resolve(here, '..', 'agents');
 
@@ -172,123 +186,6 @@ function loadAgentFromFile(filePath: string, source: AgentSource): AgentConfig |
     worktreeSetupHook: parseTrimmedString(frontmatter.worktreeSetupHook),
     runtime: parseEnum(frontmatter.runtime, RUNTIME_VALUES),
   };
-}
-
-type AgentOverride = Partial<
-  Omit<AgentConfig, 'name' | 'systemPrompt' | 'source' | 'filePath' | 'localName' | 'packageName'>
->;
-
-function parseAgentOverride(raw: unknown): AgentOverride {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-  const entry = raw as Record<string, unknown>;
-  const out: AgentOverride = {};
-
-  if (typeof entry.description === 'string') out.description = entry.description;
-  if (typeof entry.model === 'string') out.model = entry.model;
-  if (typeof entry.thinking === 'string') out.thinking = entry.thinking;
-
-  const tools = parseCsvList(entry.tools);
-  if (tools) out.tools = tools;
-  const excludeTools = parseCsvList(entry.excludeTools);
-  if (excludeTools) out.excludeTools = excludeTools;
-
-  const systemPromptMode = parseEnum(entry.systemPromptMode, ['append', 'replace'] as const);
-  if (systemPromptMode) out.systemPromptMode = systemPromptMode;
-
-  const maxTurns = parsePositiveInt(entry.maxTurns);
-  if (maxTurns !== undefined) out.maxTurns = maxTurns;
-
-  const noContextFiles = parseBoolean(entry.noContextFiles);
-  if (noContextFiles !== undefined) out.noContextFiles = noContextFiles;
-  const noSkills = parseBoolean(entry.noSkills);
-  if (noSkills !== undefined) out.noSkills = noSkills;
-
-  const skills = parseCsvList(entry.skills);
-  if (skills) out.skills = skills;
-
-  const defaultContext = parseEnum(entry.defaultContext, ['fresh', 'fork'] as const);
-  if (defaultContext) out.defaultContext = defaultContext;
-  const isolation = parseEnum(entry.isolation, ['none', 'worktree'] as const);
-  if (isolation) out.isolation = isolation;
-
-  const completionCheck = parseCsvList(entry.completionCheck);
-  if (completionCheck) out.completionCheck = completionCheck;
-
-  const maxSubagentDepth = parseNonNegativeInt(entry.maxSubagentDepth);
-  if (maxSubagentDepth !== undefined) out.maxSubagentDepth = maxSubagentDepth;
-
-  const worktreeSetupHook = parseTrimmedString(entry.worktreeSetupHook);
-  if (worktreeSetupHook !== undefined) out.worktreeSetupHook = worktreeSetupHook;
-
-  const runtime = parseEnum(entry.runtime, RUNTIME_VALUES);
-  if (runtime) out.runtime = runtime;
-
-  return out;
-}
-
-function readOverridesFromConfig(configPath: string): Map<string, AgentOverride> {
-  const result = new Map<string, AgentOverride>();
-  let content: string;
-  try {
-    content = fs.readFileSync(configPath, 'utf-8');
-  } catch {
-    return result;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return result;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return result;
-  const agents = (parsed as Record<string, unknown>).agents;
-  if (!agents || typeof agents !== 'object' || Array.isArray(agents)) return result;
-  for (const [name, value] of Object.entries(agents as Record<string, unknown>)) {
-    if (typeof name !== 'string' || name.length === 0) continue;
-    const override = parseAgentOverride(value);
-    if (Object.keys(override).length > 0) result.set(name, override);
-  }
-  return result;
-}
-
-function mergeOverrideMap(
-  base: Map<string, AgentOverride>,
-  next: Map<string, AgentOverride>
-): void {
-  for (const [name, override] of next) {
-    const existing = base.get(name);
-    base.set(name, existing ? { ...existing, ...override } : override);
-  }
-}
-
-function loadAgentOverrides(cwd: string, scope: AgentScope): Map<string, AgentOverride> {
-  const merged = new Map<string, AgentOverride>();
-
-  if (scope !== 'project') {
-    const userConfig = path.join(getAgentDir(), CONFIG_PACKAGE_DIR, CONFIG_FILE_NAME);
-    mergeOverrideMap(merged, readOverridesFromConfig(userConfig));
-  }
-
-  if (scope !== 'user') {
-    const projectConfigDir = findNearestProjectConfigDir(cwd);
-    if (projectConfigDir) {
-      const projectConfig = path.join(projectConfigDir, CONFIG_PACKAGE_DIR, CONFIG_FILE_NAME);
-      mergeOverrideMap(merged, readOverridesFromConfig(projectConfig));
-    }
-  }
-
-  return merged;
-}
-
-function findNearestProjectConfigDir(cwd: string): string | null {
-  let currentDir = cwd;
-  while (true) {
-    const candidate = path.join(currentDir, CONFIG_DIR_NAME);
-    if (isDirectory(candidate)) return candidate;
-    const parent = path.dirname(currentDir);
-    if (parent === currentDir) return null;
-    currentDir = parent;
-  }
 }
 
 function loadAgentsFromPackagePath(
@@ -373,7 +270,11 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
   }
 }
 
-export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
+export function discoverAgents(
+  cwd: string,
+  scope: AgentScope,
+  options?: DiscoverAgentsOptions
+): AgentDiscoveryResult {
   const userDir = path.join(getAgentDir(), 'agents');
   const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
@@ -396,13 +297,26 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
     for (const agent of projectAgents) agentMap.set(agent.name, agent);
   }
 
-  const overrides = loadAgentOverrides(cwd, scope);
-  if (overrides.size > 0) {
-    for (const [name, agent] of agentMap) {
-      const override = overrides.get(name);
-      if (!override) continue;
-      agentMap.set(name, { ...agent, ...override });
+  const applyDisk = options?.applyDiskOverrides !== false;
+  const disk = applyDisk
+    ? loadDiskOverrideMaps(cwd, scope)
+    : { user: new Map<string, AgentOverride>(), project: new Map<string, AgentOverride>() };
+  const sessionOverrides = options?.sessionOverrides;
+  const sessionUnsets = options?.sessionUnsets;
+
+  for (const [name, agent] of agentMap) {
+    const user = disk.user.get(name);
+    const project = disk.project.get(name);
+    const session = sessionOverrides?.get(name);
+    const unsetFields = sessionUnsets?.get(name);
+    const merged = mergeAgentOverride(user, project, session);
+    if (unsetFields) {
+      for (const field of unsetFields) {
+        delete (merged as Record<string, unknown>)[field];
+      }
     }
+    if (Object.keys(merged).length === 0) continue;
+    agentMap.set(name, { ...agent, ...merged });
   }
 
   return {

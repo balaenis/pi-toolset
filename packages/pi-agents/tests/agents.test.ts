@@ -473,4 +473,58 @@ Body.`
     const a = agents.find((x) => x.name === 'safe')!;
     expect(a.model).toBe('original-model');
   });
+
+  it('session overrides beat project and user config', () => {
+    const userDir = setUserAgentDir();
+    const userConfigDir = path.join(userDir, '@balaenis', 'pi-agents');
+    mkdirSync(userConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(userConfigDir, 'config.json'),
+      JSON.stringify({ agents: { target: { model: 'user-model', thinking: 'low' } } })
+    );
+
+    env = withAgentsDir((dir) => {
+      writeAgent(dir, 'target', 'model: original-model');
+    });
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(projectConfigDir, 'config.json'),
+      JSON.stringify({ agents: { target: { model: 'project-model' } } })
+    );
+
+    const sessionOverrides = new Map([['target', { model: 'session-model', maxTurns: 9 }]]);
+    const { agents } = discoverAgents(env.cwd, 'both', { sessionOverrides });
+    const a = agents.find((x) => x.name === 'target')!;
+    expect(a.model).toBe('session-model');
+    expect(a.thinking).toBe('low');
+    expect(a.maxTurns).toBe(9);
+  });
+
+  it('session unsets strip user/project fields back to frontmatter', () => {
+    const userDir = setUserAgentDir();
+    const userConfigDir = path.join(userDir, '@balaenis', 'pi-agents');
+    mkdirSync(userConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(userConfigDir, 'config.json'),
+      JSON.stringify({ agents: { target: { maxTurns: 10, thinking: 'low' } } })
+    );
+
+    env = withAgentsDir((dir) => {
+      writeAgent(dir, 'target', 'model: original-model');
+    });
+    const projectConfigDir = path.join(env.cwd, '.pi', '@balaenis', 'pi-agents');
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      path.join(projectConfigDir, 'config.json'),
+      JSON.stringify({ agents: { target: { maxTurns: 20 } } })
+    );
+
+    const sessionUnsets = new Map([['target', ['maxTurns'] as const]]);
+    const { agents } = discoverAgents(env.cwd, 'both', { sessionUnsets });
+    const a = agents.find((x) => x.name === 'target')!;
+    expect(a.maxTurns).toBeUndefined();
+    expect(a.thinking).toBe('low');
+    expect(a.model).toBe('original-model');
+  });
 });

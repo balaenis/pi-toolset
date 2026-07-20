@@ -1,4 +1,4 @@
-// ABOUTME: Registers /agent (list only) and /agent:<name> (invoke) slash commands for discovered agents.
+// ABOUTME: Registers /agent subcommands and /agent:<name> invoke slash commands for discovered agents.
 // ABOUTME: Reuses executeAgentTool for orchestration; foreground-only, with an injected executor test seam.
 
 import {
@@ -16,8 +16,10 @@ import {
   Text,
   type TUI,
 } from '@earendil-works/pi-tui';
-import { type AgentConfig, discoverAgents } from './agents.ts';
+import { type AgentConfig, type AgentOverride, discoverAgents } from './agents.ts';
+import { openAgentConfigUi } from './agent-config-ui.ts';
 import type { BackgroundManager } from './background.ts';
+import type { SessionAgentConfigStore } from './session-agent-config.ts';
 import { setDiscoveredSkillsFromOptions } from './skills.ts';
 import { executeAgentTool } from './tool.ts';
 import type { SubagentDetails } from './types.ts';
@@ -41,13 +43,22 @@ export interface RegisterAgentCommandOptions {
   interactiveView?: {
     openView: () => Promise<void>;
   };
+  /** Session-scoped agent config store for /agent config. */
+  sessionAgentConfig?: SessionAgentConfigStore;
+  /** Persist session agent config snapshot to the host session branch. */
+  persistSessionAgentConfig?: () => void;
+  /** Getter for session overrides passed into discovery/execute. */
+  getSessionOverrides?: () => ReadonlyMap<string, AgentOverride>;
+  getSessionUnsets?: () => ReadonlyMap<string, ReadonlySet<string> | readonly string[]>;
+  /** Test seam: override the config UI opener. */
+  openConfigUi?: typeof openAgentConfigUi;
 }
 
-const LIST_KEYWORD = 'list';
 const VIEW_KEYWORD = 'view';
+const CONFIG_KEYWORD = 'config';
 const AGENT_WIDGET_KEY = 'pi-agents-command';
 const AGENT_COMMAND_DESCRIPTION =
-  'List discovered subagents (/agent list); invoke via /agent:<name> <task...>; /agent view for interactive navigator; /agent runs|status|resume for durable runs';
+  'Invoke via /agent:<name> <task...>; /agent config to browse/edit session overrides; /agent view for interactive navigator; /agent runs|status|resume for durable runs';
 
 export function registerAgentCommand(
   pi: ExtensionAPI,
@@ -75,6 +86,16 @@ export function registerAgentCommand(
   }
 }
 
+function sessionDiscoverOptions(options: RegisterAgentCommandOptions) {
+  const sessionOverrides = options.getSessionOverrides?.();
+  const sessionUnsets = options.getSessionUnsets?.();
+  if (!sessionOverrides && !sessionUnsets) return undefined;
+  return {
+    ...(sessionOverrides ? { sessionOverrides } : {}),
+    ...(sessionUnsets ? { sessionUnsets } : {}),
+  };
+}
+
 async function runAgentFallbackCommand(
   args: string,
   ctx: ExtensionCommandContext,
@@ -99,12 +120,34 @@ async function runAgentFallbackCommand(
     return;
   }
 
-  await ctx.waitForIdle();
-
-  if (lower === LIST_KEYWORD) {
-    ctx.ui.notify(renderAgentList(discoverAgents(ctx.cwd, 'both').agents), 'info');
+  // /agent config opens immediately (same as view); TUI-only editor.
+  if (lower === CONFIG_KEYWORD || lower.startsWith(`${CONFIG_KEYWORD} `)) {
+    if (ctx.mode !== 'tui') {
+      if (ctx.hasUI) {
+        ctx.ui.notify('/agent config requires TUI mode', 'warning');
+      }
+      return;
+    }
+    if (!options.sessionAgentConfig) {
+      ctx.ui.notify('Agent config store is not available.', 'warning');
+      return;
+    }
+    const nameArg = trimmed.slice(CONFIG_KEYWORD.length).trim();
+    const openUi = options.openConfigUi ?? openAgentConfigUi;
+    await openUi(
+      ctx,
+      {
+        store: options.sessionAgentConfig,
+        persist: () => options.persistSessionAgentConfig?.(),
+        cwd: ctx.cwd,
+        isProjectTrusted: () => ctx.isProjectTrusted(),
+      },
+      nameArg.length > 0 ? nameArg : undefined
+    );
     return;
   }
+
+  await ctx.waitForIdle();
 
   if (lower === 'runs' && options.runStore) {
     const runs = await options.runStore.listRuns();
@@ -144,7 +187,7 @@ async function runAgentFallbackCommand(
     return;
   }
 
-  ctx.ui.notify(usageText(ctx.cwd), 'warning');
+  ctx.ui.notify(usageText(ctx.cwd, options), 'warning');
 }
 
 async function runNamedAgentCommand(
@@ -172,7 +215,7 @@ async function invokeAgent(
   execute: AgentExecutor,
   options: RegisterAgentCommandOptions
 ): Promise<void> {
-  const agents = discoverAgents(ctx.cwd, 'both').agents;
+  const agents = discoverAgents(ctx.cwd, 'both', sessionDiscoverOptions(options)).agents;
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) {
     ctx.ui.notify(`Unknown agent: "${agentName}".\n${availableAgentsText(agents)}`, 'error');
@@ -195,6 +238,8 @@ async function invokeAgent(
       // TUI path: pass registry so executeAgentTool registers interactive links and
       // dispatches Pi units through RPC rather than one-shot JSON.
       interactiveRegistry: options.interactiveRegistry,
+      getSessionOverrides: options.getSessionOverrides,
+      getSessionUnsets: options.getSessionUnsets,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -294,11 +339,15 @@ function truncateWidgetText(value: string, max: number): string {
 
 function agentArgumentCompletions(prefix: string): AutocompleteItem[] {
   const items: AutocompleteItem[] = [
-    { value: LIST_KEYWORD, label: LIST_KEYWORD, description: 'List all discovered agents' },
     {
       value: VIEW_KEYWORD,
       label: VIEW_KEYWORD,
       description: 'Open interactive agent navigator (TUI)',
+    },
+    {
+      value: CONFIG_KEYWORD,
+      label: CONFIG_KEYWORD,
+      description: 'Browse/edit agent config (session; Ctrl+S user, Ctrl+P project)',
     },
     { value: 'runs', label: 'runs', description: 'List durable agent runs' },
     { value: 'status', label: 'status', description: 'Show status for a run id' },
@@ -312,23 +361,21 @@ function agentDescription(agent: AgentConfig): string {
   return `Invoke the "${agent.name}" agent. ${agent.description}`;
 }
 
-function renderAgentList(agents: AgentConfig[]): string {
-  if (agents.length === 0) return 'No agents discovered.';
-  const lines = agents.map((a) => `- ${a.name} [${a.source}]: ${a.description}`);
-  return `Discovered agents (${agents.length}):\n${lines.join('\n')}`;
-}
-
 function availableAgentsText(agents: AgentConfig[]): string {
   if (agents.length === 0) return 'Available agents: none';
   return `Available agents: ${agents.map((a) => a.name).join(', ')}`;
 }
 
-function usageText(cwd: string): string {
-  const agents = discoverAgents(cwd, 'both').agents;
+function usageText(cwd: string, options?: RegisterAgentCommandOptions): string {
+  const agents = discoverAgents(
+    cwd,
+    'both',
+    options ? sessionDiscoverOptions(options) : undefined
+  ).agents;
   const available = agents.length === 0 ? 'none' : agents.map((a) => a.name).join(', ');
   return [
     'Usage:',
-    '  /agent list              List discovered agents',
+    '  /agent config [name]     Browse/edit agent config (TUI; session + save)',
     '  /agent view              Open interactive agent navigator (TUI)',
     '  /agent:<name> <task...>  Invoke a specific agent',
     '  /agent runs              List durable runs',

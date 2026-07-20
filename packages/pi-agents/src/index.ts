@@ -13,6 +13,11 @@ import { renderAgentCatalogue, shouldInjectAgentCatalogue } from './catalogue.ts
 import { registerAgentCommand } from './command.ts';
 import { createInteractiveAgentRegistry, INTERACTIVE_LINK_TYPE } from './interactive-agent.ts';
 import {
+  createSessionAgentConfigStore,
+  persistToSession,
+  restoreFromBranch,
+} from './session-agent-config.ts';
+import {
   CONTINUATION_MESSAGE_TYPE,
   createInteractiveRelayCoordinator,
   renderContinuationMessage,
@@ -80,10 +85,22 @@ export default function (pi: ExtensionAPI) {
 
   const runStore = createRunStore();
   const runCoordinator = createRunCoordinator({ store: runStore });
+  let sessionAgentConfig = createSessionAgentConfigStore();
+
+  function discoverWithSession(cwd: string, scope: 'user' | 'project' | 'both') {
+    return discoverAgents(cwd, scope, {
+      sessionOverrides: sessionAgentConfig.getOverrides(),
+      sessionUnsets: sessionAgentConfig.getUnsets(),
+    });
+  }
 
   // Latest UI context and per-session interactive runtime (recreated on session_start).
   let latestUiCtx: ExtensionContext | undefined;
-  let interactiveRegistry = createInteractiveAgentRegistry({ runStore, runCoordinator });
+  let interactiveRegistry = createInteractiveAgentRegistry({
+    runStore,
+    runCoordinator,
+    discoverAgentsFn: discoverWithSession,
+  });
   function isRunResumable(runId: string): boolean {
     // Live in-process work: use Agent View chat / Ctrl+X, not host resume.
     if (runCoordinator.isActive(runId)) return false;
@@ -151,7 +168,11 @@ export default function (pi: ExtensionAPI) {
   function recreateInteractiveRuntime(): void {
     relayCoordinator?.dispose();
     relayCoordinator = undefined;
-    interactiveRegistry = createInteractiveAgentRegistry({ runStore, runCoordinator });
+    interactiveRegistry = createInteractiveAgentRegistry({
+      runStore,
+      runCoordinator,
+      discoverAgentsFn: discoverWithSession,
+    });
     bindHostLinkAppender();
     viewController = createInteractiveViewController({
       registry: interactiveRegistry,
@@ -161,6 +182,11 @@ export default function (pi: ExtensionAPI) {
       requestHostResume,
     });
     bindRelayCoordinator();
+  }
+
+  function restoreSessionAgentConfig(ctx: ExtensionContext): void {
+    const restored = restoreFromBranch(ctx);
+    sessionAgentConfig.replaceAll(restored.agents, restored.unsets);
   }
 
   // Shutdown order: spinners → background cancel → await idle → dispose relay → dispose registry.
@@ -180,6 +206,7 @@ export default function (pi: ExtensionAPI) {
   // On session start, recreate interactive state, reconcile dead-owner runs, restore links.
   pi.on('session_start', async (_event, ctx) => {
     latestUiCtx = ctx;
+    restoreSessionAgentConfig(ctx);
     recreateInteractiveRuntime();
 
     try {
@@ -237,6 +264,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('session_tree', async (_event, ctx) => {
     latestUiCtx = ctx;
+    restoreSessionAgentConfig(ctx);
     try {
       await interactiveRegistry.restoreActiveBranch(ctx);
       if (ctx.mode === 'tui') {
@@ -252,7 +280,7 @@ export default function (pi: ExtensionAPI) {
   pi.on('before_agent_start', async (event, ctx) => {
     latestUiCtx = ctx;
     setDiscoveredSkillsFromOptions(event.systemPromptOptions);
-    const discovery = discoverAgents(ctx.cwd, 'both');
+    const discovery = discoverWithSession(ctx.cwd, 'both');
     const safeAgents = discovery.agents.filter((a) => a.source !== 'package');
     if (!shouldInjectAgentCatalogue(process.env, safeAgents)) return;
     const block = renderAgentCatalogue(safeAgents);
@@ -295,6 +323,8 @@ Use when the task matches an agent type, for parallel independent work, or when 
           runStore,
           runCoordinator,
           interactiveRegistry,
+          getSessionOverrides: () => sessionAgentConfig.getOverrides(),
+          getSessionUnsets: () => sessionAgentConfig.getUnsets(),
         })
       );
     },
@@ -313,5 +343,11 @@ Use when the task matches an agent type, for parallel independent work, or when 
     interactiveView: {
       openView: () => viewController.openView(),
     },
+    get sessionAgentConfig() {
+      return sessionAgentConfig;
+    },
+    persistSessionAgentConfig: () => persistToSession(pi, sessionAgentConfig),
+    getSessionOverrides: () => sessionAgentConfig.getOverrides(),
+    getSessionUnsets: () => sessionAgentConfig.getUnsets(),
   });
 }

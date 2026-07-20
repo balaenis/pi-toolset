@@ -113,6 +113,7 @@ function fakeCtx(
     waitForIdle: async () => {
       state.idleCalls++;
     },
+    isProjectTrusted: () => true,
     getSystemPromptOptions: () => ({ cwd, skills: options.skills ?? [] }),
     ui: {
       notify: (message: string, type?: 'info' | 'warning' | 'error') =>
@@ -273,6 +274,55 @@ describe('registerAgentCommand durable resume guidance', () => {
   });
 });
 
+describe('registerAgentCommand config', () => {
+  it('includes config in argument completions', () => {
+    const cwd = makeProjectCwd('myagent', 'does a thing');
+    const { pi, commands } = fakePi();
+    registerAgentCommand(pi, { cwd, execute: fakeExec(okResult('done')).execute });
+    const completions = commands.get('agent')!.getArgumentCompletions?.('') as Array<{
+      value: string;
+    }>;
+    expect(completions.some((c) => c.value === 'config')).toBe(true);
+  });
+
+  it('notifies that config is TUI-only outside TUI mode', async () => {
+    const cwd = makeProjectCwd('myagent', 'does a thing');
+    const { pi, commands } = fakePi();
+    registerAgentCommand(pi, {
+      cwd,
+      execute: fakeExec(okResult('done')).execute,
+      sessionAgentConfig: {
+        getOverrides: () => new Map(),
+      } as never,
+    });
+    const { ctx, notifications, state } = fakeCtx(cwd, { mode: 'json' });
+    await commands.get('agent')!.handler('config', ctx);
+    expect(state.idleCalls).toBe(0);
+    expect(notifications[0]?.type).toBe('warning');
+    expect(notifications[0]?.message).toMatch(/requires TUI mode/i);
+  });
+
+  it('opens config UI with optional name without waitForIdle', async () => {
+    const cwd = makeProjectCwd('myagent', 'does a thing');
+    const { pi, commands } = fakePi();
+    const opens: Array<{ name?: string }> = [];
+    registerAgentCommand(pi, {
+      cwd,
+      execute: fakeExec(okResult('done')).execute,
+      sessionAgentConfig: {
+        getOverrides: () => new Map(),
+      } as never,
+      openConfigUi: async (_ctx, _deps, name) => {
+        opens.push({ name });
+      },
+    });
+    const { ctx, state } = fakeCtx(cwd, { mode: 'tui' });
+    await commands.get('agent')!.handler('config myagent', ctx);
+    expect(state.idleCalls).toBe(0);
+    expect(opens).toEqual([{ name: 'myagent' }]);
+  });
+});
+
 describe('registerAgentCommand', () => {
   it('registers /agent and /agent:<name> for discovered agents', () => {
     const cwd = makeProjectCwd('myagent', 'does a thing');
@@ -283,22 +333,6 @@ describe('registerAgentCommand', () => {
     expect(commands.has('agent:myagent')).toBe(true);
     expect(commands.has('agent:explore')).toBe(true);
     expect(commands.get('agent:myagent')?.description).toContain('myagent');
-  });
-
-  it('waits for idle before listing agents', async () => {
-    const cwd = makeProjectCwd('myagent', 'does a thing');
-    const { pi, commands } = fakePi();
-    const exec = fakeExec(okResult('done'));
-    registerAgentCommand(pi, { cwd, execute: exec.execute });
-    const { ctx, notifications, state } = fakeCtx(cwd);
-
-    await commands.get('agent')!.handler('list', ctx);
-
-    expect(exec.calls).toHaveLength(0);
-    expect(state.idleCalls).toBe(1);
-    expect(notifications[0].type).toBe('info');
-    expect(notifications[0].message).toContain('myagent');
-    expect(notifications[0].message).toContain('[project]');
   });
 
   it('opens /agent view immediately without waitForIdle while host is busy', async () => {
@@ -509,7 +543,7 @@ describe('registerAgentCommand', () => {
     expect(notifications[0].message).toContain('spawn failed');
   });
 
-  it('completes /agent arguments with only the list subcommand', () => {
+  it('completes /agent arguments without the removed list subcommand', () => {
     const cwd = makeProjectCwd('myagent', 'does a thing');
     const { pi, commands } = fakePi();
     registerAgentCommand(pi, { cwd, execute: fakeExec(okResult('x')).execute });
@@ -518,8 +552,9 @@ describe('registerAgentCommand', () => {
       value: string;
     }>;
     const values = completions.map((c) => c.value);
-    expect(values).toContain('list');
+    expect(values).not.toContain('list');
     expect(values).toContain('view');
+    expect(values).toContain('config');
     expect(values).toContain('runs');
   });
 
@@ -528,11 +563,11 @@ describe('registerAgentCommand', () => {
     const { pi, commands } = fakePi();
     registerAgentCommand(pi, { cwd, execute: fakeExec(okResult('x')).execute });
 
-    const completions = commands.get('agent')!.getArgumentCompletions!('li') as Array<{
+    const completions = commands.get('agent')!.getArgumentCompletions!('co') as Array<{
       value: string;
     }>;
     const values = completions.map((c) => c.value);
-    expect(values).toEqual(['list']);
+    expect(values).toEqual(['config']);
   });
 
   it('invokes a builtin agent via /agent:<name>', async () => {
