@@ -147,7 +147,9 @@ Existing string codes (`RunStoreErrorCode`, `ArtifactStoreError['code']`, intera
 
 ## After the program (deferred leftovers)
 
-When Phases 0–8A (and any accepted optional slices) are done and the package suite is green, remaining Effect-adjacent work is **not** part of the main strangler timeline:
+Program exit record: [program-exit.md](./program-exit.md).
+
+When Phases 0–8A are done and the package suite is green, remaining Effect-adjacent work is **not** part of the main strangler timeline:
 
 | Leftover | Doc | Rule |
 | -------- | --- | ---- |
