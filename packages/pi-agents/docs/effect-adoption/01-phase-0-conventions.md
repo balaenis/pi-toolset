@@ -1,0 +1,176 @@
+# Phase 0: Effect Conventions and Runtime Bridge
+
+**Goal:** Commit the `effect` dependency intentionally, document project conventions, and ship a tiny `effect-runtime` boundary helper used by later phases.
+
+**Inputs:** [00-overview.md](./00-overview.md); current `packages/pi-agents/package.json` (`effect` may already be listed); zero `effect` imports under `src/`.
+
+**Assumptions:**
+
+- Convention text lives under `docs/effect-adoption/` (this file + overview); no separate ADRs required.
+- `effect-runtime.ts` is the only new production module in this phase.
+- No production call sites migrate yet beyond what the runtime unit tests exercise.
+
+**Architecture:** Introduce a leaf module that standardizes `Effect.runPromise` / `runPromiseExit` usage, maps `AbortSignal` aborts to interruption-friendly failures, and documents tagged-error rules. Later phases import these helpers instead of calling `Effect.runPromise` ad hoc.
+
+**Tech Stack:** `effect@^3.22.0`, TypeScript, `bun:test`, Mise.
+
+---
+
+## File Map
+
+- Modify: `packages/pi-agents/package.json` — ensure `dependencies.effect` is present and intentional (`^3.22.0` or the repo’s chosen range); no other Effect packages
+- Create: `packages/pi-agents/src/effect-runtime.ts` — boundary runners and abort helpers
+- Create: `packages/pi-agents/tests/effect-runtime.test.ts` — unit coverage for runners
+- Modify: `packages/pi-agents/docs/effect-adoption/00-overview.md` — only if phase discovers a convention conflict (prefer not)
+
+## Locked Conventions
+
+### Imports
+
+```ts
+import { Effect, Exit, Cause, Data, Schedule, Deferred, Scope, Fiber } from 'effect';
+```
+
+- Prefer top-level named imports from `'effect'`.
+- Avoid `import * as Effect from 'effect/Effect'` unless a later phase needs it for tree-shaking measurements.
+
+### Boundary rules
+
+1. **Public module APIs** that today return `Promise<T>` or sync `T` keep that shape.
+2. Internal helpers may return `Effect.Effect<A, E, R>` with `R = never` unless a phase explicitly introduces services.
+3. Crossing back to Promise uses `runEffectPromise` / `runEffectExit` from `effect-runtime.ts` (not raw `Effect.runPromise` scattered everywhere).
+4. Sync pure functions may return `Either` without going through the runtime.
+
+### Error tags
+
+- Domain errors that already have a `code: string` field **keep that code** as the wire value.
+- Effect representation: `Data.TaggedError` (or class extending it) with:
+  - `_tag`: stable PascalCase name (e.g. `ArtifactStoreFailure`)
+  - `code`: existing wire code union member
+  - `message`: human-readable string
+  - optional `cause`
+- Do not create parallel user-visible codes (`ARTIFACT_MISSING` vs `artifact_missing`).
+- Prefer failure channel over throw for expected IO/domain errors inside Effect code.
+- Use `Effect.die` / throw only for invariant violations.
+
+### Abort / interrupt
+
+- Host `AbortSignal` aborted → treat as cancellation, not generic failure.
+- Preserve `AgentAbortError` and `RunAbortOrigin` at execution boundaries.
+- Helper: if `signal?.aborted`, fail the Effect with a dedicated tag or interrupt; do not map to `stopReason: 'error'`.
+
+### Layers / services
+
+- Phase 0–7: **no** `Layer`, **no** `Context.Tag` services required.
+- Pass dependencies as ordinary function args / closure options (matches existing `createX(options)` factories).
+
+### Testing
+
+- Prefer existing Promise/sync tests as regression oracles.
+- Add Effect-specific tests only for new helpers or new failure paths.
+- Do not rewrite large suites to `Effect.gen` style.
+
+## Tasks
+
+### Task 1: Normalize dependency
+
+**Outcome:** `effect` is a declared runtime dependency of `@balaenis/pi-agents` with a clear version range; install resolves.
+
+**Files:**
+
+- Modify: `packages/pi-agents/package.json`
+
+**Steps:**
+
+- [ ] Confirm `dependencies.effect` is `"^3.22.0"` (or update to that range if missing).
+- [ ] Do not add `@effect/*` packages.
+- [ ] Run `bun install` at monorepo root if the lockfile needs refresh.
+- [ ] Verify resolve: `node -e "import('effect').then(m => console.log(!!m.Effect))"` from package context, or import in a scratch test.
+
+**Validation:**
+
+- Run: `cd /home/julian/workspace/my/pi-toolset && bun install`
+- Expected: Install succeeds; `packages/pi-agents/node_modules/effect/package.json` exists with version 3.x.
+- Run: `cd packages/pi-agents && bun -e "import { Effect } from 'effect'; console.log(typeof Effect.runPromise)"`
+- Expected: Prints `function`.
+
+### Task 2: Implement `effect-runtime` bridge
+
+**Outcome:** A leaf module exports runners used by later phases; no production callers required yet.
+
+**Files:**
+
+- Create: `packages/pi-agents/src/effect-runtime.ts`
+- Create: `packages/pi-agents/tests/effect-runtime.test.ts`
+
+**Steps:**
+
+- [ ] Add 2-line ABOUTME header.
+- [ ] Export at least:
+  - `runEffectPromise<A, E>(effect: Effect.Effect<A, E>): Promise<A>` — runs with default runtime; rejects with the failure value if it is an `Error`, otherwise wraps non-Error failures in `Error` **only when necessary**. Prefer: if failure is `Error`, reject with it; if tagged error with `message`, reject with that instance when it extends `Error`.
+  - `runEffectExit<A, E>(effect: Effect.Effect<A, E>): Promise<Exit.Exit<A, E>>` — never throws for typed failures.
+  - `effectFromAbortSignal(signal: AbortSignal | undefined): Effect.Effect<void, never>` **or** `checkAbortSignal(signal: AbortSignal | undefined): Effect.Effect<void, AbortSignalFailure>` — documents the chosen abort policy.
+- [ ] Document chosen abort policy in a short comment on the helper:
+  - Preferred: when `signal?.aborted`, fail with a small `Data.TaggedError('AbortSignalAborted')` carrying optional `reason`, so callers can map to `AgentAbortError` without treating it as defect.
+- [ ] Keep the module free of pi-agents domain imports (no `run-types`, no `SingleResult`) so it stays a true leaf.
+- [ ] Unit tests:
+  - success path resolves value
+  - failure path: `Effect.fail(new Error('x'))` rejects with that error via `runEffectPromise`
+  - `runEffectExit` returns `Exit.isFailure` without throwing
+  - aborted signal helper fails/interrupts as designed
+
+**Validation:**
+
+- Run: `cd packages/pi-agents && bun test tests/effect-runtime.test.ts`
+- Expected: All tests pass.
+- Run: `mise run typecheck --package packages/pi-agents`
+- Expected: No TypeScript errors.
+
+### Task 3: Freeze conventions in docs (this plan is the source)
+
+**Outcome:** Engineers can implement Phase 1+ without inventing import/error/boundary rules.
+
+**Files:**
+
+- Modify: this file only if Task 2 chose a different abort policy than written — update Locked Conventions to match code.
+
+**Steps:**
+
+- [ ] Re-read Locked Conventions against the implemented helpers.
+- [ ] Align wording so Phase 1 authors copy the real API names.
+
+**Validation:**
+
+- Run: `git diff --check -- packages/pi-agents/docs/effect-adoption packages/pi-agents/src/effect-runtime.ts packages/pi-agents/tests/effect-runtime.test.ts packages/pi-agents/package.json`
+- Expected: No whitespace errors.
+
+## Final Validation
+
+- Run: `cd packages/pi-agents && bun test tests/effect-runtime.test.ts`
+- Expected: Pass.
+- Run: `mise run typecheck --package packages/pi-agents`
+- Expected: Pass.
+- Run: `hk check` (or at least format/lint on touched files)
+- Expected: Clean for touched paths.
+
+## Failure Behavior
+
+- Missing `effect` install → Task 1 fails closed; do not stub a local Effect polyfill.
+- Typed failure that is not an `Error` → `runEffectPromise` must still reject (wrap or use Cause pretty-print); document the wrap rule in code comments and tests.
+
+## Privacy and Security
+
+- No change to run storage, logging, or trust boundaries.
+
+## Rollout Notes
+
+- Safe to merge alone; no runtime behavior change in production paths until Phase 1+.
+
+## Risks and Mitigations
+
+- Over-building a mini framework — keep `effect-runtime.ts` under ~150 lines; no DI container.
+- Premature Layer adoption — explicitly forbidden until Phase 8 review.
+
+## Open Questions
+
+None for Phase 0. Abort policy detail is decided in Task 2 and written back into this plan.
