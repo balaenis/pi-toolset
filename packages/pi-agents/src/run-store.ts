@@ -4,7 +4,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import { Cause, Effect, Exit, Option } from 'effect';
+import { Duration, Effect } from 'effect';
 import {
   getDefaultRunsRoot as resolveDefaultRunsRoot,
   initializeRunsRoot,
@@ -13,7 +13,7 @@ import {
   type RunStoreCapabilities,
 } from './run-store-paths.ts';
 import { DEFAULT_RUNTIME, GROK_ACP_RUNTIME } from './constants.ts';
-import { runEffectExit, runEffectPromise } from './effect-runtime.ts';
+import { createKeyedSerialExecutor, runEffectPromise } from './effect-runtime.ts';
 import { chainFanoutUnitId, chainStepUnitId, generateUnitIds, pad } from './run-coordinator.ts';
 import { createArtifactStore, isRunArtifactRef, type ArtifactStore } from './artifact-store.ts';
 import type {
@@ -684,12 +684,6 @@ function assertValidRunId(id: string, shape: 'throw' | 'not_found' = 'not_found'
     runId: id,
     message: 'invalid run id',
   } satisfies RunStoreError;
-}
-
-/** Per-run write queue so overlapping streaming updates cannot interleave temp renames. */
-type QueuedTask<T> = () => Promise<T>;
-interface RunQueue {
-  tail: Promise<unknown>;
 }
 
 /** Durable crash windows for strict run.json transactions (test injection). */
@@ -3306,7 +3300,7 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
     if (!Number.isFinite(delayMs) || delayMs <= 0) return;
     const bounded = Math.min(Math.floor(delayMs), TX_LOCK_WAIT_MS_MAX);
     if (bounded <= 0) return;
-    await runEffectPromise(Effect.sleep(`${bounded} millis`));
+    await runEffectPromise(Effect.sleep(Duration.millis(bounded)));
   }
 
   /**
@@ -3886,53 +3880,16 @@ export function createRunStore(options: CreateRunStoreOptions = {}): RunStore {
 
   mkdirPrivate(rootDir);
 
-  const queues = new Map<string, RunQueue>();
-
-  function getQueue(runId: string): RunQueue {
-    let q = queues.get(runId);
-    if (!q) {
-      q = { tail: Promise.resolve() };
-      queues.set(runId, q);
-    }
-    return q;
-  }
-
   /**
-   * Per-run serial executor (Phase 8 Slice A):
-   * - Continue-after-failure: prev.then(run, run) so one reject does not wedge the run
-   * - Task body via Effect.tryPromise + runEffectExit; rethrow failures as-is
-   *   (Error or plain {code,message}) for existing toMatchObject / instanceof paths
-   * - Map tail stores a swallowed promise (no unhandled rejection)
-   * - assertValidRunId before enqueue (unchanged)
+   * Per-run serial executor (Phase 8 Slice A) via shared keyed helper:
+   * continue-after-failure + rethrow as-is for plain `{ code, message }`.
+   * assertValidRunId still runs before enqueue.
    */
-  function runSerial<T>(runId: string, task: QueuedTask<T>): Promise<T> {
+  const serial = createKeyedSerialExecutor();
+
+  function runSerial<T>(runId: string, task: () => Promise<T>): Promise<T> {
     assertValidRunId(runId);
-    const q = getQueue(runId);
-    const runTask = async (): Promise<T> => {
-      const exit = await runEffectExit(
-        Effect.tryPromise({
-          try: task,
-          catch: (cause) => cause,
-        })
-      );
-      if (Exit.isSuccess(exit)) {
-        return exit.value;
-      }
-      const failure = Option.getOrUndefined(Cause.failureOption(exit.cause));
-      if (failure !== undefined) {
-        throw failure;
-      }
-      for (const defect of Cause.defects(exit.cause)) {
-        throw defect;
-      }
-      throw new Error(Cause.pretty(exit.cause));
-    };
-    const result = q.tail.then(runTask, runTask);
-    q.tail = result.then(
-      () => undefined,
-      () => undefined
-    );
-    return result;
+    return serial.enqueue(runId, task);
   }
 
   function runDirOf(runId: string): string {

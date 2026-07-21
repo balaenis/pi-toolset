@@ -3,11 +3,10 @@
 
 import type { Static } from '@earendil-works/pi-ai';
 import type { AgentToolResult, AgentToolUpdateCallback } from '@earendil-works/pi-coding-agent';
-import { Cause, Effect, Exit, Option } from 'effect';
 import type { AgentConfig, AgentSource } from './agents.ts';
 import { MAX_CONCURRENCY, MAX_FANOUT_ITEMS, RESULT_UPDATE_INTERVAL_MS } from './constants.ts';
 import { createLatestValueCoalescer } from './update-coalescer.ts';
-import { runEffectExit } from './effect-runtime.ts';
+import { runEffectThrowingAsIs, tryPromiseUnknown } from './effect-runtime.ts';
 import { ABORT_MESSAGE, getAbortResult, isAbortError, type OnUpdateCallback } from './execution.ts';
 import { readJsonPointer } from './json-pointer.ts';
 import {
@@ -86,8 +85,8 @@ export type ChainRunStep = (req: ChainStepRequest) => Promise<SingleResult>;
  * - clamp concurrency to [1, items.length]
  * - stop scheduling on error or AbortSignal; wait for in-flight workers
  * - fill unstarted slots via onUnstarted; then rethrow first error
- * Each worker body runs through Effect.tryPromise + runEffectExit so typed
- * failures rethrow as-is (Error or plain objects).
+ * Each worker body runs through `runEffectThrowingAsIs(tryPromiseUnknown(...))`
+ * so typed failures rethrow as-is (Error or plain objects).
  * Index-based slot writes stay inside the worker; pool order of completion
  * must not scramble fanout indices.
  */
@@ -117,25 +116,8 @@ async function runFanoutWorkers<TIn, TOut>(
     return current;
   };
 
-  const runOne = async (item: TIn, index: number): Promise<TOut> => {
-    const exit = await runEffectExit(
-      Effect.tryPromise({
-        try: () => worker(item, index),
-        catch: (cause) => cause,
-      })
-    );
-    if (Exit.isSuccess(exit)) {
-      return exit.value;
-    }
-    const failure = Option.getOrUndefined(Cause.failureOption(exit.cause));
-    if (failure !== undefined) {
-      throw failure;
-    }
-    for (const defect of Cause.defects(exit.cause)) {
-      throw defect;
-    }
-    throw new Error(Cause.pretty(exit.cause));
-  };
+  const runOne = (item: TIn, index: number): Promise<TOut> =>
+    runEffectThrowingAsIs(tryPromiseUnknown(() => worker(item, index)));
 
   const pool = Array.from({ length: limit }, async () => {
     while (true) {

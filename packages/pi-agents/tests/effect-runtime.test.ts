@@ -7,10 +7,12 @@ import { AgentAbortError } from '../src/abort.ts';
 import {
   AbortSignalAborted,
   checkAbortSignal,
+  createKeyedSerialExecutor,
   failAgentAbortError,
   failIfAborted,
   runEffectExit,
   runEffectPromise,
+  runEffectThrowingAsIs,
 } from '../src/effect-runtime.ts';
 import { emptyUsage } from '../src/empty-usage.ts';
 import type { SingleResult } from '../src/types.ts';
@@ -58,6 +60,102 @@ describe('runEffectExit', () => {
     const err = new Error('typed');
     const exit = await runEffectExit(Effect.fail(err));
     expect(Exit.isFailure(exit)).toBe(true);
+  });
+});
+
+describe('runEffectThrowingAsIs', () => {
+  it('resolves the success value', async () => {
+    expect(await runEffectThrowingAsIs(Effect.succeed(7))).toBe(7);
+  });
+
+  it('rejects with the same Error instance on typed failure', async () => {
+    const err = new Error('as-is error');
+    await expect(runEffectThrowingAsIs(Effect.fail(err))).rejects.toBe(err);
+  });
+
+  it('rejects with the same plain object on typed failure', async () => {
+    const failure = { code: 'run_busy', message: 'x' };
+    try {
+      await runEffectThrowingAsIs(Effect.fail(failure));
+      expect.unreachable('expected rejection');
+    } catch (err) {
+      expect(err).toBe(failure);
+      expect(err instanceof Error).toBe(false);
+    }
+  });
+});
+
+describe('createKeyedSerialExecutor', () => {
+  it('runs tasks for the same key in serial order', async () => {
+    const serial = createKeyedSerialExecutor();
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const first = serial.enqueue('k', async () => {
+      order.push('first-start');
+      await firstGate;
+      order.push('first-end');
+      return 1;
+    });
+
+    let secondStarted = false;
+    const second = serial.enqueue('k', async () => {
+      secondStarted = true;
+      order.push('second-start');
+      order.push('second-end');
+      return 2;
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(['first-start']);
+    expect(secondStarted).toBe(false);
+
+    releaseFirst();
+    await expect(first).resolves.toBe(1);
+    await expect(second).resolves.toBe(2);
+    expect(order).toEqual(['first-start', 'first-end', 'second-start', 'second-end']);
+  });
+
+  it('continues after a rejected task on the same key', async () => {
+    const serial = createKeyedSerialExecutor();
+    const firstErr = { code: 'run_busy', message: 'first failed' };
+
+    const first = serial.enqueue('k', async () => {
+      throw firstErr;
+    });
+    const second = serial.enqueue('k', async () => 'ok');
+
+    await expect(first).rejects.toBe(firstErr);
+    await expect(second).resolves.toBe('ok');
+  });
+
+  it('allows concurrent work on different keys', async () => {
+    const serial = createKeyedSerialExecutor();
+    let releaseA!: () => void;
+    const aGate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let bStarted = false;
+
+    const a = serial.enqueue('a', async () => {
+      await aGate;
+      return 'a-done';
+    });
+
+    const b = serial.enqueue('b', async () => {
+      bStarted = true;
+      return 'b-done';
+    });
+
+    await Promise.resolve();
+    expect(bStarted).toBe(true);
+    await expect(b).resolves.toBe('b-done');
+
+    releaseA();
+    await expect(a).resolves.toBe('a-done');
   });
 });
 

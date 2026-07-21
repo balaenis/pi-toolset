@@ -38,9 +38,16 @@ import { Effect, Exit, Cause, Data, Schedule, Deferred, Scope, Fiber } from 'eff
 
 1. **Public module APIs** that today return `Promise<T>` or sync `T` keep that shape.
 2. Internal helpers may return `Effect.Effect<A, E, R>` with `R = never` unless a phase explicitly introduces services.
-3. Crossing back to Promise uses `runEffectPromise` / `runEffectExit` from `effect-runtime.ts` (not raw `Effect.runPromise` scattered everywhere).
-   - `runEffectPromise`: typed `Error` failures reject as the same instance; non-Error failures wrap in `Error`.
-   - `runEffectExit`: returns `Exit`; never throws for typed failures.
+3. Crossing back to Promise uses runners from `effect-runtime.ts` (not raw `Effect.runPromise` scattered everywhere).
+
+   | Helper                  | Non-Error typed failure | Use when                                                                |
+   | ----------------------- | ----------------------- | ----------------------------------------------------------------------- |
+   | `runEffectPromise`      | wrap in `Error`         | domain Effects whose public Promise API should only reject with `Error` |
+   | `runEffectThrowingAsIs` | rethrow as-is           | store/coordinator/fanout where plain `{ code, message }` must survive   |
+   | `runEffectExit`         | never throws for typed  | callers that branch on Exit                                             |
+   - `tryPromiseUnknown(work)` wraps a Promise factory as `Effect.Effect<A, unknown>` without remapping the catch cause.
+   - `createKeyedSerialExecutor` is the standard continue-after-failure queue for durable write paths; do not re-inline `prev.then(run, run)` for new durable serial work.
+
 4. Sync pure functions may return `Either` without going through the runtime.
 
 ### Error tags
@@ -61,7 +68,9 @@ import { Effect, Exit, Cause, Data, Schedule, Deferred, Scope, Fiber } from 'eff
 - Preserve `AgentAbortError` and `RunAbortOrigin` at execution boundaries.
 - Helper API (`effect-runtime.ts`):
   - `AbortSignalAborted` — `Data.TaggedError('AbortSignalAborted')` with optional `reason`
-  - `checkAbortSignal(signal)` — if `signal?.aborted`, fail with `AbortSignalAborted` (no later-abort subscription)
+  - `failIfAborted(signal)` — if `signal?.aborted`, fail with `AbortSignalAborted` (no later-abort subscription); canonical name for Effect call sites
+  - `checkAbortSignal` — compatibility alias of `failIfAborted` (prefer `failIfAborted` at new call sites)
+- Production Promise-pool schedulers may keep point-in-time `signal?.aborted` checks; use `failIfAborted` only inside Effect programs. Do not wrap pure Promise pools solely to call abort helpers.
 - Do not map abort to `stopReason: 'error'`. Callers map `AbortSignalAborted` to `AgentAbortError` at execution boundaries.
 
 ### Layers / services
