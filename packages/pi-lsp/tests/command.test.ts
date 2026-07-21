@@ -1,10 +1,19 @@
-// ABOUTME: Unit tests for /lsp status detail formatting and argument completions.
+// ABOUTME: Unit tests for /lsp status detail formatting, completions, and clean.
 // ABOUTME: Uses fake manager/server objects so no language-server process is started.
 
-import { describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import {
+  cleanDiagnostics,
+  formatLspStatusDetails,
+  getLspArgumentCompletions,
+} from '../src/command.ts';
+import { drain, hasDiagnostics, register, resetAll } from '../src/diagnostics.ts';
 import type { LSPServerInstance } from '../src/instance.ts';
 import type { LSPServerManager } from '../src/manager.ts';
-import { formatLspStatusDetails, getLspArgumentCompletions } from '../src/command.ts';
 import type { LspServerState, ScopedLspServerConfig } from '../src/types.ts';
 
 function fakeServer(
@@ -180,13 +189,17 @@ describe('getLspArgumentCompletions', () => {
       { value: 'status', label: 'status' },
       { value: 'start', label: 'start' },
       { value: 'diagnostics', label: 'diagnostics' },
+      { value: 'clean', label: 'clean' },
       { value: 'config', label: 'config' },
     ]);
     expect(getLspArgumentCompletions('st')).toEqual([
       { value: 'status', label: 'status' },
       { value: 'start', label: 'start' },
     ]);
-    expect(getLspArgumentCompletions('c')).toEqual([{ value: 'config', label: 'config' }]);
+    expect(getLspArgumentCompletions('c')).toEqual([
+      { value: 'clean', label: 'clean' },
+      { value: 'config', label: 'config' },
+    ]);
   });
 
   it('completes config scopes', () => {
@@ -198,5 +211,295 @@ describe('getLspArgumentCompletions', () => {
       { value: 'config project', label: 'config project' },
     ]);
     expect(getLspArgumentCompletions('config x')).toBeNull();
+  });
+
+  it('completes clean force', () => {
+    expect(getLspArgumentCompletions('clean')).toEqual([
+      { value: 'clean force', label: 'clean force' },
+    ]);
+    expect(getLspArgumentCompletions('clean f')).toEqual([
+      { value: 'clean force', label: 'clean force' },
+    ]);
+    expect(getLspArgumentCompletions('clean x')).toBeNull();
+  });
+});
+
+const SAMPLE_DIAGNOSTIC = {
+  range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+  message: 'stale error',
+  severity: 1 as const,
+  source: 'ts',
+};
+
+describe('cleanDiagnostics', () => {
+  beforeEach(() => {
+    resetAll();
+  });
+
+  afterEach(() => {
+    resetAll();
+  });
+
+  it('reports usage for unknown clean args', async () => {
+    const message = await cleanDiagnostics({
+      force: false,
+      cleanArg: 'now',
+      cwd: '/tmp',
+      manager: undefined,
+    });
+    expect(message).toBe('Usage: /lsp clean | /lsp clean force');
+  });
+
+  it('reports no-op when force has nothing tracked', async () => {
+    const message = await cleanDiagnostics({
+      force: true,
+      cleanArg: 'force',
+      cwd: '/tmp',
+      manager: undefined,
+    });
+    expect(message).toBe('No pending or delivered diagnostics to clear.');
+  });
+
+  it('reports no-op when bare clean has nothing tracked', async () => {
+    const message = await cleanDiagnostics({
+      force: false,
+      cleanArg: '',
+      cwd: '/tmp',
+      manager: fakeManager([fakeServer('typescript', 'running')]),
+    });
+    expect(message).toBe('No pending or delivered diagnostics to clean.');
+  });
+
+  it('force-clears pending diagnostics without a manager', async () => {
+    register('ts', 'file:///tmp/a.ts', [SAMPLE_DIAGNOSTIC]);
+
+    const message = await cleanDiagnostics({
+      force: true,
+      cleanArg: 'force',
+      cwd: '/tmp',
+      manager: undefined,
+    });
+
+    expect(message).toContain('cleared (force)');
+    expect(message).toContain('1 pending');
+    expect(hasDiagnostics()).toBe(false);
+  });
+
+  it('force-clears delivered diagnostics without a manager', async () => {
+    register('ts', 'file:///tmp/a.ts', [SAMPLE_DIAGNOSTIC]);
+    expect(drain('/tmp')).not.toBeNull();
+    expect(hasDiagnostics()).toBe(true);
+
+    const message = await cleanDiagnostics({
+      force: true,
+      cleanArg: 'force',
+      cwd: '/tmp',
+      manager: undefined,
+    });
+
+    expect(message).toContain('cleared (force)');
+    expect(message).toContain('1 delivered');
+    expect(hasDiagnostics()).toBe(false);
+  });
+
+  it('points non-force clean at force when manager is undefined', async () => {
+    register('ts', 'file:///tmp/a.ts', [SAMPLE_DIAGNOSTIC]);
+
+    const message = await cleanDiagnostics({
+      force: false,
+      cleanArg: '',
+      cwd: '/tmp',
+      manager: undefined,
+    });
+
+    expect(message).toContain('LSP manager is not initialized');
+    expect(message).toContain('/lsp clean force');
+    expect(hasDiagnostics()).toBe(true);
+  });
+
+  it('re-syncs tracked files and clears when the server reports clean', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pi-lsp-clean-'));
+    const filePath = path.join(dir, 'a.ts');
+    await writeFile(filePath, 'const x = 1;\n', 'utf8');
+    const uri = pathToFileURL(filePath).href;
+
+    register('typescript', uri, [SAMPLE_DIAGNOSTIC]);
+
+    const synced: string[] = [];
+    const manager = fakeManager([fakeServer('typescript', 'running')]);
+    manager.syncFileChange = async (target) => {
+      synced.push(target);
+      // Simulate a clean pull/publish after re-sync.
+      register('typescript', uri, []);
+    };
+
+    try {
+      const message = await cleanDiagnostics({
+        force: false,
+        cleanArg: '',
+        cwd: dir,
+        manager,
+        settleMs: 0,
+      });
+
+      expect(synced).toEqual([filePath]);
+      expect(message).toContain('Re-synced 1 file(s) with language servers.');
+      expect(message).toContain('All tracked diagnostics cleared after server refresh.');
+      expect(hasDiagnostics()).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clears delivered-only residuals when re-sync publishes clean', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pi-lsp-clean-delivered-'));
+    const filePath = path.join(dir, 'a.ts');
+    await writeFile(filePath, 'const x = 1;\n', 'utf8');
+    const uri = pathToFileURL(filePath).href;
+
+    register('typescript', uri, [SAMPLE_DIAGNOSTIC]);
+    expect(drain(dir)).not.toBeNull();
+    // Pending is gone; only delivered tracking remains.
+    expect(hasDiagnostics()).toBe(true);
+
+    const manager = fakeManager([fakeServer('typescript', 'running')]);
+    manager.syncFileChange = async () => {
+      register('typescript', uri, []);
+    };
+
+    try {
+      const message = await cleanDiagnostics({
+        force: false,
+        cleanArg: '',
+        cwd: dir,
+        manager,
+        settleMs: 0,
+      });
+
+      expect(message).toContain('Tracked before: 0 pending, 1 delivered');
+      expect(message).toContain('All tracked diagnostics cleared after server refresh.');
+      expect(hasDiagnostics()).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports remaining residuals when re-sync re-registers the same issue', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pi-lsp-clean-residual-'));
+    const filePath = path.join(dir, 'a.ts');
+    await writeFile(filePath, 'const x = 1;\n', 'utf8');
+    const uri = pathToFileURL(filePath).href;
+
+    register('typescript', uri, [SAMPLE_DIAGNOSTIC]);
+
+    const manager = fakeManager([fakeServer('typescript', 'running')]);
+    manager.syncFileChange = async () => {
+      // Server still reports the same issue — not a clean publish.
+      register('typescript', uri, [SAMPLE_DIAGNOSTIC]);
+    };
+
+    try {
+      const message = await cleanDiagnostics({
+        force: false,
+        cleanArg: '',
+        cwd: dir,
+        manager,
+        settleMs: 0,
+      });
+
+      expect(message).toContain('Re-synced 1 file(s)');
+      expect(message).toContain('Remaining: 1 pending, 0 delivered across 1 file(s).');
+      expect(message).toContain('/lsp clean force');
+      expect(hasDiagnostics()).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips files with no covering language server', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pi-lsp-clean-skip-'));
+    const filePath = path.join(dir, 'a.ts');
+    await writeFile(filePath, 'const x = 1;\n', 'utf8');
+    const uri = pathToFileURL(filePath).href;
+
+    register('typescript', uri, [SAMPLE_DIAGNOSTIC]);
+
+    let synced = 0;
+    const manager = fakeManager([]);
+    manager.syncFileChange = async () => {
+      synced++;
+    };
+
+    try {
+      const message = await cleanDiagnostics({
+        force: false,
+        cleanArg: '',
+        cwd: dir,
+        manager,
+        settleMs: 0,
+      });
+
+      expect(synced).toBe(0);
+      expect(message).toContain('Re-synced 0 file(s)');
+      expect(message).toContain(
+        'Skipped 1 file(s) with no covering language server (residuals left intact).'
+      );
+      expect(message).toContain('Remaining: 1 pending');
+      expect(hasDiagnostics()).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('counts failed re-syncs when syncFileChange throws', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pi-lsp-clean-fail-'));
+    const filePath = path.join(dir, 'a.ts');
+    await writeFile(filePath, 'const x = 1;\n', 'utf8');
+    const uri = pathToFileURL(filePath).href;
+
+    register('typescript', uri, [SAMPLE_DIAGNOSTIC]);
+
+    const manager = fakeManager([fakeServer('typescript', 'running')]);
+    manager.syncFileChange = async () => {
+      throw new Error('sync blew up');
+    };
+
+    try {
+      const message = await cleanDiagnostics({
+        force: false,
+        cleanArg: '',
+        cwd: dir,
+        manager,
+        settleMs: 0,
+      });
+
+      expect(message).toContain('Re-synced 0 file(s)');
+      expect(message).toContain('Failed to re-sync 1 file(s).');
+      expect(message).toContain('Remaining: 1 pending');
+      expect(hasDiagnostics()).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clears diagnostics for files that no longer exist', async () => {
+    const missingUri = 'file:///tmp/pi-lsp-missing-clean.ts';
+    register('typescript', missingUri, [SAMPLE_DIAGNOSTIC]);
+
+    const manager = fakeManager([fakeServer('typescript', 'running')]);
+    manager.syncFileChange = async () => {
+      throw new Error('should not sync missing files');
+    };
+
+    const message = await cleanDiagnostics({
+      force: false,
+      cleanArg: '',
+      cwd: '/tmp',
+      manager,
+      settleMs: 0,
+    });
+
+    expect(message).toContain('unreadable/missing');
+    expect(hasDiagnostics()).toBe(false);
   });
 });

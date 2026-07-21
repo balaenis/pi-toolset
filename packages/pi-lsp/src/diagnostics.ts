@@ -562,6 +562,68 @@ export function invalidatePendingForFile(uri: string): void {
 }
 
 /**
+ * URIs that currently have pending and/or delivered diagnostics.
+ *
+ * Used by `/lsp clean` to know which files to re-query from language servers.
+ */
+export function listTrackedUris(): string[] {
+  const uris = new Set<string>();
+  for (const entry of pendingDiagnostics.values()) {
+    uris.add(entry.uri);
+  }
+  for (const [uri] of deliveredDiagnostics.entries()) {
+    uris.add(uri);
+  }
+  return Array.from(uris).sort();
+}
+
+/** Snapshot of how many issues are tracked right now. */
+export function countTrackedDiagnostics(): {
+  pendingIssues: number;
+  deliveredIssues: number;
+  files: number;
+} {
+  let pendingIssues = 0;
+  for (const entry of pendingDiagnostics.values()) {
+    pendingIssues += entry.diagnostics.length;
+  }
+
+  let deliveredIssues = 0;
+  for (const [, keys] of deliveredDiagnostics.entries()) {
+    deliveredIssues += keys.size;
+  }
+
+  return {
+    pendingIssues,
+    deliveredIssues,
+    files: listTrackedUris().length,
+  };
+}
+
+/**
+ * Clear pending and delivered diagnostics for a single URI across every server.
+ *
+ * Used when a tracked file no longer exists on disk during `/lsp clean`.
+ */
+export function clearForUri(uri: string): void {
+  if (!uri) return;
+  const before = diagnosticsPresent();
+
+  const pendingKeys: string[] = [];
+  for (const [key, entry] of pendingDiagnostics) {
+    if (entry.uri === uri) pendingKeys.push(key);
+  }
+  for (const key of pendingKeys) pendingDiagnostics.delete(key);
+
+  const hadDelivered = deliveredDiagnostics.delete(uri);
+
+  if (pendingKeys.length > 0 || hadDelivered) {
+    logForDebugging(`diagnostics: cleared all state for ${uri}`);
+  }
+  notifyIfChanged(before);
+}
+
+/**
  * Reset all diagnostic state. Called on session shutdown so a new session starts
  * clean and no cross-session leakage occurs.
  */

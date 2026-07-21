@@ -4,10 +4,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Diagnostic as LspDiagnostic } from 'vscode-languageserver-types';
 import {
+  clearForUri,
+  countTrackedDiagnostics,
   drain,
   formatDiagnosticsState,
   hasDiagnostics,
   invalidatePendingForFile,
+  listTrackedUris,
   onChanged,
   register,
   resetAll,
@@ -177,6 +180,39 @@ describe('diagnostic presence indicator', () => {
     drain();
     expect(hasDiagnostics()).toBe(true);
     resetAll();
+    expect(hasDiagnostics()).toBe(false);
+  });
+
+  it('lists and counts tracked URIs across pending and delivered', () => {
+    register('ts', 'file:///a.ts', [diag('a')]);
+    register('eslint', 'file:///b.ts', [diag('b')]);
+    drain();
+    register('ts', 'file:///c.ts', [diag('c')]);
+
+    expect(listTrackedUris()).toEqual(['file:///a.ts', 'file:///b.ts', 'file:///c.ts']);
+    expect(countTrackedDiagnostics()).toEqual({
+      pendingIssues: 1,
+      deliveredIssues: 2,
+      files: 3,
+    });
+  });
+
+  it('clearForUri drops pending and delivered for one file only', () => {
+    const keep = 'file:///keep.ts';
+    const drop = 'file:///drop.ts';
+    register('ts', keep, [diag('keep')]);
+    register('ts', drop, [diag('drop')]);
+    drain();
+    register('eslint', drop, [diag('drop lint')]);
+
+    clearForUri(drop);
+
+    expect(listTrackedUris()).toEqual([keep]);
+    expect(formatDiagnosticsState()).toContain('keep');
+    expect(formatDiagnosticsState()).not.toContain('drop');
+    expect(hasDiagnostics()).toBe(true);
+
+    clearForUri(keep);
     expect(hasDiagnostics()).toBe(false);
   });
 

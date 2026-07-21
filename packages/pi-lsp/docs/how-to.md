@@ -141,6 +141,21 @@ extension. It shows:
 Entries are grouped by file and tagged with severity, line/column, message,
 code, source, and originating server.
 
+## Clean residual diagnostics
+
+After a fix that did not trigger a clean server publish (or after a stale
+delivered snapshot), residual entries can stick around in `/lsp diagnostics`.
+
+- `/lsp clean` — re-sync every tracked file that has a covering language server
+  (pull diagnostics + short settle for push servers). Empty server reports clear
+  the matching pending/delivered state. Missing files are cleared locally; files
+  with no covering server are skipped and left intact.
+- `/lsp clean force` — discard all pending and delivered diagnostics immediately
+  without querying servers (does not start or wait for the LSP manager).
+
+If `/lsp clean` still leaves residuals that look wrong, inspect them with
+`/lsp diagnostics` or discard them with `/lsp clean force`.
+
 ## Set a custom workspace root or environment
 
 ```jsonc

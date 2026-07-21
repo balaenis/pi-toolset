@@ -150,6 +150,8 @@ hidden when all tracked counts are zero.
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/lsp status`                   | Inspect the current LSP runtime snapshot without starting stopped servers. Manager state, server counts, per-server details.                                                          |
 | `/lsp diagnostics`              | Inspect every tracked diagnostic (pending + delivered), grouped by file, tagged with severity, position, message, code, source, and originating server.                               |
+| `/lsp clean`                    | Re-sync tracked files that have a covering language server; clear entries servers report clean (or unreadable/missing files). Files with no covering server are skipped.              |
+| `/lsp clean force`              | Discard all pending and delivered diagnostics immediately without querying language servers or waiting for manager init.                                                              |
 | `/lsp start`                    | Interactive panel to start/stop any configured server for the session. Arrow keys move, space toggles, esc closes. TUI only.                                                          |
 | `/lsp config <global\|project>` | Interactive panel listing built-in recipes plus that scope's user servers. Space toggles `enabled` and writes it to the scope's `config.json`. TUI only. Reload the session to apply. |
 

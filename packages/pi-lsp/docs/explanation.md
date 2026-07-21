@@ -73,6 +73,10 @@ coexist. Delivery is lifecycle-batched, not mid-run steering:
    not re-injected merely because the file was edited again.
 5. **Clean publish clearing** — an empty publish from a server clears that
    server's pending and delivered keys for the URI; other servers are unaffected.
+6. **Manual clean** — `/lsp clean` re-syncs tracked files so servers can confirm
+   current state; `/lsp clean force` discards local pending/delivered state
+   without querying servers (useful for residuals that never received a clean
+   publish).
 
 Edits/writes invalidate stale **pending** snapshots for the file before
 re-syncing the LSP server; they do **not** erase delivered history. A later
