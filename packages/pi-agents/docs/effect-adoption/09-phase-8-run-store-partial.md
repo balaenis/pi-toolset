@@ -68,19 +68,20 @@ If any box fails → **do not start coding**.
 
 **Outcome:** `txLockWaitMs` / `txLockRetryMs` behavior preserved with Schedule-based retry.
 
-**Status:** Deferred until the **overall Effect adoption program** is complete (not mid-phase). **Post-program plan (behavior-preserving):** [10-post-program-tx-lock-effect-wait.md](./10-post-program-tx-lock-effect-wait.md).
+**Status:** **Done post-program** (see [10-post-program-tx-lock-effect-wait.md](./10-post-program-tx-lock-effect-wait.md)). Mutating paths use `withTxLockAsync` + Effect sleep; sync `getRun` recovery keeps `withTxLock` + `Atomics.wait`.
 
-**Steps:** (execute via [10-post-program-tx-lock-effect-wait.md](./10-post-program-tx-lock-effect-wait.md), not this PR)
+**Steps:**
 
-- [ ] Locate lock acquire retry/sleep loop.
-- [ ] Split try-once (sync) vs wait loop (async Effect sleep / Schedule).
-- [ ] Preserve:
+- [x] Locate lock acquire retry/sleep loop.
+- [x] Split try-once (sync) vs wait loop (async Effect sleep for write paths).
+- [x] Preserve:
   - live owner → wait/retry
   - dead owner detection via `isPidAlive` / `pidAliveKill` seam (ESRCH only = dead)
   - `run_busy` when wait exceeded
   - no lock-age steal on non-Linux beyond current rules
   - **no `await` while holding the lock**
-- [ ] Keep injectable timing options and tests that use short waits.
+- [x] Keep injectable timing options and tests that use short waits.
+- [x] Keep public `getRun` sync (dual acquire path).
 
 **Validation:**
 

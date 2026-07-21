@@ -22,11 +22,11 @@
 
 **Architecture:** This is **not** “more Effect for its own sake.” It is a **behavior-preserving mechanical migration** of one subsystem:
 
-| Layer | Sync/async | Role |
-| ----- | ---------- | ---- |
-| `tryAcquireTxLockOnce` | **Sync** | One attempt: path checks, rename publish, stale steal, fsync — **no sleep** |
-| Wait between attempts | **Async** | Effect `sleep` (optional `Schedule` for delay only) until monotonic deadline |
-| Critical section under hold | **Sync** | `fn(held)` + `releaseTxLock` — **no `await` while holding** |
+| Layer                       | Sync/async | Role                                                                         |
+| --------------------------- | ---------- | ---------------------------------------------------------------------------- |
+| `tryAcquireTxLockOnce`      | **Sync**   | One attempt: path checks, rename publish, stale steal, fsync — **no sleep**  |
+| Wait between attempts       | **Async**  | Effect `sleep` (optional `Schedule` for delay only) until monotonic deadline |
+| Critical section under hold | **Sync**   | `fn(held)` + `releaseTxLock` — **no `await` while holding**                  |
 
 Public wire behavior (`run_busy`, steal/ESRCH, corrupt paths, strict tx codes, on-disk layout) must match pre-change oracles.
 
@@ -35,6 +35,8 @@ Public wire behavior (`run_busy`, steal/ESRCH, corrupt paths, strict tx codes, o
 **When to start:** **Only after** the Effect program exit criteria above. Do not start mid-phase-stack or in parallel with unfinished Phase 7/8A review.
 
 **Success definition:** Existing tests remain the authority. Green suite + unchanged error codes/messages pinned by tests = done. No user-visible feature change.
+
+**Implementation note (landed):** Public `getRun` / `loadRunJson` must stay **sync**, so they keep `withTxLock` + `Atomics.wait`. Mutating paths use `withTxLockAsync` + Effect sleep. Shared `tryAcquireTxLockOnce` + sync hold via `finishWithTxLock`.
 
 ---
 
@@ -51,11 +53,11 @@ Phases 0–7  ──►  Phase 8 Slice A (runSerial)  ──►  [PROGRAM EXIT]
                          Optional later: Slice C Schema (separate, not required)
 ```
 
-| Document | Role |
-| -------- | ---- |
-| `00`–`09` + gate | Main Effect adoption |
-| **This doc** | **Post-program** leftover; behavior freeze first |
-| Slice C | Still optional; not in this plan |
+| Document         | Role                                             |
+| ---------------- | ------------------------------------------------ |
+| `00`–`09` + gate | Main Effect adoption                             |
+| **This doc**     | **Post-program** leftover; behavior freeze first |
+| Slice C          | Still optional; not in this plan                 |
 
 ---
 
@@ -121,13 +123,13 @@ Secondary: `bun test ./tests/run-coordinator.test.ts` (and `resume.test.ts` if l
 
 - [ ] Checklist:
 
-  | # | Criterion | Evidence |
-  | - | --------- | -------- |
-  | 1 | Phases 0–7 + 8A on branch/main as intended | git log / PR links |
-  | 2 | `mise run test --package packages/pi-agents` green (or documented CI) | command output |
-  | 3 | No open durable flakiness attributed to Effect | note / issue list empty |
-  | 4 | Leftovers listed: this lock-wait plan only (plus optional C) | this doc linked |
-  | 5 | Owner approves starting post-program lock work | explicit |
+  | #   | Criterion                                                             | Evidence                |
+  | --- | --------------------------------------------------------------------- | ----------------------- |
+  | 1   | Phases 0–7 + 8A on branch/main as intended                            | git log / PR links      |
+  | 2   | `mise run test --package packages/pi-agents` green (or documented CI) | command output          |
+  | 3   | No open durable flakiness attributed to Effect                        | note / issue list empty |
+  | 4   | Leftovers listed: this lock-wait plan only (plus optional C)          | this doc linked         |
+  | 5   | Owner approves starting post-program lock work                        | explicit                |
 
 - [ ] Record baseline: `run-store.test.ts` pass count and git SHA.
 
@@ -308,13 +310,13 @@ Secondary: `bun test ./tests/run-coordinator.test.ts` (and `resume.test.ts` if l
 
 All must pass on the PR branch:
 
-| Check | Expected |
-| ----- | -------- |
-| `bun test ./tests/run-store.test.ts` | Full pass |
-| `bun test ./tests/run-coordinator.test.ts` | Full pass |
-| `mise run typecheck --package packages/pi-agents` | Pass |
-| `mise run test --package packages/pi-agents` | Pass |
-| Diff review | No strict-tx state machine rewrite; no layout change; no await under hold |
+| Check                                             | Expected                                                                  | Status                    |
+| ------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------- |
+| `bun test ./tests/run-store.test.ts`              | Full pass                                                                 | **119 pass**              |
+| `bun test ./tests/run-coordinator.test.ts`        | Full pass                                                                 | **109 pass**              |
+| `mise run typecheck --package packages/pi-agents` | Pass                                                                      | **pass**                  |
+| `mise run test --package packages/pi-agents`      | Pass                                                                      | optional pre-merge        |
+| Diff review                                       | No strict-tx state machine rewrite; no layout change; no await under hold | dual-path hold stays sync |
 
 **Ship rule:** If any pre-existing oracle fails and the fix would change steal/`run_busy` semantics, **revert** the wait migration rather than “fix” durable behavior in the same PR.
 
@@ -322,13 +324,13 @@ All must pass on the PR branch:
 
 ## Failure Behavior
 
-| Condition | Expected (unchanged) |
-| --------- | -------------------- |
-| Live owner, wait exceeded | `run_busy` |
-| Unsafe lock path | `corrupt_run` / fail closed, no retry |
-| Steal success | Single owner; tests for maxActive / transfer |
-| Release failure after successful mutate | Combined error rules as today |
-| Effect sleep defect | Must not become silent success or wrong `run_busy` |
+| Condition                               | Expected (unchanged)                               |
+| --------------------------------------- | -------------------------------------------------- |
+| Live owner, wait exceeded               | `run_busy`                                         |
+| Unsafe lock path                        | `corrupt_run` / fail closed, no retry              |
+| Steal success                           | Single owner; tests for maxActive / transfer       |
+| Release failure after successful mutate | Combined error rules as today                      |
+| Effect sleep defect                     | Must not become silent success or wrong `run_busy` |
 
 ---
 
@@ -349,13 +351,13 @@ All must pass on the PR branch:
 
 ## Risks and Mitigations
 
-| Risk | Mitigation |
-| ---- | ---------- |
+| Risk                                   | Mitigation                                                             |
+| -------------------------------------- | ---------------------------------------------------------------------- |
 | Durable flake blamed on Effect program | Start only after program exit; isolate branch; full suite baseline SHA |
-| Await under hold | Type `fn` as sync `T`; review checklist; ban async critical sections |
-| Deadline drift after async sleep | Always recompute with `monotonicNowMs()`; existing bounded-wait tests |
-| Error wrapping breaks `toMatchObject` | Same Phase 5/8A rule: rethrow failures as-is for store errors |
-| Reviewer fatigue on 6k-line file | Task 2 mechanical first; small async surface in Tasks 3–4 |
+| Await under hold                       | Type `fn` as sync `T`; review checklist; ban async critical sections   |
+| Deadline drift after async sleep       | Always recompute with `monotonicNowMs()`; existing bounded-wait tests  |
+| Error wrapping breaks `toMatchObject`  | Same Phase 5/8A rule: rethrow failures as-is for store errors          |
+| Reviewer fatigue on 6k-line file       | Task 2 mechanical first; small async surface in Tasks 3–4              |
 
 ---
 

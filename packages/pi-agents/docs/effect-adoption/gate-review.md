@@ -19,20 +19,20 @@
 
 ## Slice decisions
 
-| Slice                      | In this PR?  | Rationale                                                                                                                                                                                  |
-| -------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **A** `runSerial`          | **Yes**      | Same continue-after-failure Promise-tail contract as Phase 5 coordinator queue; local swap only; no tx body edits.                                                                         |
-| **B** lock wait `Schedule` | **Deferred** | `acquireTxLock` / `withTxLock` are **synchronous** (`Atomics.wait`). Real `Schedule` + `Effect.sleep` would force async conversion of the lock stack — multi-day risk. **Do after the whole Effect program exits** (not mid-stack). Plan: [10-post-program-tx-lock-effect-wait.md](./10-post-program-tx-lock-effect-wait.md). |
-| **C** Schema validation    | **No**       | Optional; keep for a later PR with message-pinned fixtures only.                                                                                                                           |
+| Slice                      | In this PR?             | Rationale                                                                                                                                                                                                                                                    |
+| -------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **A** `runSerial`          | **Yes**                 | Same continue-after-failure Promise-tail contract as Phase 5 coordinator queue; local swap only; no tx body edits.                                                                                                                                           |
+| **B** lock wait `Schedule` | **Done (post-program)** | Mutating paths: `withTxLockAsync` + Effect `sleep` wait; `getRun`/`list` keep sync `withTxLock` + `Atomics.wait` (public sync API). Shared `tryAcquireTxLockOnce`. Plan: [10-post-program-tx-lock-effect-wait.md](./10-post-program-tx-lock-effect-wait.md). |
+| **C** Schema validation    | **No**                  | Optional; keep for a later PR with message-pinned fixtures only.                                                                                                                                                                                             |
 
 ## Validation results (this PR)
 
-| Command | Result |
-| ------- | ------ |
-| `bun test ./tests/run-store.test.ts` | **119 pass / 0 fail** |
-| `mise run typecheck --package packages/pi-agents` | **pass** |
-| `bun test ./tests/run-coordinator.test.ts` | **109 pass / 0 fail** |
-| `hk fix` / `hk check` on touched paths | **clean** |
+| Command                                           | Result                |
+| ------------------------------------------------- | --------------------- |
+| `bun test ./tests/run-store.test.ts`              | **119 pass / 0 fail** |
+| `mise run typecheck --package packages/pi-agents` | **pass**              |
+| `bun test ./tests/run-coordinator.test.ts`        | **109 pass / 0 fail** |
+| `hk fix` / `hk check` on touched paths            | **clean**             |
 
 ## Notes
 
