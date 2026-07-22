@@ -32,5 +32,6 @@
     "prompts": [
       "packages/*/prompts"
     ]
-  }
+  },
+  "version": ""
 }
