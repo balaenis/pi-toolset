@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.2.0...pi-agents-v0.2.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **pi-agents:** remove agents path from manifest and update doc examples ([7c66f81](https://github.com/balaenis/pi-toolset/commit/7c66f816913489d5e8165180b8b22677df58384b))
+
 ## [0.2.0](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.1.0...pi-agents-v0.2.0) (2026-07-22)
 
 
