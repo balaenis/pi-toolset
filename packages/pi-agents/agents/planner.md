@@ -1,8 +1,7 @@
 ---
 name: planner
 description: Creates implementation plans from context and requirements
-tools: read, grep, find, ls
-excludeTools: write, edit, agent
+excludeTools: write, edit, bash
 maxSubagentDepth: 0
 completionCheck: '# Plan'
 ---
