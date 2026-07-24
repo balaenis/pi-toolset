@@ -3285,8 +3285,9 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
       if (!fs.existsSync(unit.worktreePath) || !fs.statSync(unit.worktreePath).isDirectory()) {
         return { ok: false, reason: 'worktree_missing' };
       }
-      // Worktree paths live under <repo>/.worktrees/<name>; resolve repo root via git.
-      const repoRoot = getGitRoot(unit.worktreePath) ?? path.resolve(unit.worktreePath, '..', '..');
+      // Resolve Git from the expected parent repository; a linked worktree resolves to itself.
+      const expectedRepoRoot = path.resolve(unit.worktreePath, '..', '..');
+      const repoRoot = getGitRoot(expectedRepoRoot) ?? expectedRepoRoot;
       const opened = openAgentWorktree(repoRoot, unit.worktreePath);
       if (!opened.ok) {
         return { ok: false, reason: 'worktree_unavailable' };

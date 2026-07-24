@@ -2,6 +2,7 @@
 // ABOUTME: Uses temporary run stores and fake transports; no real Pi child processes.
 
 import { describe, expect, it } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -41,6 +42,13 @@ function makeTempStore() {
   const store = createRunStore({ rootDir: root });
   const coordinator = createRunCoordinator({ store });
   return { root, store, coordinator };
+}
+
+function runGit(cwd: string, args: string[]): void {
+  const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf-8' });
+  if (result.status !== 0) {
+    throw new Error((result.stderr || result.stdout || 'git command failed').trim());
+  }
 }
 
 function emptyDetails() {
@@ -1533,6 +1541,111 @@ describe('InteractiveAgentRegistry reviewer fixes', () => {
 
     await registry.shutdown();
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('revalidates an existing endpoint backed by a registered worktree', async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-ia-worktree-'));
+    runGit(repoRoot, ['init', '-q']);
+    runGit(repoRoot, ['config', 'user.email', 'pi@test.example']);
+    runGit(repoRoot, ['config', 'user.name', 'Pi Test']);
+    runGit(repoRoot, ['config', 'commit.gpgsign', 'false']);
+    fs.writeFileSync(path.join(repoRoot, 'README.md'), 'test\n');
+    runGit(repoRoot, ['add', '.']);
+    runGit(repoRoot, ['commit', '-q', '-m', 'init']);
+
+    const worktreePath = path.join(repoRoot, '.worktrees', 'resume');
+    fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+    runGit(repoRoot, ['worktree', 'add', '--detach', worktreePath, 'HEAD']);
+
+    const store = createRunStore({ rootDir: path.join(repoRoot, '.pi-runs') });
+    const coordinator = createRunCoordinator({ store });
+    const agent = makeAgent();
+    const links: InteractiveAgentLinkV1[] = [];
+    const { runId, record } = await store.createRun({
+      mode: 'single',
+      agentScope: 'both',
+      background: false,
+      request: {
+        mode: 'single',
+        agentScope: 'both',
+        agent: 'explore',
+        task: 'look',
+        isolation: 'worktree',
+      },
+      details: emptyDetails(),
+      units: {
+        single: {
+          unitId: 'single',
+          agent: 'explore',
+          agentFingerprint: agentFingerprint(agent),
+          runtime: undefined,
+          capability: 'session',
+          status: 'queued',
+          attempt: 1,
+          attempts: [],
+          effectiveCwd: worktreePath,
+          worktreePath,
+        },
+      },
+    });
+    const sessionFile = path.join(store.getRunDir(runId), 'sessions', 's.jsonl');
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(
+      sessionFile,
+      `{"type":"session","version":3,"id":"test-session","timestamp":"2026-01-01T00:00:00.000Z","cwd":${JSON.stringify(worktreePath)}}\n`
+    );
+    await store.updateRun(runId, (r) => {
+      r.units.single.sessionFile = sessionFile;
+      r.status = 'running';
+    });
+    const live = store.getRun(runId);
+    if (live.ok) coordinator.registerRun(runId, live.loaded.record);
+
+    const registry = createInteractiveAgentRegistry({
+      runStore: store,
+      runCoordinator: coordinator,
+      discoverAgentsFn: () => ({
+        agents: [agent],
+        projectAgentsDir: null,
+        builtinAgentsDir: '/tmp',
+      }),
+    });
+    registry.setHostLinkAppender((link) => links.push(link));
+
+    const launchSpec = {
+      agent,
+      request: record.request,
+      sessionFile,
+      effectiveCwd: worktreePath,
+      worktreePath,
+      isolation: 'worktree' as const,
+      agentScope: 'both' as const,
+      registrationKind: 'initial' as const,
+    };
+    const getBranchEntries = () =>
+      links.map((data) => ({ type: 'custom', customType: INTERACTIVE_LINK_TYPE, data }));
+
+    const first = await registry.registerInitial({
+      runId,
+      unitId: 'single',
+      hostSessionId: 'host-worktree',
+      launchSpec,
+      getBranchEntries,
+    });
+    const resumed = await registry.registerInitial({
+      runId,
+      unitId: 'single',
+      hostSessionId: 'host-worktree',
+      launchSpec,
+      getBranchEntries,
+    });
+
+    expect(resumed.bindingId).toBe(first.bindingId);
+    expect(resumed.worktreePath).toBe(worktreePath);
+    expect(registry.isOnActiveBranch(first.key)).toBe(true);
+
+    await registry.shutdown();
+    fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
   it('existing Grok ACP endpoint requires exact six-field link; empty/forged refuse trust', async () => {
@@ -9831,7 +9944,10 @@ describe('Grok ACP session resume + Agent View restoration', () => {
 });
 
 describe('TUI restore reader extension launch paths', () => {
-  const { buildPiRpcArgs, resolveArtifactReaderExtensionPath } = require('../../src/execution/invocation.ts');
+  const {
+    buildPiRpcArgs,
+    resolveArtifactReaderExtensionPath,
+  } = require('../../src/execution/invocation.ts');
   const { buildChildAgentEnv } = require('../../src/execution/security.ts');
 
   it('buildPiRpcArgs injects --extension and pi_agents_read_artifact when reader required', () => {
