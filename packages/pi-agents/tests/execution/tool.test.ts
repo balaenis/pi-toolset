@@ -126,14 +126,29 @@ function fakeGrokSpawn(
 
 function fakeManager(): {
   manager: BackgroundManager;
-  launches: Array<{ description: string; mode: string; title?: string }>;
+  launches: Array<{
+    description: string;
+    mode: string;
+    title?: string;
+    agentLines?: { agent: string; task: string; step?: number }[];
+  }>;
   runs: Array<Promise<AgentResult>>;
 } {
-  const launches: Array<{ description: string; mode: string; title?: string }> = [];
+  const launches: Array<{
+    description: string;
+    mode: string;
+    title?: string;
+    agentLines?: { agent: string; task: string; step?: number }[];
+  }> = [];
   const runs: Array<Promise<AgentResult>> = [];
   const manager: BackgroundManager = {
     launch(request) {
-      launches.push({ description: request.description, mode: request.mode, title: request.title });
+      launches.push({
+        description: request.description,
+        mode: request.mode,
+        title: request.title,
+        agentLines: request.agentLines,
+      });
       runs.push(request.run(new AbortController().signal) as Promise<AgentResult>);
       return {
         content: [{ type: 'text', text: `⧗ launched ${request.mode}` }],
@@ -153,6 +168,7 @@ function fakeManager(): {
               startedAt: 0,
               taskPreview: request.taskPreview,
               title: request.title,
+              agentLines: request.agentLines,
             },
           ],
         },
@@ -198,7 +214,11 @@ describe('executeAgentTool background dispatch', () => {
     );
     expect(launches.length).toBe(1);
     expect(launches[0].mode).toBe('single');
+    expect(launches[0].agentLines).toEqual([{ agent: 'noop', task: 'do it later' }]);
     expect(result.details?.mode).toBe('background');
+    expect(result.details?.background?.[0].agentLines).toEqual([
+      { agent: 'noop', task: 'do it later' },
+    ]);
     expect((result.content[0] as { text: string }).text).toContain('launched single');
     const inner = await runs[0];
     expect((inner.content[0] as { text: string }).text).toBe('bg done');
@@ -6037,7 +6057,8 @@ Body.
 
 describe('copy-on-write parallel updates', () => {
   it('copySnapshotShell shares frozen presentation and isolates mutable shell fields', async () => {
-    const { copySnapshotShell, snapshotSingleResult } = await import('../../src/output/result-snapshot.ts');
+    const { copySnapshotShell, snapshotSingleResult } =
+      await import('../../src/output/result-snapshot.ts');
     // Externally frozen presentation is not owned — reproject first to establish ownership.
     const owned = snapshotSingleResult({
       agent: 'a',
@@ -6085,7 +6106,10 @@ describe('copy-on-write parallel updates', () => {
 });
 
 describe('spill-before-clone and parent ref orchestration', () => {
-  const ref = (sha256: string, bytes = 100): import('../../src/run/run-types.ts').RunArtifactRefV1 => ({
+  const ref = (
+    sha256: string,
+    bytes = 100
+  ): import('../../src/run/run-types.ts').RunArtifactRefV1 => ({
     kind: 'run-artifact',
     version: 1,
     runId: 'r',

@@ -62,6 +62,8 @@ export const PRESENTATION_OUTPUT_TAIL_CHARS = 400;
 export const JSON_ERROR_PREVIEW_CHARS = 200;
 /** Max chars for background run-id prefix in continuation headers. */
 export const PRESENTATION_RUNID_PREVIEW_CHARS = 8;
+/** Max chars for a background agent-line task preview in launch/completion notices. */
+export const BACKGROUND_AGENT_TASK_PREVIEW_CHARS = 80;
 
 /** Max chars for auto-generated worktree directory name prefix. */
 export const WORKTREE_NAME_MAX_CHARS = 40;

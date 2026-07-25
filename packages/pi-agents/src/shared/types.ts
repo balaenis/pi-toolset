@@ -177,6 +177,14 @@ export interface ChainExecutionDetails {
 
 export type BackgroundJobStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
+/** One agent/task entry shown in the background launch/completion notice tree. */
+export interface BackgroundAgentLine {
+  agent: string;
+  task: string;
+  /** 1-based step number for chain steps; omitted for single/parallel. */
+  step?: number;
+}
+
 export interface BackgroundLaunchDetails {
   jobId: string;
   mode: 'single' | 'parallel' | 'chain';
@@ -187,6 +195,8 @@ export interface BackgroundLaunchDetails {
   title?: string;
   startedAt: number;
   taskPreview: string;
+  /** Agent/task tree rows shown in the launch and completion notice. */
+  agentLines?: BackgroundAgentLine[];
 }
 
 export interface BackgroundNotificationDetails {
@@ -199,6 +209,8 @@ export interface BackgroundNotificationDetails {
   durationMs?: number;
   result?: string;
   error?: string;
+  /** Agent/task tree rows shown in the completion notice. */
+  agentLines?: BackgroundAgentLine[];
 }
 
 export interface SubagentDetails {

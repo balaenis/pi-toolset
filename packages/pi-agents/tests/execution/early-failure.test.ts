@@ -2,7 +2,10 @@
 // ABOUTME: Ensures context_error is reserved for real context prep failures.
 
 import { describe, expect, it } from 'bun:test';
-import { attachErrorStack, classifyEarlyFailureStopReason } from '../../src/execution/early-failure.ts';
+import {
+  attachErrorStack,
+  classifyEarlyFailureStopReason,
+} from '../../src/execution/early-failure.ts';
 import { emptyUsage } from '../../src/shared/empty-usage.ts';
 import type { SingleResult } from '../../src/shared/types.ts';
 

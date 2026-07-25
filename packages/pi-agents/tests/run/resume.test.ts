@@ -6,8 +6,16 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { runChainWorkflow, type ChainItemInput, type ChainStepRequest } from '../../src/execution/chain.ts';
-import { openAgentWorktree, createAgentWorktree, removeAgentWorktree } from '../../src/execution/worktree.ts';
+import {
+  runChainWorkflow,
+  type ChainItemInput,
+  type ChainStepRequest,
+} from '../../src/execution/chain.ts';
+import {
+  openAgentWorktree,
+  createAgentWorktree,
+  removeAgentWorktree,
+} from '../../src/execution/worktree.ts';
 import {
   incrementIncompleteAttempts,
   inspectResume,
@@ -31,7 +39,11 @@ import type {
   SingleResult,
   SubagentDetails,
 } from '../../src/shared/types.ts';
-import type { AgentRunRecordV1, RunUnitRecord, WorkflowFanoutState } from '../../src/run/run-types.ts';
+import type {
+  AgentRunRecordV1,
+  RunUnitRecord,
+  WorkflowFanoutState,
+} from '../../src/run/run-types.ts';
 
 /** Helper: create a run with a single unit in the given status. */
 async function startDurableRunSync(

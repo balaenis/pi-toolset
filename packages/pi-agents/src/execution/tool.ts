@@ -28,6 +28,7 @@ import { startProfile, stopProfile } from '../shared/profiler.ts';
 import type { WorkflowFanoutState } from '../run/run-types.ts';
 
 import {
+  BACKGROUND_AGENT_TASK_PREVIEW_CHARS,
   GROK_ACP_RUNTIME,
   MAX_CONCURRENCY,
   MAX_PARALLEL_TASKS,
@@ -76,6 +77,7 @@ import type { SubagentParams } from '../shared/schema.ts';
 import { assertAgentDelegationAllowed } from './security.ts';
 import {
   cloneSingleResult,
+  type BackgroundAgentLine,
   type ExecutionStatus,
   type IsolationMode,
   type SingleResult,
@@ -1507,6 +1509,7 @@ async function runWithBackgroundOption(
   const description = describeWorkflow(params, mode);
   const taskPreview = buildTaskPreview(params, mode);
   const title = extractLaunchTitle(params, mode);
+  const agentLines = buildAgentLines(params, mode);
   const projectAgentsDir = discoverAgents(
     durable?.projectCwd ?? ctx.cwd,
     params.agentScope ?? 'user',
@@ -1522,6 +1525,7 @@ async function runWithBackgroundOption(
     description,
     taskPreview,
     title,
+    agentLines,
     projectAgentsDir,
     run: (bgSignal) => {
       // Background jobs receive the manager's signal (which forwards shutdown
@@ -1598,6 +1602,35 @@ function extractLaunchTitle(params: Params, mode: Mode): string | undefined {
     return first.title;
   }
   return undefined;
+}
+
+/** Agent/task tree rows for the background launch and completion notice. */
+function buildAgentLines(params: Params, mode: Mode): BackgroundAgentLine[] {
+  const bound = (task: string): string =>
+    task.length <= BACKGROUND_AGENT_TASK_PREVIEW_CHARS
+      ? task
+      : `${task.slice(0, BACKGROUND_AGENT_TASK_PREVIEW_CHARS)}…`;
+  if (mode === 'single') {
+    return [{ agent: params.agent ?? 'agent', task: bound(params.task ?? '') }];
+  }
+  if (mode === 'parallel') {
+    return (params.tasks ?? []).map((t) => ({ agent: t.agent, task: bound(t.task) }));
+  }
+  const lines: BackgroundAgentLine[] = [];
+  const chain = params.chain ?? [];
+  for (let i = 0; i < chain.length; i++) {
+    const entry = chain[i]!;
+    if ('expand' in entry) {
+      lines.push({
+        agent: entry.parallel.agent,
+        task: bound(entry.parallel.task),
+        step: i + 1,
+      });
+    } else {
+      lines.push({ agent: entry.agent, task: bound(entry.task), step: i + 1 });
+    }
+  }
+  return lines;
 }
 
 function truncatePreview(value: string, max: number): string {

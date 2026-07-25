@@ -3,7 +3,10 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { AgentConfig } from '../../src/config/agents.ts';
-import { enforceCompletionCheck, validateCompletionOutput } from '../../src/execution/completion-check.ts';
+import {
+  enforceCompletionCheck,
+  validateCompletionOutput,
+} from '../../src/execution/completion-check.ts';
 import { getResultOutput } from '../../src/output/output.ts';
 import { emptyUsage, type SingleResult } from '../../src/shared/types.ts';
 

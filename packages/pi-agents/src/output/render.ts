@@ -26,11 +26,13 @@ import {
   resolveExecutionStatus,
 } from './output.ts';
 import {
+  BACKGROUND_AGENT_TASK_PREVIEW_CHARS,
   PRESENTATION_COMMAND_PREVIEW_CHARS,
   PRESENTATION_ARGS_PREVIEW_CHARS,
 } from '../shared/constants.ts';
 import type { SubagentParams } from '../shared/schema.ts';
 import type {
+  BackgroundAgentLine,
   ChainExecutionDetails,
   ChainFanoutStep,
   ChainLogicalStep,
@@ -359,6 +361,35 @@ function clampToWidth(value: string | undefined, maxColumns: number): string {
 function clampTitle(title: string | undefined, maxColumns: number): string | undefined {
   const clamped = clampToWidth(title, maxColumns);
   return clamped || undefined;
+}
+
+/** Preview one background agent-line task text, char-bounded by the constant. */
+function previewAgentLineTask(task: string): string {
+  const collapsed = collapseToSingleLine(task).trim();
+  if (collapsed.length <= BACKGROUND_AGENT_TASK_PREVIEW_CHARS) return collapsed;
+  return `${collapsed.slice(0, BACKGROUND_AGENT_TASK_PREVIEW_CHARS)}…`;
+}
+
+/** Render background launch/completion agent rows as a `├─ / └─` tree. */
+export function formatBackgroundAgentLines(
+  agentLines: BackgroundAgentLine[] | undefined,
+  theme: Theme
+): string {
+  if (!agentLines || agentLines.length === 0) return '';
+  const lines: string[] = [];
+  for (let i = 0; i < agentLines.length; i++) {
+    const entry = agentLines[i]!;
+    const isLast = i === agentLines.length - 1;
+    const prefix = isLast ? '  └─ ' : '  ├─ ';
+    const stepPrefix = entry.step ? `${entry.step}. ` : '';
+    const task = previewAgentLineTask(entry.task);
+    lines.push(
+      theme.fg('muted', prefix) +
+        theme.fg('accent', stepPrefix + entry.agent) +
+        theme.fg('dim', ` - ${task}`)
+    );
+  }
+  return lines.join('\n');
 }
 
 /** Capitalize the first character of an agent name for display. */
@@ -1042,12 +1073,17 @@ export function renderResult(
         theme.fg('toolTitle', theme.bold('background ')) +
         theme.fg('accent', launch.jobId) +
         theme.fg('muted', ` [${launch.mode}]`);
-      const launchLabel =
-        clampToWidth(launch.title, TITLE_MAX_COLUMNS) ||
-        clampToWidth(launch.taskPreview, TITLE_MAX_COLUMNS) ||
-        launch.description;
-      text += `\n${theme.fg('dim', launchLabel)}`;
-      text += `\n${theme.fg('muted', 'Notified on completion — do not poll.')}`;
+      const agentTree = formatBackgroundAgentLines(launch.agentLines, theme);
+      if (agentTree) {
+        text += `\n${agentTree}`;
+      } else {
+        // Fallback for restored sessions without agentLines.
+        const launchLabel =
+          clampToWidth(launch.title, TITLE_MAX_COLUMNS) ||
+          clampToWidth(launch.taskPreview, TITLE_MAX_COLUMNS) ||
+          launch.description;
+        text += `\n${theme.fg('dim', launchLabel)}`;
+      }
       return new Text(text, 0, 0);
     }
   }

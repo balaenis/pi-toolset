@@ -10,7 +10,10 @@ import type {
 import { getMarkdownTheme } from '@earendil-works/pi-coding-agent';
 import { Container, Markdown, Spacer, Text, type Component } from '@earendil-works/pi-tui';
 import { getFinalOutput } from '../output/output.ts';
-import { PRESENTATION_ERROR_PREVIEW_CHARS, PRESENTATION_RUNID_PREVIEW_CHARS } from '../shared/constants.ts';
+import {
+  PRESENTATION_ERROR_PREVIEW_CHARS,
+  PRESENTATION_RUNID_PREVIEW_CHARS,
+} from '../shared/constants.ts';
 import {
   INTERACTIVE_LINK_TYPE,
   type InteractiveAgentRegistry,

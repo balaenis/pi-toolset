@@ -12,8 +12,15 @@ import {
   INTERACTIVE_IDLE_TRANSCRIPT_MAX_BYTES,
   RESULT_UPDATE_INTERVAL_MS,
 } from '../../src/shared/constants.ts';
-import { runChainWorkflow, type ChainItemInput, type ChainStepRequest } from '../../src/execution/chain.ts';
-import { createInteractiveAgentRegistry, MAX_IDLE_TRANSPORTS } from '../../src/interactive/interactive-agent.ts';
+import {
+  runChainWorkflow,
+  type ChainItemInput,
+  type ChainStepRequest,
+} from '../../src/execution/chain.ts';
+import {
+  createInteractiveAgentRegistry,
+  MAX_IDLE_TRANSPORTS,
+} from '../../src/interactive/interactive-agent.ts';
 import { createRunCoordinator, agentFingerprint } from '../../src/run/run-coordinator.ts';
 import { createRunStore } from '../../src/run/run-store.ts';
 import { snapshotResults, snapshotSingleResult } from '../../src/output/result-snapshot.ts';

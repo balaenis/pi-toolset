@@ -2,7 +2,10 @@
 // ABOUTME: Uses an injectable fake clock so cadence, flush, and cancel behavior are deterministic.
 
 import { describe, expect, it } from 'bun:test';
-import { createLatestValueCoalescer, type CoalescerTimers } from '../../src/shared/update-coalescer.ts';
+import {
+  createLatestValueCoalescer,
+  type CoalescerTimers,
+} from '../../src/shared/update-coalescer.ts';
 
 function createFakeTimers(): {
   timers: CoalescerTimers;

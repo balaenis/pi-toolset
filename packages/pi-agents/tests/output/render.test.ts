@@ -23,8 +23,16 @@ import {
   stopAllSpinners,
   stopSpinner,
 } from '../../src/output/render.ts';
-import type { ChainExecutionDetails, SingleResult, SubagentDetails } from '../../src/shared/types.ts';
+import type {
+  ChainExecutionDetails,
+  SingleResult,
+  SubagentDetails,
+} from '../../src/shared/types.ts';
 import { emptyUsage } from '../../src/shared/types.ts';
+import {
+  renderBackgroundMessage,
+  BACKGROUND_MESSAGE_TYPE,
+} from '../../src/execution/background.ts';
 
 /** Manual scheduler: records the shared tick handler so tests advance time deterministically. */
 function createManualScheduler(): {
@@ -140,6 +148,7 @@ function backgroundDetails(): SubagentDetails {
         description: 'explore find things',
         startedAt: 0,
         taskPreview: 'find things',
+        agentLines: [{ agent: 'general', task: 'find things' }],
       },
     ],
   };
@@ -1210,12 +1219,166 @@ describe('renderResult misc', () => {
     expect(text).toContain(RUNNING_STATUS_GLYPH);
     expect(text).toContain('background');
     expect(text).toContain('agent-bg-1');
-    expect(text).toContain('Notified on completion — do not poll.');
+    expect(text).not.toContain('Notified on completion');
+    expect(text).toContain('└─ general - find things');
     expect(state.spinnerStartedAt).toBeUndefined();
     expect(activeSpinnerCount()).toBe(0);
     for (const frame of SPINNER_FRAMES) {
       expect(text.includes(frame)).toBe(false);
     }
+  });
+
+  it('renders a parallel agent tree for background launches', () => {
+    const { context } = makeContext();
+    const details: SubagentDetails = {
+      mode: 'background',
+      agentScope: 'user',
+      projectAgentsDir: null,
+      builtinAgentsDir: '/builtin',
+      results: [],
+      background: [
+        {
+          jobId: 'agent-bg-2',
+          mode: 'parallel',
+          status: 'running',
+          agentScope: 'user',
+          description: 'parallel reviews',
+          startedAt: 0,
+          taskPreview: 'review',
+          agentLines: [
+            { agent: 'reviewer', task: 'review security' },
+            { agent: 'reviewer', task: 'review performance' },
+          ],
+        },
+      ],
+    };
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'launched' }], details },
+        { expanded: false, isPartial: false },
+        theme,
+        context
+      )
+    );
+    expect(text).toContain('├─ reviewer - review security');
+    expect(text).toContain('└─ reviewer - review performance');
+    expect(text).not.toContain('Notified on completion');
+  });
+
+  it('renders a numbered chain agent tree for background launches', () => {
+    const { context } = makeContext();
+    const details: SubagentDetails = {
+      mode: 'background',
+      agentScope: 'user',
+      projectAgentsDir: null,
+      builtinAgentsDir: '/builtin',
+      results: [],
+      background: [
+        {
+          jobId: 'agent-bg-3',
+          mode: 'chain',
+          status: 'running',
+          agentScope: 'user',
+          description: 'chain run',
+          startedAt: 0,
+          taskPreview: 'analyze',
+          agentLines: [
+            { agent: 'explore', task: 'analyze', step: 1 },
+            { agent: 'planner', task: 'plan', step: 2 },
+            { agent: 'general', task: 'implement', step: 3 },
+          ],
+        },
+      ],
+    };
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'launched' }], details },
+        { expanded: false, isPartial: false },
+        theme,
+        context
+      )
+    );
+    expect(text).toContain('├─ 1. explore - analyze');
+    expect(text).toContain('├─ 2. planner - plan');
+    expect(text).toContain('└─ 3. general - implement');
+  });
+
+  it('renderBackgroundMessage collapsed shows agent tree and duration', () => {
+    const message = {
+      customType: BACKGROUND_MESSAGE_TYPE,
+      content: '',
+      display: true,
+      details: {
+        jobId: 'agent-bg-1',
+        mode: 'single' as const,
+        status: 'completed' as const,
+        description: 'explore find things',
+        startedAt: 0,
+        finishedAt: 3200,
+        durationMs: 3200,
+        result: 'found things',
+        agentLines: [{ agent: 'general', task: 'find things' }],
+      },
+      timestamp: 3200,
+    };
+    const text = renderText(
+      renderBackgroundMessage(message, { expanded: false, outputPad: 0 }, theme)
+    );
+    expect(text).toContain('✔');
+    expect(text).toContain('└─ general - find things');
+    expect(text).toContain('(3.2s)');
+    expect(text).not.toContain('Notified on completion');
+  });
+
+  it('renderBackgroundMessage collapsed falls back to description without agentLines', () => {
+    const message = {
+      customType: BACKGROUND_MESSAGE_TYPE,
+      content: '',
+      display: true,
+      details: {
+        jobId: 'agent-bg-1',
+        mode: 'single' as const,
+        status: 'completed' as const,
+        description: 'legacy unit job',
+        startedAt: 0,
+        finishedAt: 1000,
+        durationMs: 1000,
+      },
+      timestamp: 1000,
+    };
+    const text = renderText(
+      renderBackgroundMessage(message, { expanded: false, outputPad: 0 }, theme)
+    );
+    expect(text).toContain('legacy unit job');
+    expect(text).not.toContain('└─');
+  });
+
+  it('renderBackgroundMessage expanded shows agent tree instead of Task label', () => {
+    const message = {
+      customType: BACKGROUND_MESSAGE_TYPE,
+      content: '',
+      display: true,
+      details: {
+        jobId: 'agent-bg-1',
+        mode: 'chain' as const,
+        status: 'completed' as const,
+        description: 'chain run',
+        startedAt: 0,
+        finishedAt: 1000,
+        durationMs: 1000,
+        agentLines: [
+          { agent: 'explore', task: 'analyze', step: 1 },
+          { agent: 'general', task: 'build', step: 2 },
+        ],
+      },
+      timestamp: 1000,
+    };
+    const text = renderText(
+      renderBackgroundMessage(message, { expanded: true, outputPad: 0 }, theme)
+    );
+    expect(text).toContain('├─ 1. explore - analyze');
+    expect(text).toContain('└─ 2. general - build');
+    expect(text).not.toContain('Task: chain run');
   });
 
   it('animates collapsed single running results and clears on completion', () => {

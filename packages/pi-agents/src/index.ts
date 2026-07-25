@@ -11,7 +11,10 @@ import {
 } from './execution/background.ts';
 import { renderAgentCatalogue, shouldInjectAgentCatalogue } from './config/catalogue.ts';
 import { registerAgentCommand } from './execution/command.ts';
-import { createInteractiveAgentRegistry, INTERACTIVE_LINK_TYPE } from './interactive/interactive-agent.ts';
+import {
+  createInteractiveAgentRegistry,
+  INTERACTIVE_LINK_TYPE,
+} from './interactive/interactive-agent.ts';
 import {
   createSessionAgentConfigStore,
   persistToSession,
@@ -22,7 +25,10 @@ import {
   createInteractiveRelayCoordinator,
   renderContinuationMessage,
 } from './interactive/interactive-relay.ts';
-import { buildHostResumePrompt, createInteractiveViewController } from './interactive/interactive-view.ts';
+import {
+  buildHostResumePrompt,
+  createInteractiveViewController,
+} from './interactive/interactive-view.ts';
 import { withAgentToolFailureLogging } from './shared/log.ts';
 import { createRunStore } from './run/run-store.ts';
 import { createRunCoordinator } from './run/run-coordinator.ts';

@@ -12,7 +12,10 @@ import type { PromptResponse } from '@agentclientprotocol/sdk';
 import type { AgentConfig } from '../../src/config/agents.ts';
 import { runSingleAgent } from '../../src/execution/execution.ts';
 import type { GrokAcpSpawnedChild } from '../../src/runtime/grok-acp/grok-acp-client.ts';
-import { createInteractiveAgentRegistry, INTERACTIVE_LINK_TYPE } from '../../src/interactive/interactive-agent.ts';
+import {
+  createInteractiveAgentRegistry,
+  INTERACTIVE_LINK_TYPE,
+} from '../../src/interactive/interactive-agent.ts';
 import { runSingleAgentInteractive } from '../../src/interactive/interactive-execution.ts';
 import { agentFingerprint, createRunCoordinator } from '../../src/run/run-coordinator.ts';
 import { createRunStore } from '../../src/run/run-store.ts';
@@ -1056,7 +1059,8 @@ describe('interactive-execution production path (Grok ACP)', () => {
     const child = new FakeAcpChild();
     const { GrokAcpInteractiveTransport } =
       await import('../../src/runtime/grok-acp/grok-acp-interactive-transport.ts');
-    const { acquireSessionLease, buildSessionLeaseKey } = await import('../../src/run/session-lease.ts');
+    const { acquireSessionLease, buildSessionLeaseKey } =
+      await import('../../src/run/session-lease.ts');
 
     let disposeCount = 0;
     const origDispose = GrokAcpInteractiveTransport.prototype.dispose;
@@ -1131,7 +1135,8 @@ describe('interactive-execution production path (Grok ACP)', () => {
     const child = new FakeAcpChild();
     const { GrokAcpInteractiveTransport } =
       await import('../../src/runtime/grok-acp/grok-acp-interactive-transport.ts');
-    const { acquireSessionLease, buildSessionLeaseKey } = await import('../../src/run/session-lease.ts');
+    const { acquireSessionLease, buildSessionLeaseKey } =
+      await import('../../src/run/session-lease.ts');
 
     let disposeCount = 0;
     const origDispose = GrokAcpInteractiveTransport.prototype.dispose;
@@ -1215,7 +1220,8 @@ describe('interactive-execution production path (Grok ACP)', () => {
     const spawnFn = (() => child as unknown as GrokAcpSpawnedChild) as never;
     const { GrokAcpInteractiveTransport } =
       await import('../../src/runtime/grok-acp/grok-acp-interactive-transport.ts');
-    const { acquireSessionLease, buildSessionLeaseKey } = await import('../../src/run/session-lease.ts');
+    const { acquireSessionLease, buildSessionLeaseKey } =
+      await import('../../src/run/session-lease.ts');
 
     let disposeCount = 0;
     const origDispose = GrokAcpInteractiveTransport.prototype.dispose;

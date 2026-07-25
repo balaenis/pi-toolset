@@ -619,7 +619,10 @@ describe('result-aware presentation helpers', () => {
 });
 
 describe('getResultParentOutput', () => {
-  const ref = (sha256: string, bytes = 100): import('../../src/run/run-types.ts').RunArtifactRefV1 => ({
+  const ref = (
+    sha256: string,
+    bytes = 100
+  ): import('../../src/run/run-types.ts').RunArtifactRefV1 => ({
     kind: 'run-artifact',
     version: 1,
     runId: 'r',

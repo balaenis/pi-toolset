@@ -14,8 +14,10 @@ import { getBuiltinAgentsDir, type AgentScope } from '../config/agents.ts';
 import { PRESENTATION_ERROR_PREVIEW_CHARS } from '../shared/constants.ts';
 import { runEffectPromise } from '../shared/effect-runtime.ts';
 import { truncateParallelOutput } from '../output/output.ts';
+import { formatBackgroundAgentLines } from '../output/render.ts';
 import type { RunAbortOrigin } from '../run/run-types.ts';
 import type {
+  BackgroundAgentLine,
   BackgroundJobStatus,
   BackgroundLaunchDetails,
   BackgroundNotificationDetails,
@@ -33,6 +35,8 @@ export interface BackgroundLaunchRequest {
   taskPreview: string;
   /** Short launch-summary label; falls back to `taskPreview` when blank. */
   title?: string;
+  /** Agent/task tree rows shown in the launch and completion notice. */
+  agentLines?: BackgroundAgentLine[];
   projectAgentsDir: string | null;
   run: (signal: AbortSignal) => Promise<AgentToolResult<SubagentDetails> & { isError?: boolean }>;
   /** Durable run context; when present, the job's id equals the run id and shutdown interrupts. */
@@ -161,6 +165,7 @@ export function createBackgroundManager(
       startedAt,
       taskPreview: request.taskPreview,
       ...(request.title ? { title: request.title } : {}),
+      ...(request.agentLines ? { agentLines: request.agentLines } : {}),
     };
     const controller = new AbortController();
     // When a durable lifecycle is attached, the run observes the coordinator-
@@ -185,6 +190,7 @@ export function createBackgroundManager(
         durationMs: finishedAt - startedAt,
         ...(result !== undefined ? { result } : {}),
         ...(error !== undefined ? { error } : {}),
+        ...(request.agentLines ? { agentLines: request.agentLines } : {}),
       };
 
       const safeResult = result ? truncateParallelOutput(result) : undefined;
@@ -237,6 +243,7 @@ export function createBackgroundManager(
         startedAt,
         finishedAt,
         durationMs: finishedAt - startedAt,
+        ...(request.agentLines ? { agentLines: request.agentLines } : {}),
       };
       try {
         pi.sendMessage(
@@ -427,7 +434,12 @@ export function renderBackgroundMessage(
 
   if (!options.expanded) {
     let text = header;
-    text += `\n${theme.fg('dim', details.description)}`;
+    const agentTree = formatBackgroundAgentLines(details.agentLines, theme);
+    if (agentTree) {
+      text += `\n${agentTree}`;
+    } else {
+      text += `\n${theme.fg('dim', details.description)}`;
+    }
     if (details.status === 'failed' && details.error) {
       text += `\n${theme.fg('error', truncate(details.error, PRESENTATION_ERROR_PREVIEW_CHARS))}`;
     } else if (details.result) {
@@ -442,9 +454,14 @@ export function renderBackgroundMessage(
   const container = new Container();
   container.addChild(new Text(header, 0, 0));
   container.addChild(new Text(theme.fg('muted', `Status: ${details.status}`), 0, 0));
-  container.addChild(
-    new Text(theme.fg('muted', 'Task: ') + theme.fg('dim', details.description), 0, 0)
-  );
+  const expandedAgentTree = formatBackgroundAgentLines(details.agentLines, theme);
+  if (expandedAgentTree) {
+    container.addChild(new Text(expandedAgentTree, 0, 0));
+  } else {
+    container.addChild(
+      new Text(theme.fg('muted', 'Task: ') + theme.fg('dim', details.description), 0, 0)
+    );
+  }
   if (details.durationMs !== undefined) {
     container.addChild(
       new Text(theme.fg('muted', `Duration: ${formatDuration(details.durationMs)}`), 0, 0)

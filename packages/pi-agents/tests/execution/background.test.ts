@@ -54,6 +54,7 @@ function baseRequest(overrides: Partial<BackgroundLaunchRequest> = {}): Backgrou
     agentScope: 'user',
     description: 'unit job',
     taskPreview: 'Do something useful',
+    agentLines: [{ agent: 'general', task: 'Do something useful' }],
     projectAgentsDir: null,
     run: async () => okResult('all good'),
     ...overrides,
@@ -111,6 +112,7 @@ describe('createBackgroundManager.launch', () => {
     expect(msg.details?.status).toBe('completed');
     expect(msg.details?.result).toContain('finished work');
     expect(msg.details?.durationMs).toBeGreaterThanOrEqual(0);
+    expect(msg.details?.agentLines).toEqual([{ agent: 'general', task: 'Do something useful' }]);
     expect(msg.content).toContain(`jobId="${jobId}"`);
     expect(msg.content).toContain('finished work');
   });
