@@ -119,7 +119,7 @@ export const SubagentParams = Type.Object({
   runInBackground: Type.Optional(
     Type.Boolean({
       description:
-        'Run this agent workflow in the background. The tool returns immediately with a job/run id; completion arrives later as a follow-up that starts a new turn.',
+        'Run this agent workflow in the background (default). Set to false to wait synchronously for the result in the current turn. ',
     })
   ),
   model: Type.Optional(

@@ -184,7 +184,7 @@ function fakeManager(): {
 }
 
 describe('executeAgentTool background dispatch', () => {
-  it('runs synchronously when runInBackground is absent', async () => {
+  it('falls back to foreground when runInBackground is absent and background is unavailable', async () => {
     let invoked = 0;
     const result = await executeAgentTool(
       { agent: 'noop', task: 'do it' },
@@ -200,6 +200,44 @@ describe('executeAgentTool background dispatch', () => {
     );
     expect(invoked).toBe(1);
     expect(result.details?.mode).toBe('single');
+    expect((result.content[0] as { text: string }).text).toBe('sync done');
+  });
+
+  it('defaults to background when runInBackground is absent and a manager is present', async () => {
+    const { manager, launches, runs } = fakeManager();
+    const result = await executeAgentTool(
+      { agent: 'noop', task: 'do it later' },
+      undefined,
+      undefined,
+      makeCtx(),
+      { backgroundManager: manager, runWorkflow: fakeWorkflow('bg done') }
+    );
+    expect(launches.length).toBe(1);
+    expect(result.details?.mode).toBe('background');
+    expect((result.content[0] as { text: string }).text).toContain('launched single');
+    const inner = await runs[0];
+    expect((inner.content[0] as { text: string }).text).toBe('bg done');
+  });
+
+  it('falls back to foreground in json mode when runInBackground is absent', async () => {
+    const { manager, launches } = fakeManager();
+    let invoked = 0;
+    const result = await executeAgentTool(
+      { agent: 'noop', task: 'do it' },
+      undefined,
+      undefined,
+      makeCtx({ mode: 'json' } as Partial<ExtensionContext>),
+      {
+        backgroundManager: manager,
+        runWorkflow: async () => {
+          invoked++;
+          return okResult('sync done');
+        },
+      }
+    );
+    expect(launches.length).toBe(0);
+    expect(invoked).toBe(1);
+    expect(result.isError).toBeFalsy();
     expect((result.content[0] as { text: string }).text).toBe('sync done');
   });
 

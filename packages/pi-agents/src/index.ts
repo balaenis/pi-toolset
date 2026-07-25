@@ -312,13 +312,9 @@ Provide exactly one entry form:
 - \`chain\`: run sequential steps with output passing between them, optionally fanning out one step's structured output across parallel workers.
 - \`runId\`: resume a durable run from its stored workflow and sessions. Optional \`task\` appends a continuation instruction (required to resume a fully completed run). Do not supply fresh launch fields with \`runId\`.
 ## When to use
-Use when the task matches an agent type, for parallel independent work, or when answering requires reading several files - delegate and keep the conclusion, not the file dumps. For a single-fact lookup, search directly. Do not redo delegated work yourself.
-- Foreground (default): the tool result carries the agent's final message (not shown to the user) — relay what matters.
-- Background (\`runInBackground: true\`): the tool returns immediately with a job/run id; a completion follow-up re-enters the model later.
-- Durable run IDs appear on tool results; use \`agent({ runId })\` only to resume interrupted work or continue a completed run with an explicit \`task\`. List/inspect with \`/agent runs\` and \`/agent status <run-id>\`.`,
-    promptGuidelines: [
-      '!! Use the `explore` agent when you need to search across multiple files or do broad code analysis exploration.',
-    ],
+Used when a task matches the agent type, works independently in parallel, or answers the need to read multiple files - Delegate. For single fact lookups, search directly. Don’t redo delegated work yourself.
+- Foreground (\`runInBackground: false\`): The agent runs in the background by default, use foreground tasks only when you need to wait for results synchronously.
+- Durable run IDs appear on tool results; use \`agent({ runId })\` only to resume interrupted work or continue a completed run with an explicit \`task\`.`,
     parameters: SubagentParams,
     prepareArguments: (args) => normalizeAgentArgs(args) as Static<typeof SubagentParams>,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {

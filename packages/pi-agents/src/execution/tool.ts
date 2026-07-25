@@ -382,7 +382,7 @@ async function maybeStartDurableRun(
     coordinator,
     mode,
     agentScope,
-    background: Boolean(params.runInBackground),
+    background: resolveBackgroundExecution(params, ctx, options).runInBackground,
     request,
     details: makeDetails(mode)([]),
     agents,
@@ -1413,6 +1413,34 @@ export async function executeAgentTool(
   );
 }
 
+/**
+ * Resolve whether a run executes in the background after applying the default
+ * and feasibility rules. Background is the default (`runInBackground !== false`);
+ * it is only used when the session can support it (interactive mode + manager).
+ * `explicit` distinguishes an explicit `runInBackground: true` opt-in from the
+ * absent default so the caller can error on an impossible explicit request
+ * while letting a default request fall back to the foreground path.
+ */
+function resolveBackgroundExecution(
+  params: Params,
+  ctx: ExtensionContext,
+  options: ExecuteAgentToolOptions
+): {
+  explicit: boolean;
+  wantBackground: boolean;
+  feasible: boolean;
+  runInBackground: boolean;
+  modeSupported: boolean;
+} {
+  const explicit = params.runInBackground === true;
+  const wantBackground = params.runInBackground !== false;
+  const modeSupported = ctx.mode !== 'json' && ctx.mode !== 'print';
+  const managerAvailable = Boolean(options.backgroundManager);
+  const feasible = modeSupported && managerAvailable;
+  const runInBackground = wantBackground && feasible;
+  return { explicit, wantBackground, feasible, runInBackground, modeSupported };
+}
+
 async function runWithBackgroundOption(
   params: Params,
   signal: AbortSignal | undefined,
@@ -1446,7 +1474,27 @@ async function runWithBackgroundOption(
       }
     : onUpdate;
 
-  if (!params.runInBackground) {
+  const background = resolveBackgroundExecution(params, ctx, options);
+
+  // An explicit background opt-in that cannot be honored (non-interactive host
+  // mode or no background manager) is reported as an error rather than silently
+  // downgraded. A default (absent) background that is infeasible falls back to
+  // the foreground path below so non-interactive hosts keep working without
+  // forcing every caller to set runInBackground: false.
+  if (background.wantBackground && !background.feasible && background.explicit) {
+    const text = background.modeSupported
+      ? 'Background execution is not available in this session.'
+      : `Background agents require a long-lived TUI or RPC session; current mode "${ctx.mode}" exits after the tool returns. Re-run with runInBackground: false to wait synchronously.`;
+    const error: AgentResult = {
+      content: [{ type: 'text', text }],
+      details: makeDetails(mode)([]),
+      isError: true,
+    };
+    await finalizeDurable(durable, undefined, error);
+    return error;
+  }
+
+  if (!background.runInBackground) {
     let result: AgentResult;
     try {
       if (options.runWorkflow)
@@ -1475,22 +1523,9 @@ async function runWithBackgroundOption(
     return result;
   }
 
-  if (ctx.mode === 'json' || ctx.mode === 'print') {
-    const error: AgentResult = {
-      content: [
-        {
-          type: 'text',
-          text: `Background agents require a long-lived TUI or RPC session; current mode "${ctx.mode}" exits after the tool returns. Re-run without runInBackground.`,
-        },
-      ],
-      details: makeDetails(mode)([]),
-      isError: true,
-    };
-    await finalizeDurable(durable, undefined, error);
-    return error;
-  }
-
   const manager = options.backgroundManager;
+  // background.runInBackground is only true when a manager is available, so
+  // this guard is a defensive backstop that also narrows the type for launch.
   if (!manager) {
     const error: AgentResult = {
       content: [

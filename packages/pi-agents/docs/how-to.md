@@ -340,25 +340,37 @@ restart) to refresh them.
 
 ## Run an agent in the background
 
-Set `runInBackground: true` for long-running, independent work whose result the
-parent does not need immediately:
+Background is the default: an invocation returns immediately with an
+`agent-bg-*` job id, and a follow-up message (`customType:
+pi-agents-background-result`) triggers a new turn on completion or failure.
+Use this for long-running, independent work whose result the parent does not
+need immediately:
 
 ```json
 {
   "agent": "general",
-  "task": "Run the full test suite and report failures.",
-  "runInBackground": true
+  "task": "Run the full test suite and report failures."
 }
 ```
 
-The tool returns immediately with an `agent-bg-*` job id. On completion or
-failure, a follow-up message (`customType:
-pi-agents-background-result`) triggers a new turn. Hosts must not sleep, poll,
-or call `agent({ runId })` just to wait — continue other work or end the turn.
-Cancelled jobs emit the same message type but do not re-enter the model. At most
-four background jobs may be in flight per session; the parent abort signal
-(Ctrl+C) does not cancel a launched background job. Background mode is rejected
-in `json` and `print` host modes.
+To wait synchronously for the result in the current turn, set
+`runInBackground: false`:
+
+```json
+{
+  "agent": "general",
+  "task": "Read package.json and summarize scripts.",
+  "runInBackground": false
+}
+```
+
+Hosts must not sleep, poll, or call `agent({ runId })` just to wait for a
+background job - continue other work or end the turn. Cancelled jobs emit the
+same message type but do not re-enter the model. At most four background jobs
+may be in flight per session; the parent abort signal (Ctrl+C) does not cancel
+a launched background job. Background is used only in interactive `tui`/`rpc`
+host modes; in `json` and `print` modes the run falls back to the foreground
+because the process exits before a completion follow-up could arrive.
 
 ## Use the Grok ACP runtime
 
