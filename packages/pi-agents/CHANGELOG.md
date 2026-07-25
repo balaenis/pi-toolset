@@ -6,6 +6,15 @@
 
 - **pi-agents:** lazy-load the optional Grok ACP runtime (and bundled ACP SDK/Zod graph) behind one memoized dynamic import with opt-in Bun code splitting under `dist/chunks/`. Extension import and Pi runtime paths no longer pay the ACP graph cost up front; the first `runtime: "grok-acp"` call loads the hashed façade chunk. Public tool schema, `package.json` exports, and the Pi extension entry (`dist/index.js`) are unchanged — published installs must retain `dist/chunks/`.
 
+## [0.3.0](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.2.3...pi-agents-v0.3.0) (2026-07-25)
+
+
+### Features
+
+* **pi-agents:** display agent tree in background launch and completion notices ([dd9c9cd](https://github.com/balaenis/pi-toolset/commit/dd9c9cd05a16d7c59a6ac4c96dfd4e6e843f1654))
+* **pi-agents:** make background execution the default for agent runs ([a9f033f](https://github.com/balaenis/pi-toolset/commit/a9f033fbfac48f869ba059ca4df2bc95f08949dd))
+* **pi-agents:** prefer title over task preview in background agent lines ([71537f9](https://github.com/balaenis/pi-toolset/commit/71537f96793d7860dede3a03bc75ce4ee9bf9383))
+
 ## [0.2.3](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.2.2...pi-agents-v0.2.3) (2026-07-24)
 
 
