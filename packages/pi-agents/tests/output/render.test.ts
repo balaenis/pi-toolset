@@ -1353,6 +1353,43 @@ describe('renderResult misc', () => {
     expect(text).not.toContain('└─');
   });
 
+  it('prefers the title over the task preview in background agent lines', () => {
+    const { context } = makeContext();
+    const details: SubagentDetails = {
+      mode: 'background',
+      agentScope: 'user',
+      projectAgentsDir: null,
+      builtinAgentsDir: '/builtin',
+      results: [],
+      background: [
+        {
+          jobId: 'agent-bg-4',
+          mode: 'parallel',
+          status: 'running',
+          agentScope: 'user',
+          description: 'parallel reviews',
+          startedAt: 0,
+          taskPreview: 'review',
+          agentLines: [
+            { agent: 'reviewer', task: 'review security of auth module', title: 'auth' },
+            { agent: 'reviewer', task: 'review performance of db layer' },
+          ],
+        },
+      ],
+    };
+    const text = renderText(
+      renderResult(
+        { content: [{ type: 'text', text: 'launched' }], details },
+        { expanded: false, isPartial: false },
+        theme,
+        context
+      )
+    );
+    expect(text).toContain('├─ reviewer - auth');
+    expect(text).toContain('└─ reviewer - review performance of db layer');
+    expect(text).not.toContain('review security of auth module');
+  });
+
   it('renderBackgroundMessage expanded shows agent tree instead of Task label', () => {
     const message = {
       customType: BACKGROUND_MESSAGE_TYPE,

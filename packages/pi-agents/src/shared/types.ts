@@ -181,6 +181,8 @@ export type BackgroundJobStatus = 'running' | 'completed' | 'failed' | 'cancelle
 export interface BackgroundAgentLine {
   agent: string;
   task: string;
+  /** Short label shown in place of the task preview when present. */
+  title?: string;
   /** 1-based step number for chain steps; omitted for single/parallel. */
   step?: number;
 }

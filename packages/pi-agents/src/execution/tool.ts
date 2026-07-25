@@ -1606,15 +1606,28 @@ function extractLaunchTitle(params: Params, mode: Mode): string | undefined {
 
 /** Agent/task tree rows for the background launch and completion notice. */
 function buildAgentLines(params: Params, mode: Mode): BackgroundAgentLine[] {
-  const bound = (task: string): string =>
-    task.length <= BACKGROUND_AGENT_TASK_PREVIEW_CHARS
-      ? task
-      : `${task.slice(0, BACKGROUND_AGENT_TASK_PREVIEW_CHARS)}…`;
+  const bound = (text: string): string =>
+    text.length <= BACKGROUND_AGENT_TASK_PREVIEW_CHARS
+      ? text
+      : `${text.slice(0, BACKGROUND_AGENT_TASK_PREVIEW_CHARS)}…`;
+  const titleField = (title: string | undefined): { title?: string } => {
+    return title ? { title: bound(title.trim()) } : {};
+  };
   if (mode === 'single') {
-    return [{ agent: params.agent ?? 'agent', task: bound(params.task ?? '') }];
+    return [
+      {
+        agent: params.agent ?? 'agent',
+        task: bound(params.task ?? ''),
+        ...titleField(params.title),
+      },
+    ];
   }
   if (mode === 'parallel') {
-    return (params.tasks ?? []).map((t) => ({ agent: t.agent, task: bound(t.task) }));
+    return (params.tasks ?? []).map((t) => ({
+      agent: t.agent,
+      task: bound(t.task),
+      ...titleField(t.title),
+    }));
   }
   const lines: BackgroundAgentLine[] = [];
   const chain = params.chain ?? [];
@@ -1624,10 +1637,16 @@ function buildAgentLines(params: Params, mode: Mode): BackgroundAgentLine[] {
       lines.push({
         agent: entry.parallel.agent,
         task: bound(entry.parallel.task),
+        ...titleField(entry.parallel.title),
         step: i + 1,
       });
     } else {
-      lines.push({ agent: entry.agent, task: bound(entry.task), step: i + 1 });
+      lines.push({
+        agent: entry.agent,
+        task: bound(entry.task),
+        ...titleField(entry.title),
+        step: i + 1,
+      });
     }
   }
   return lines;

@@ -382,11 +382,11 @@ export function formatBackgroundAgentLines(
     const isLast = i === agentLines.length - 1;
     const prefix = isLast ? '  └─ ' : '  ├─ ';
     const stepPrefix = entry.step ? `${entry.step}. ` : '';
-    const task = previewAgentLineTask(entry.task);
+    const label = previewAgentLineTask(entry.title ?? entry.task);
     lines.push(
       theme.fg('muted', prefix) +
         theme.fg('accent', stepPrefix + entry.agent) +
-        theme.fg('dim', ` - ${task}`)
+        theme.fg('dim', ` - ${label}`)
     );
   }
   return lines.join('\n');
