@@ -11,7 +11,7 @@ have the repo checked out locally.
 
 - The `pi` CLI installed and on `PATH`.
 - At least one formatter on `PATH` for the languages you edit. Built-in detection
-  covers Prettier, Biome, Ruff, gofmt, rustfmt, shfmt, and clang-format (see
+  covers Biome, Oxfmt, Prettier, Ruff, gofmt, rustfmt, shfmt, and clang-format (see
   [Reference: built-in recipes](./reference.md#built-in-formatter-recipes)).
 
 ## 1. Build and load the extension

@@ -52,8 +52,8 @@ rules:
   `PATH`.
 - `clang-format` requires both a `.clang-format` file and `clang-format` on
   `PATH`.
-- The others (`prettier`, `ruff`, `gofmt`, `rustfmt`, `shfmt`) require only the
-  binary on `PATH`.
+- The others (`oxfmt`, `prettier`, `ruff`, `gofmt`, `rustfmt`, `shfmt`)
+  require only the binary on `PATH`.
 
 If no formatter is clearly available for an extension, the file is left
 untouched. Recipes are never installed implicitly - you must have the formatter
