@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+- **pi-agents:** stop reusing non-pi host entrypoints (`pi-web`, Next.js, etc.) as the child CLI. Those hosts treat `-p` as `--port`, so `pi --mode json -p --session ...` failed with "--session is not a non-negative number". `getPiInvocation` now only reuses known pi coding-agent scripts or standalone `pi.exe`, honors `PI_AGENTS_PI_PATH` / `PI_BINARY`, and otherwise spawns PATH `pi`.
+
 ### Performance
 
 - **pi-agents:** lazy-load the optional Grok ACP runtime (and bundled ACP SDK/Zod graph) behind one memoized dynamic import with opt-in Bun code splitting under `dist/chunks/`. Extension import and Pi runtime paths no longer pay the ACP graph cost up front; the first `runtime: "grok-acp"` call loads the hashed façade chunk. Public tool schema, `package.json` exports, and the Pi extension entry (`dist/index.js`) are unchanged — published installs must retain `dist/chunks/`.
