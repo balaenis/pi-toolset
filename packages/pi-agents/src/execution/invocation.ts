@@ -21,16 +21,49 @@ export async function writePromptToTempFile(
   return { dir: tmpDir, filePath };
 }
 
+/**
+ * Only reuse argv[1] when it is clearly the pi coding-agent CLI entry.
+ * Hosts like pi-web and Next.js also accept `-p` as --port; reusing them as the
+ * child turns `pi --mode json -p --session ...` into
+ * "--session is not a non-negative number".
+ */
+function isPiCodingAgentScript(scriptPath: string): boolean {
+  const normalized = scriptPath.replace(/\\/g, '/').toLowerCase();
+  const base = path.basename(normalized);
+  if (base === 'pi' || base === 'pi.js' || base === 'pi.mjs' || base === 'pi.cjs') return true;
+  // Packaged / monorepo entrypoints for @earendil-works/pi-coding-agent
+  if (normalized.includes('/pi-coding-agent/')) {
+    if (base === 'main.js' || base === 'cli.js' || base === 'index.js') return true;
+    if (normalized.includes('/dist/cli') || normalized.includes('/dist/main')) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve how to spawn a child pi coding-agent.
+ * Prefer PI_AGENTS_PI_PATH when set. Default to PATH `pi` unless the host process
+ * is already a real pi coding-agent entry (or standalone pi.exe).
+ */
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
+  const override = process.env.PI_AGENTS_PI_PATH?.trim() || process.env.PI_BINARY?.trim();
+  if (override) {
+    return { command: override, args };
+  }
+
   const currentScript = process.argv[1];
   const isBunVirtualScript = currentScript?.startsWith('/$bunfs/root/');
-  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+  if (
+    currentScript &&
+    !isBunVirtualScript &&
+    fs.existsSync(currentScript) &&
+    isPiCodingAgentScript(currentScript)
+  ) {
     return { command: process.execPath, args: [currentScript, ...args] };
   }
 
   const execName = path.basename(process.execPath).toLowerCase();
   const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  if (!isGenericRuntime) {
+  if (!isGenericRuntime && (execName === 'pi' || execName === 'pi.exe')) {
     return { command: process.execPath, args };
   }
 

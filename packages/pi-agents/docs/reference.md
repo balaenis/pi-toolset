@@ -385,6 +385,8 @@ time; run `pi reload` (or restart) after adding/removing agent files.
 | `PI_AGENT_DEPTH`             | unset   | Current nesting depth, incremented per child.                                                                      |
 | `PI_AGENT_MAX_DEPTH`         | `2`     | Global nesting limit. A new child is refused when `depth >= max`. Raise before launching `pi`.                     |
 | `PI_AGENT_TOOL_AVAILABLE`    | unset   | Set to `0` as a runtime backstop when the `agent` tool is removed from a child.                                    |
+| `PI_AGENTS_PI_PATH`          | unset   | Absolute path to the pi coding-agent binary used for child spawns. Wins over host-script reuse and PATH `pi`.      |
+| `PI_BINARY`                  | unset   | Fallback alias for `PI_AGENTS_PI_PATH` when the latter is unset.                                                   |
 | `PI_AGENTS_RUNS_DIR`         | unset   | Complete durable runs root override (no package suffix). Relative paths resolve against cwd. Empty string ignored. |
 | `PI_AGENTS_RUN_ID`           | unset   | Private: owning run id for child artifact reader.                                                                  |
 | `PI_AGENTS_RUN_ARTIFACT_DIR` | unset   | Private: run directory for child artifact reader.                                                                  |

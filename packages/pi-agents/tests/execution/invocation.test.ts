@@ -1,8 +1,8 @@
 // ABOUTME: Tests for invocation helpers — Pi CLI argument construction and runtime resolution.
 // ABOUTME: Uses temp directories for prompt writes; mutates process.execPath via Object.defineProperty.
 
-import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentConfig } from '../../src/config/agents.ts';
@@ -274,10 +274,22 @@ describe('buildPiRpcArgs', () => {
 });
 
 describe('getPiInvocation', () => {
+  const originalEnvPiPath = process.env.PI_AGENTS_PI_PATH;
+  const originalEnvPiBinary = process.env.PI_BINARY;
+
+  afterEach(() => {
+    if (originalEnvPiPath === undefined) delete process.env.PI_AGENTS_PI_PATH;
+    else process.env.PI_AGENTS_PI_PATH = originalEnvPiPath;
+    if (originalEnvPiBinary === undefined) delete process.env.PI_BINARY;
+    else process.env.PI_BINARY = originalEnvPiBinary;
+  });
+
   it('falls back to `pi` when current script is missing and runtime is generic', () => {
     const originalArgv1 = process.argv[1];
     const originalExecPath = process.execPath;
     try {
+      delete process.env.PI_AGENTS_PI_PATH;
+      delete process.env.PI_BINARY;
       process.argv[1] = '/nonexistent/script.js';
       Object.defineProperty(process, 'execPath', { value: '/usr/bin/node', configurable: true });
       const inv = getPiInvocation(['--help']);
@@ -287,6 +299,49 @@ describe('getPiInvocation', () => {
       process.argv[1] = originalArgv1;
       Object.defineProperty(process, 'execPath', { value: originalExecPath, configurable: true });
     }
+  });
+
+  it('does not reuse pi-web or next host scripts as the child binary', () => {
+    const originalArgv1 = process.argv[1];
+    const originalExecPath = process.execPath;
+    const piWebScript = path.join(os.tmpdir(), 'pi-web.js');
+    const nextScript = path.join(os.tmpdir(), 'next');
+    writeFileSync(piWebScript, '// host stub\n', 'utf8');
+    writeFileSync(nextScript, '// next stub\n', 'utf8');
+    try {
+      delete process.env.PI_AGENTS_PI_PATH;
+      delete process.env.PI_BINARY;
+      Object.defineProperty(process, 'execPath', { value: '/usr/bin/node', configurable: true });
+
+      process.argv[1] = piWebScript;
+      expect(getPiInvocation(['--mode', 'json', '-p', '--session', 'x'])).toEqual({
+        command: 'pi',
+        args: ['--mode', 'json', '-p', '--session', 'x'],
+      });
+
+      process.argv[1] = nextScript;
+      expect(getPiInvocation(['--mode', 'json', '-p', '--session', 'x']).command).toBe('pi');
+    } finally {
+      process.argv[1] = originalArgv1;
+      Object.defineProperty(process, 'execPath', { value: originalExecPath, configurable: true });
+      try {
+        unlinkSync(piWebScript);
+      } catch {
+        /* ignore */
+      }
+      try {
+        unlinkSync(nextScript);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it('honors PI_AGENTS_PI_PATH override', () => {
+    process.env.PI_AGENTS_PI_PATH = 'C:\\Tools\\pi.exe';
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('C:\\Tools\\pi.exe');
+    expect(inv.args).toEqual(['--help']);
   });
 });
 
