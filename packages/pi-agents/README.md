@@ -240,7 +240,7 @@ The package also ships prompt templates: the `/implement`, `/explore-and-plan`, 
 ## Development
 
 ```sh
-mise run typecheck --package packages/pi-agents
+mise run typecheck --package packages/pi-agents   # TS7 native compiler (tsgo)
 mise run test --package packages/pi-agents
 mise run build --package packages/pi-agents
 hk check
