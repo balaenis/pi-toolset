@@ -87,7 +87,7 @@ jobs:
         working-directory: packages/pi-agents
         shell: pwsh
         run: |
-          bunx tsc --noEmit
+          bunx tsgo --noEmit
           bun test
 
       - name: Build pi-agents entry points

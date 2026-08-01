@@ -35,13 +35,13 @@ pi -e ./packages/pi-lsp/dist/index.js                 # load it into Pi
 
 ## Development
 
-Per-package tasks take `--package`:
+Per-package tasks take `--package`. Type checking runs on the TS7 native compiler (`tsgo` from `@typescript/native-preview`); TypeScript 6 stays installed for the ESLint toolchain.
 
 ```sh
-mise run typecheck --package packages/pi-lsp
+mise run typecheck --package packages/pi-lsp   # tsgo --noEmit
 mise run test --package packages/pi-lsp
-mise run build --package packages/pi-lsp
-mise run check                                        # hk check (eslint + prettier, repo-wide)
+mise run build --package packages/pi-lsp       # bun build bundling + postbuild gates
+mise run check                                 # hk check (eslint + prettier, repo-wide)
 ```
 
 ## Releasing

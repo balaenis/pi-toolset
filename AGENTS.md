@@ -18,8 +18,8 @@ Maintain the `pi-toolset` monorepo of Pi extension packages (currently `@balaeni
 
 Use `mise` to manage the development environment; `bun` as the package manager; `bunx` for one-off tools.
 
-- `mise run typecheck --package packages/pi-lsp` — TypeScript type check (per package)
-- `mise run build --package packages/pi-lsp` — Build a package
+- `mise run typecheck --package packages/pi-lsp` — TypeScript type check with the TS7 native compiler (tsgo), per package
+- `mise run build --package packages/pi-lsp` — Build a package (bun build bundling + postbuild gates)
 - `mise run test --package packages/pi-lsp` — Run a package's tests
 - `hk check` — eslint + prettier (repo-wide)
 - `hk fix` — apply eslint + prettier fixes (repo-wide)

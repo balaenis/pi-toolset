@@ -141,6 +141,7 @@ describe('getDetectedRecipeServers', () => {
     makeExecutable(dir, 'vscode-css-language-server');
     makeExecutable(dir, 'vue-language-server');
     makeExecutable(dir, 'vscode-eslint-language-server');
+    makeExecutable(dir, 'oxlint');
     makeExecutable(dir, 'tailwindcss-language-server');
     const detected = getDetectedRecipeServers(dir);
     const names = Object.keys(detected).sort();
@@ -154,6 +155,7 @@ describe('getDetectedRecipeServers', () => {
       'json',
       'kotlin',
       'lua',
+      'oxlint',
       'python',
       'typescript',
       'vue',
@@ -170,6 +172,11 @@ describe('getDetectedRecipeServers', () => {
     expect(eslintSettings.packageManager).toBe('npm');
     expect(eslintSettings.useFlatConfig).toBe(true);
     expect(eslintSettings.workingDirectory).toEqual({ mode: 'location' });
+    expect(detected.oxlint!.args).toEqual(['--lsp']);
+    expect(detected.oxlint!.role).toBe('companion');
+    expect(detected.oxlint!.conflictGroup).toBeUndefined();
+    expect(detected.oxlint!.extensionToLanguage['.ts']).toBe('typescript');
+    expect(detected.oxlint!.extensionToLanguage['.vue']).toBe('vue');
     expect(detected.typescript!.role).toBe('primary');
     expect(detected.typescript!.conflictGroup).toBe('typescript');
     expect(detected.python!.extensionToLanguage['.py']).toBe('python');

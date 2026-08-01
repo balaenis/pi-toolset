@@ -79,6 +79,25 @@ export const BUILTIN_RECIPES: readonly LspServerRecipe[] = [
       'Install `vscode-langservers-extracted` (for example `npm install -g vscode-langservers-extracted`) which provides `vscode-eslint-language-server` on PATH.',
   },
   {
+    name: 'oxlint',
+    command: 'oxlint',
+    args: ['--lsp'],
+    extensionToLanguage: {
+      '.js': 'javascript',
+      '.jsx': 'javascriptreact',
+      '.mjs': 'javascript',
+      '.cjs': 'javascript',
+      '.ts': 'typescript',
+      '.tsx': 'typescriptreact',
+      '.mts': 'typescript',
+      '.cts': 'typescript',
+      '.vue': 'vue',
+    },
+    role: 'companion',
+    installHint:
+      'Install `oxlint` (for example `npm install -g oxlint` or `cargo install oxlint`) and ensure it is on PATH.',
+  },
+  {
     name: 'tailwindcss',
     command: 'tailwindcss-language-server',
     args: ['--stdio'],

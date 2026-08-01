@@ -26,6 +26,7 @@ Both use JSONC syntax (comments allowed).
 | Formatter      | Extensions                                                                                           | Detection rule                                 |
 | -------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
 | `biome`        | `.js` `.jsx` `.ts` `.tsx` `.json` `.jsonc` `.css`                                                    | `biome.json`/`biome.jsonc` and `biome` on PATH |
+| `oxfmt`        | `.js` `.jsx` `.ts` `.tsx` `.mjs` `.cjs` `.css` `.scss` `.json` `.jsonc` `.yaml` `.yml` `.md` `.html` | `oxfmt` on PATH                                |
 | `prettier`     | `.js` `.jsx` `.ts` `.tsx` `.mjs` `.cjs` `.css` `.scss` `.json` `.jsonc` `.yaml` `.yml` `.md` `.html` | `prettier` on PATH                             |
 | `ruff`         | `.py` `.pyi`                                                                                         | `ruff` on PATH                                 |
 | `gofmt`        | `.go`                                                                                                | `gofmt` on PATH                                |

@@ -6,7 +6,7 @@ Format files from [Pi](https://github.com/earendil-works/pi) using project-local
 
 - Explicit formatting via the `format` tool or `/format` command
 - Automatic formatting after Pi's built-in `write` and `edit` tools succeed
-- Built-in detection for Prettier, Biome, Ruff, gofmt, rustfmt, shfmt, and clang-format
+- Built-in detection for Biome, Oxfmt, Prettier, Ruff, gofmt, rustfmt, shfmt, and clang-format
 - User-defined formatters and per-project overrides via JSONC config
 
 ## Local development

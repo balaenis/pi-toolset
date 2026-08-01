@@ -15,7 +15,7 @@ async function resolveCommand(
   };
 }
 
-const PRETTIER_EXTENSIONS = [
+const PRETTIER_COMPAT_EXTENSIONS = [
   '.js',
   '.jsx',
   '.ts',
@@ -32,9 +32,18 @@ const PRETTIER_EXTENSIONS = [
   '.html',
 ];
 
+const oxfmtRecipe: FormatterRecipe = {
+  name: 'oxfmt',
+  extensions: PRETTIER_COMPAT_EXTENSIONS,
+  async resolve(ctx) {
+    if (!ctx.findExecutable('oxfmt')) return false;
+    return { command: ['oxfmt', '--write', '$FILE'] };
+  },
+};
+
 const prettierRecipe: FormatterRecipe = {
   name: 'prettier',
-  extensions: PRETTIER_EXTENSIONS,
+  extensions: PRETTIER_COMPAT_EXTENSIONS,
   async resolve(ctx) {
     if (!ctx.findExecutable('prettier')) return false;
     return { command: ['prettier', '--write', '$FILE'] };
@@ -96,10 +105,12 @@ const clangFormatRecipe: FormatterRecipe = {
 
 /**
  * Built-in formatter recipes in deterministic precedence order. Biome is
- * checked before Prettier so projects with an explicit Biome config win.
+ * checked first so projects with an explicit Biome config win; Oxfmt is a
+ * Prettier-compatible replacement and beats Prettier when installed.
  */
 export const BUILTIN_FORMATTER_RECIPES: readonly FormatterRecipe[] = [
   biomeRecipe,
+  oxfmtRecipe,
   prettierRecipe,
   ruffRecipe,
   gofmtRecipe,

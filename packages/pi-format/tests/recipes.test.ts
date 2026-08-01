@@ -48,6 +48,22 @@ beforeEach(() => {
   mkdirSync(pathDir, { recursive: true });
 });
 
+describe('oxfmt', () => {
+  it('returns false when oxfmt binary is missing', async () => {
+    const recipe = BUILTIN_FORMATTER_RECIPES.find((r) => r.name === 'oxfmt')!;
+    const resolved = await recipe.resolve(makeContext());
+    expect(resolved).toBe(false);
+  });
+
+  it('resolves when oxfmt binary is on PATH', async () => {
+    makeExecutable(pathDir, 'oxfmt');
+    const recipe = BUILTIN_FORMATTER_RECIPES.find((r) => r.name === 'oxfmt')!;
+    const resolved = await recipe.resolve(makeContext());
+    expect(resolved).toBeDefined();
+    expect(resolved && resolved.command).toEqual(['oxfmt', '--write', '$FILE']);
+  });
+});
+
 describe('prettier', () => {
   it('returns false when prettier binary is missing even with dependency', async () => {
     writeFileSync(
@@ -152,5 +168,18 @@ describe('BUILTIN_FORMATTER_RECIPES', () => {
         expect(ext.startsWith('.')).toBe(true);
       }
     }
+  });
+
+  it('prefers oxfmt over prettier for shared extensions', async () => {
+    makeExecutable(pathDir, 'oxfmt');
+    makeExecutable(pathDir, 'prettier');
+    const index = new Map(BUILTIN_FORMATTER_RECIPES.map((r, i) => [r.name, i]));
+    const oxfmtIndex = index.get('oxfmt')!;
+    const prettierIndex = index.get('prettier')!;
+    const shared = BUILTIN_FORMATTER_RECIPES[oxfmtIndex]!.extensions.filter((ext) =>
+      BUILTIN_FORMATTER_RECIPES[prettierIndex]!.extensions.includes(ext)
+    );
+    expect(shared.length).toBeGreaterThan(0);
+    expect(oxfmtIndex).toBeLessThan(prettierIndex);
   });
 });
