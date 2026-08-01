@@ -9,13 +9,21 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { registerFormatHooks } from '../src/hooks.ts';
 
 let tmpRoot: string;
+let agentDir: string;
+
+const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 
 beforeAll(() => {
   tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'pi-format-hooks-'));
+  agentDir = path.join(tmpRoot, 'agent');
+  mkdirSync(agentDir, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
 });
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
+  if (ORIGINAL_AGENT_DIR === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = ORIGINAL_AGENT_DIR;
 });
 
 function createFakePi(): {
