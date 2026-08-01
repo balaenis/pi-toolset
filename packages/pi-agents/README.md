@@ -53,6 +53,10 @@ See [docs/profiling.md](./docs/profiling.md#startup-import-profiling) for graph 
 
 Failed `agent` tool invocations record the complete tool call parameters, failure details, and any captured `Error.stack` / result `errorStack` in `~/.pi/@balaenis/pi-agents/default.log`. Set `PI_AGENTS_LOG_FILE` to override the path. Because task prompts and continuation instructions may contain sensitive information, protect or remove this log as appropriate.
 
+## Child Pi binary resolution
+
+Child `pi` spawns honor `PI_AGENTS_PI_PATH` (absolute path to the child Pi CLI); `PI_BINARY` is a fallback alias when the former is unset. When neither is set, the current host process is reused only when it is a known pi coding-agent entry — the packaged npm layout (`.../node_modules/@earendil-works/pi-coding-agent/dist/cli.js`) or the monorepo layout (`.../packages/coding-agent/dist/cli.js`) — or a standalone `pi`/`pi.exe`; otherwise PATH `pi` is used.
+
 ## Durable runs and resume
 
 Every validated invocation creates a durable run record under a platform default runs root (or an override):

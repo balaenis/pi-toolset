@@ -1,8 +1,16 @@
 // ABOUTME: Tests for invocation helpers — Pi CLI argument construction and runtime resolution.
 // ABOUTME: Uses temp directories for prompt writes; mutates process.execPath via Object.defineProperty.
 
-import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentConfig } from '../../src/config/agents.ts';
@@ -274,19 +282,194 @@ describe('buildPiRpcArgs', () => {
 });
 
 describe('getPiInvocation', () => {
-  it('falls back to `pi` when current script is missing and runtime is generic', () => {
-    const originalArgv1 = process.argv[1];
-    const originalExecPath = process.execPath;
-    try {
-      process.argv[1] = '/nonexistent/script.js';
-      Object.defineProperty(process, 'execPath', { value: '/usr/bin/node', configurable: true });
-      const inv = getPiInvocation(['--help']);
-      expect(inv.command).toBe('pi');
-      expect(inv.args).toEqual(['--help']);
-    } finally {
-      process.argv[1] = originalArgv1;
-      Object.defineProperty(process, 'execPath', { value: originalExecPath, configurable: true });
+  const envKeys = ['PI_AGENTS_PI_PATH', 'PI_BINARY'] as const;
+  const envSnapshot = new Map<string, string | undefined>();
+  let tmpDir: string;
+  let originalArgv1: string | undefined;
+  let originalExecPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'pi-invocation-'));
+    originalArgv1 = process.argv[1];
+    originalExecPath = process.execPath;
+    for (const key of envKeys) {
+      envSnapshot.set(key, process.env[key]);
+      delete process.env[key];
     }
+  });
+
+  afterEach(() => {
+    if (originalArgv1 === undefined) delete process.argv[1];
+    else process.argv[1] = originalArgv1;
+    Object.defineProperty(process, 'execPath', { value: originalExecPath, configurable: true });
+    for (const key of envKeys) {
+      const original = envSnapshot.get(key);
+      if (original === undefined) delete process.env[key];
+      else process.env[key] = original;
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeScript(...segments: string[]): string {
+    const scriptPath = path.join(tmpDir, ...segments);
+    mkdirSync(path.dirname(scriptPath), { recursive: true });
+    writeFileSync(scriptPath, '// non-pi host stub\n', 'utf8');
+    return scriptPath;
+  }
+
+  function setGenericRuntime(): void {
+    Object.defineProperty(process, 'execPath', { value: '/usr/bin/node', configurable: true });
+  }
+
+  it('falls back to `pi` when current script is missing and runtime is generic', () => {
+    setGenericRuntime();
+    process.argv[1] = path.join(tmpDir, 'missing.js');
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('pi');
+    expect(inv.args).toEqual(['--help']);
+  });
+
+  it('does not reuse pi-web or next host scripts as the child binary', () => {
+    setGenericRuntime();
+    const piWebScript = makeScript('pi-web.js');
+    const nextScript = makeScript('next');
+
+    process.argv[1] = piWebScript;
+    expect(getPiInvocation(['--mode', 'json', '-p', '--session', 'x'])).toEqual({
+      command: 'pi',
+      args: ['--mode', 'json', '-p', '--session', 'x'],
+    });
+
+    process.argv[1] = nextScript;
+    expect(getPiInvocation(['--mode', 'json', '-p', '--session', 'x']).command).toBe('pi');
+  });
+
+  it('does not reuse a non-pi host script merely because it is named `pi.js`', () => {
+    setGenericRuntime();
+    process.argv[1] = makeScript('pi.js');
+    const inv = getPiInvocation(['--mode', 'json', '-p', '--session', 'x']);
+    expect(inv.command).toBe('pi');
+    expect(inv.args).toEqual(['--mode', 'json', '-p', '--session', 'x']);
+  });
+
+  it('does not reuse an `index.js` that merely lives under a pi-coding-agent directory', () => {
+    setGenericRuntime();
+    process.argv[1] = makeScript('pi-coding-agent', 'static', 'index.js');
+    expect(getPiInvocation(['--help']).command).toBe('pi');
+  });
+
+  it('does not treat `dist/client.js` from the pi package as the CLI entry', () => {
+    setGenericRuntime();
+    process.argv[1] = makeScript(
+      'node_modules',
+      '@earendil-works',
+      'pi-coding-agent',
+      'dist',
+      'client.js'
+    );
+    expect(getPiInvocation(['--help']).command).toBe('pi');
+  });
+
+  it('does not reuse a bare script named `pi` when the runtime is generic', () => {
+    setGenericRuntime();
+    process.argv[1] = makeScript('pi');
+    expect(getPiInvocation(['--help']).command).toBe('pi');
+  });
+
+  it('reuses the packaged npm pi CLI entry', () => {
+    setGenericRuntime();
+    const cli = makeScript('node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js');
+    process.argv[1] = cli;
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('/usr/bin/node');
+    expect(inv.args).toEqual([cli, '--help']);
+  });
+
+  it('reuses the monorepo pi coding-agent dist/cli.js entry', () => {
+    setGenericRuntime();
+    const cli = makeScript('packages', 'coding-agent', 'dist', 'cli.js');
+    process.argv[1] = cli;
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('/usr/bin/node');
+    expect(inv.args).toEqual([cli, '--help']);
+  });
+
+  it('does not reuse dist/cli.js merely under a pi-coding-agent directory', () => {
+    setGenericRuntime();
+    process.argv[1] = makeScript('pi-coding-agent', 'dist', 'cli.js');
+    expect(getPiInvocation(['--help']).command).toBe('pi');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'reuses a Windows-style path to the packaged entry',
+    () => {
+      setGenericRuntime();
+      const cli = makeScript(
+        'win',
+        'C:\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js'
+      );
+      process.argv[1] = cli;
+      const inv = getPiInvocation(['--help']);
+      expect(inv.command).toBe('/usr/bin/node');
+      expect(inv.args).toEqual([cli, '--help']);
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')('resolves a symlinked pi entry before matching', () => {
+    setGenericRuntime();
+    const cli = makeScript('node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js');
+    const link = path.join(tmpDir, 'bin', 'pi');
+    mkdirSync(path.dirname(link), { recursive: true });
+    symlinkSync(cli, link);
+    process.argv[1] = link;
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('/usr/bin/node');
+    expect(inv.args).toEqual([link, '--help']);
+  });
+
+  it('falls back to PATH `pi` for the bun virtual entry under a generic runtime', () => {
+    setGenericRuntime();
+    process.argv[1] = '/$bunfs/root/host.js';
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('pi');
+    expect(inv.args).toEqual(['--help']);
+  });
+
+  it('reuses a standalone `pi` / `pi.exe` executable directly', () => {
+    for (const exeName of ['pi', 'pi.exe']) {
+      const exePath = makeScript(exeName);
+      Object.defineProperty(process, 'execPath', { value: exePath, configurable: true });
+      process.argv[1] = '/$bunfs/root/pi';
+      expect(getPiInvocation(['--help'])).toEqual({ command: exePath, args: ['--help'] });
+    }
+  });
+
+  it('does not reuse a non-pi standalone executable', () => {
+    Object.defineProperty(process, 'execPath', { value: makeScript('pi-web'), configurable: true });
+    process.argv[1] = makeScript('host.js');
+    expect(getPiInvocation(['--help']).command).toBe('pi');
+  });
+
+  it('honors PI_AGENTS_PI_PATH override', () => {
+    process.env.PI_AGENTS_PI_PATH = 'C:\\Tools\\pi.exe';
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('C:\\Tools\\pi.exe');
+    expect(inv.args).toEqual(['--help']);
+  });
+
+  it('falls back to PI_BINARY when PI_AGENTS_PI_PATH is unset', () => {
+    process.env.PI_BINARY = '/opt/pi/bin/pi';
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('/opt/pi/bin/pi');
+    expect(inv.args).toEqual(['--help']);
+  });
+
+  it('prefers PI_AGENTS_PI_PATH when both variables are set', () => {
+    process.env.PI_AGENTS_PI_PATH = '/opt/pi/bin/pi';
+    process.env.PI_BINARY = '/opt/other/pi';
+    const inv = getPiInvocation(['--help']);
+    expect(inv.command).toBe('/opt/pi/bin/pi');
+    expect(inv.args).toEqual(['--help']);
   });
 });
 

@@ -21,16 +21,48 @@ export async function writePromptToTempFile(
   return { dir: tmpDir, filePath };
 }
 
+const PI_CODING_AGENT_NPM_CLI_ENTRY = '/node_modules/@earendil-works/pi-coding-agent/dist/cli.js';
+const PI_CODING_AGENT_MONOREPO_CLI_ENTRY = '/packages/coding-agent/dist/cli.js';
+
+function isPiCodingAgentScript(scriptPath: string): boolean {
+  let resolved = scriptPath;
+  try {
+    resolved = fs.realpathSync(scriptPath);
+  } catch {
+    // keep the given path when realpath is unavailable
+  }
+  const normalized = resolved.replace(/\\/g, '/').toLowerCase();
+  return (
+    normalized.endsWith(PI_CODING_AGENT_NPM_CLI_ENTRY) ||
+    normalized.endsWith(PI_CODING_AGENT_MONOREPO_CLI_ENTRY)
+  );
+}
+
+/**
+ * Resolve how to spawn a child pi coding-agent.
+ * Prefer PI_AGENTS_PI_PATH when set. Default to PATH `pi` unless the host process
+ * is already a real pi coding-agent entry (or standalone pi.exe).
+ */
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
+  const override = process.env.PI_AGENTS_PI_PATH?.trim() || process.env.PI_BINARY?.trim();
+  if (override) {
+    return { command: override, args };
+  }
+
   const currentScript = process.argv[1];
   const isBunVirtualScript = currentScript?.startsWith('/$bunfs/root/');
-  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+  if (
+    currentScript &&
+    !isBunVirtualScript &&
+    fs.existsSync(currentScript) &&
+    isPiCodingAgentScript(currentScript)
+  ) {
     return { command: process.execPath, args: [currentScript, ...args] };
   }
 
   const execName = path.basename(process.execPath).toLowerCase();
   const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  if (!isGenericRuntime) {
+  if (!isGenericRuntime && (execName === 'pi' || execName === 'pi.exe')) {
     return { command: process.execPath, args };
   }
 
