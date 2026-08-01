@@ -998,7 +998,7 @@ describe('renderContinuationMessage', () => {
     };
     const comp = renderContinuationMessage(
       { details, content: '' },
-      { expanded: false },
+      { expanded: false, outputPad: 0 },
       fakeTheme()
     );
     const lines = comp.render!(80);
@@ -1008,7 +1008,7 @@ describe('renderContinuationMessage', () => {
   });
 
   it('renders without crashing when details are missing', () => {
-    const comp = renderContinuationMessage({}, { expanded: false }, fakeTheme());
+    const comp = renderContinuationMessage({}, { expanded: false, outputPad: 0 }, fakeTheme());
     const lines = comp.render!(80);
     expect(lines.join('\n')).toContain('no details');
   });
