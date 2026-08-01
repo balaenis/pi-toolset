@@ -21,22 +21,21 @@ export async function writePromptToTempFile(
   return { dir: tmpDir, filePath };
 }
 
-/**
- * Only reuse argv[1] when it is clearly the pi coding-agent CLI entry.
- * Hosts like pi-web and Next.js also accept `-p` as --port; reusing them as the
- * child turns `pi --mode json -p --session ...` into
- * "--session is not a non-negative number".
- */
+const PI_CODING_AGENT_NPM_CLI_ENTRY = '/node_modules/@earendil-works/pi-coding-agent/dist/cli.js';
+const PI_CODING_AGENT_MONOREPO_CLI_ENTRY = '/packages/coding-agent/dist/cli.js';
+
 function isPiCodingAgentScript(scriptPath: string): boolean {
-  const normalized = scriptPath.replace(/\\/g, '/').toLowerCase();
-  const base = path.basename(normalized);
-  if (base === 'pi' || base === 'pi.js' || base === 'pi.mjs' || base === 'pi.cjs') return true;
-  // Packaged / monorepo entrypoints for @earendil-works/pi-coding-agent
-  if (normalized.includes('/pi-coding-agent/')) {
-    if (base === 'main.js' || base === 'cli.js' || base === 'index.js') return true;
-    if (normalized.includes('/dist/cli') || normalized.includes('/dist/main')) return true;
+  let resolved = scriptPath;
+  try {
+    resolved = fs.realpathSync(scriptPath);
+  } catch {
+    // keep the given path when realpath is unavailable
   }
-  return false;
+  const normalized = resolved.replace(/\\/g, '/').toLowerCase();
+  return (
+    normalized.endsWith(PI_CODING_AGENT_NPM_CLI_ENTRY) ||
+    normalized.endsWith(PI_CODING_AGENT_MONOREPO_CLI_ENTRY)
+  );
 }
 
 /**
