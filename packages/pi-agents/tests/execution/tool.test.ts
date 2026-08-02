@@ -4127,8 +4127,9 @@ describe('executeAgentTool public runId resume', () => {
       if (!loaded.ok) return;
       const unit = loaded.loaded.record.units.single!;
       expect(unit.status).toBe('failed');
-      // Production persists canonical paths; compare against the realpath form.
-      const expectedWtPath = realpathSync(wtPath);
+      // Production persists canonical paths; compare against the native realpath
+      // form (expands 8.3 short names on Windows, matching canonicalPath).
+      const expectedWtPath = realpathSync.native(wtPath);
       expect(unit.worktreePath).toBe(expectedWtPath);
       expect(unit.result?.worktreePath).toBe(expectedWtPath);
       expect(unit.result?.worktreeDirty).toBe(true);
@@ -4451,8 +4452,9 @@ describe('executeAgentTool public runId resume', () => {
       const rec = loadedRecordOf(runs[0]!);
       const unit = rec.units.single ?? Object.values(rec.units)[0]!;
       expect(unit.status).toBe('failed');
-      // Production persists canonical paths; compare against the realpath form.
-      const expectedWtPath = realpathSync(wtPath);
+      // Production persists canonical paths; compare against the native realpath
+      // form (expands 8.3 short names on Windows, matching canonicalPath).
+      const expectedWtPath = realpathSync.native(wtPath);
       expect(unit.result?.worktreePath).toBe(expectedWtPath);
       expect(unit.result?.worktreeDirty).toBe(true);
       expect(unit.worktreePath ?? unit.result?.worktreePath).toBe(expectedWtPath);
