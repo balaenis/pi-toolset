@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/balaenis/pi-toolset/compare/pi-lsp-v0.1.1...pi-lsp-v0.2.0) (2026-08-02)
+
+
+### Features
+
+* **pi-lsp:** add oxlint companion LSP recipe ([9f88941](https://github.com/balaenis/pi-toolset/commit/9f88941435905c9193bcbcd838b99ea853e29669))
+
 ## [0.1.1](https://github.com/balaenis/pi-toolset/compare/pi-lsp-v0.1.0...pi-lsp-v0.1.1) (2026-07-22)
 
 

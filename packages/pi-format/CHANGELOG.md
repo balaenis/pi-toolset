@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/balaenis/pi-toolset/compare/pi-format-v0.1.1...pi-format-v0.2.0) (2026-08-02)
+
+
+### Features
+
+* **pi-format:** add oxfmt formatter recipe ([eecbafe](https://github.com/balaenis/pi-toolset/commit/eecbafeafd6fa8e92df3d15dfdfd4a11f87c8646))
+
+
+### Bug Fixes
+
+* **pi-agents:** restrict child pi reuse to real pi CLI entries ([883d7cb](https://github.com/balaenis/pi-toolset/commit/883d7cbbc0c7be101c76b04353b96947c937b47c))
+
 ## [0.1.1](https://github.com/balaenis/pi-toolset/compare/pi-format-v0.1.0...pi-format-v0.1.1) (2026-07-22)
 
 

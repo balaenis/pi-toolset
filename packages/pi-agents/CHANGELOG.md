@@ -10,6 +10,19 @@
 
 - **pi-agents:** lazy-load the optional Grok ACP runtime (and bundled ACP SDK/Zod graph) behind one memoized dynamic import with opt-in Bun code splitting under `dist/chunks/`. Extension import and Pi runtime paths no longer pay the ACP graph cost up front; the first `runtime: "grok-acp"` call loads the hashed façade chunk. Public tool schema, `package.json` exports, and the Pi extension entry (`dist/index.js`) are unchanged — published installs must retain `dist/chunks/`.
 
+## [0.3.1](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.3.0...pi-agents-v0.3.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **pi-agents:** canonicalize resume worktree checks for cross-platform paths ([cc32a40](https://github.com/balaenis/pi-toolset/commit/cc32a406bc4c64e0c8da01b2bfb50ee5888123e8))
+* **pi-agents:** compare worktree path assertions with native realpath ([2ae3f04](https://github.com/balaenis/pi-toolset/commit/2ae3f046248bc7b064b169702f37f6197a048570))
+* **pi-agents:** do not reuse pi-web/Next as child pi CLI ([8e6b0a0](https://github.com/balaenis/pi-toolset/commit/8e6b0a0bf210d24eec5843ca6694167649d2911d))
+* **pi-agents:** normalize paths and harden worktree containment for cross-platform CI ([ede46b5](https://github.com/balaenis/pi-toolset/commit/ede46b5904e8cb0fe395fa78ac4a6c926b6ef11d))
+* **pi-agents:** normalize paths and harden worktree containment for cross-platform CI ([f33cd5e](https://github.com/balaenis/pi-toolset/commit/f33cd5e139943afafac58f4be85966c619dd539c))
+* **pi-agents:** restrict child pi reuse to real pi CLI entries ([883d7cb](https://github.com/balaenis/pi-toolset/commit/883d7cbbc0c7be101c76b04353b96947c937b47c))
+* **pi-agents:** restrict child pi reuse to real pi CLI entries ([8e2b83b](https://github.com/balaenis/pi-toolset/commit/8e2b83bbda47e40ad5d13bd1fd16797387128b19)), closes [#7](https://github.com/balaenis/pi-toolset/issues/7)
+
 ## [0.3.0](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.2.3...pi-agents-v0.3.0) (2026-07-25)
 
 
