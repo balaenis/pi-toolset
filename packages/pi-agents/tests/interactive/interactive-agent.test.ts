@@ -44,6 +44,21 @@ function makeTempStore() {
   return { root, store, coordinator };
 }
 
+function makePlannedMissingTempStore() {
+  if (process.platform === 'win32') {
+    const direct = makeTempStore();
+    return { ...direct, cleanupRoot: direct.root };
+  }
+  const cleanupRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-ia-alias-'));
+  const realRoot = path.join(cleanupRoot, 'real');
+  const root = path.join(cleanupRoot, 'alias');
+  fs.mkdirSync(realRoot);
+  fs.symlinkSync(realRoot, root, 'dir');
+  const store = createRunStore({ rootDir: root });
+  const coordinator = createRunCoordinator({ store });
+  return { root, cleanupRoot, store, coordinator };
+}
+
 function runGit(cwd: string, args: string[]): void {
   const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf-8' });
   if (result.status !== 0) {
@@ -6639,7 +6654,7 @@ describe('InteractiveAgentRegistry adversarial review fixes', () => {
 
 describe('InteractiveAgentRegistry planned missing, hydrate, dispose barrier', () => {
   it('planned missing session: first transport fail then reopen retry succeeds (0.80.6 format)', async () => {
-    const { root, store, coordinator } = makeTempStore();
+    const { root, cleanupRoot, store, coordinator } = makePlannedMissingTempStore();
     const agent = makeAgent({ systemPrompt: '' });
     let attempts = 0;
     let eventListener: ((e: unknown) => void) | undefined;
@@ -6680,6 +6695,9 @@ describe('InteractiveAgentRegistry planned missing, hydrate, dispose barrier', (
     // Ensure sessions dir exists for containment checks but leave file missing.
     fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
     expect(fs.existsSync(sessionFile)).toBe(false);
+    if (process.platform !== 'win32') {
+      expect(canonicalizeSessionLeaseKey(sessionFile)).not.toBe(path.resolve(sessionFile));
+    }
 
     const registry = createInteractiveAgentRegistry({
       runStore: store,
@@ -6778,7 +6796,7 @@ describe('InteractiveAgentRegistry planned missing, hydrate, dispose barrier', (
     expect(ep?.allowPlannedMissingSession).toBe(false);
 
     await registry.shutdown();
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(cleanupRoot, { recursive: true, force: true });
   });
 
   it('restored missing session still fails closed (no planned-missing grace)', async () => {
@@ -10109,7 +10127,7 @@ describe('TUI restore reader extension launch paths', () => {
       const readerTools = toolsValues.filter((v) => v.includes('pi_agents_read_artifact'));
       expect(readerTools.length).toBe(1);
       expect(cap.env.PI_AGENTS_RUN_ID).toBe(opts.runId);
-      expect(cap.env.PI_AGENTS_RUN_ARTIFACT_DIR).toBe(opts.runDir);
+      expect(cap.env.PI_AGENTS_RUN_ARTIFACT_DIR).toBe(canonicalizeSessionLeaseKey(opts.runDir));
     } else {
       for (const v of extensionValues) {
         expect(v).not.toContain('artifact-reader-extension');

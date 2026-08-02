@@ -3,6 +3,8 @@
 
 import { describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   externalizeTerminalResult,
   ResultPayloadError,
@@ -44,7 +46,7 @@ describe('result-payload', () => {
     expect(shouldSpillPayload(RESULT_INLINE_PAYLOAD_MAX_BYTES)).toBe(false);
     expect(shouldSpillPayload(RESULT_INLINE_PAYLOAD_MAX_BYTES + 1)).toBe(true);
 
-    const root = fs.mkdtempSync('/tmp/pi-agents-result-payload-');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agents-result-payload-'));
     const store = createRunStore({ rootDir: root });
     const { runId } = await store.createRun({
       mode: 'single',

@@ -3304,9 +3304,7 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
       if (!unit.sessionFile) return { ok: false, reason: 'session_missing' };
 
       const sessionsDir = path.join(loaded.loaded.runDir, 'sessions');
-      const resolvedSessionsDir = fs.existsSync(sessionsDir)
-        ? fs.realpathSync(sessionsDir)
-        : path.resolve(sessionsDir);
+      const resolvedSessionsDir = canonicalizeSessionLeaseKey(sessionsDir);
       let sessionFileMissing = false;
       try {
         resolvedSession = fs.realpathSync(unit.sessionFile);
@@ -3316,7 +3314,7 @@ export function createInteractiveAgentRegistry(options: InteractiveRegistryOptio
         if (!opts.allowPlannedMissing) {
           return { ok: false, reason: 'session_unreadable' };
         }
-        resolvedSession = path.resolve(unit.sessionFile);
+        resolvedSession = canonicalizeSessionLeaseKey(unit.sessionFile);
         sessionFileMissing = true;
       }
       if (

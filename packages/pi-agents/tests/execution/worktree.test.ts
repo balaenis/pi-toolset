@@ -3,7 +3,15 @@
 
 import { describe, expect, it, spyOn } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as worktreeMod from '../../src/execution/worktree.ts';
@@ -74,10 +82,10 @@ describe.if(gitAvailable)('worktree isolation', () => {
     const { repo, cleanup } = makeRepo();
     try {
       const root = getGitRoot(repo);
-      expect(root).toBe(repo);
+      expect(root).toBe(realpathSync.native(repo));
 
       const wt = createAgentWorktree(repo, 'tester', 0);
-      expect(wt.path.startsWith(path.join(repo, '.worktrees'))).toBe(true);
+      expect(wt.path.startsWith(path.join(root!, '.worktrees'))).toBe(true);
       expect(existsSync(path.join(wt.path, 'README.md'))).toBe(true);
 
       const dirty = getWorktreeDirtyStatus(wt.path);
@@ -167,6 +175,30 @@ describe('worktree helpers (no git)', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a .worktrees symlink redirected outside the repository',
+    () => {
+      const repo = mkdtempSync(path.join(os.tmpdir(), 'pi-agents-repo-guard-'));
+      const external = mkdtempSync(path.join(os.tmpdir(), 'pi-agents-external-worktree-'));
+      const redirectedBase = path.join(repo, '.worktrees');
+      const candidate = path.join(external, 'candidate');
+      try {
+        symlinkSync(external, redirectedBase, 'dir');
+        expect(() => createAgentWorktree(repo, 'redirected', 0)).toThrow(
+          /Refusing to create worktree through redirected \.worktrees/
+        );
+        writeFileSync(candidate, 'external evidence\n');
+        const result = removeAgentWorktree({ path: candidate, repoRoot: repo });
+        expect(result.removed).toBe(false);
+        expect(result.error).toMatch(/outside <repo>\/\.worktrees/);
+        expect(readFileSync(candidate, 'utf8')).toBe('external evidence\n');
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+        rmSync(external, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('removeAgentWorktree refuses paths outside <repo>/.worktrees', () => {
     const tmp = mkdtempSync(path.join(os.tmpdir(), 'pi-agents-guard-'));

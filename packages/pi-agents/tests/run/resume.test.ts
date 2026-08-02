@@ -2,7 +2,7 @@
 // ABOUTME: Uses injected runStep stubs and temp git repos; no real Pi processes are spawned.
 
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -206,7 +206,7 @@ describe('openAgentWorktree', () => {
       expect(opened.ok).toBe(true);
       if (opened.ok) {
         expect(opened.worktree.path).toBe(wt.path);
-        expect(opened.worktree.repoRoot).toBe(path.resolve(repo));
+        expect(opened.worktree.repoRoot).toBe(realpathSync.native(repo));
       }
       removeAgentWorktree(wt);
     } finally {

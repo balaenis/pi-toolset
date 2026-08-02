@@ -217,7 +217,7 @@ export interface CreateArtifactStoreOptions {
   fileFsync?: (fd: number) => void;
   /** Test seam: directory sync (defaults to real fsync when directoryFsync is true). */
   directorySync?: (dirPath: string) => void;
-  /** Test seam: inject staging root under runDir. */
+  /** Test seam: inject the per-writer staging directory prefix under runDir. */
   stagingName?: string;
 }
 
@@ -340,12 +340,10 @@ export function createArtifactStore(options: CreateArtifactStoreOptions): Artifa
         return ref;
       }
 
-      const stagingRoot = path.join(runDir, stagingName);
-      mkdirPrivate(stagingRoot);
-      const staging = path.join(
-        stagingRoot,
-        `${sha256}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
-      );
+      const stagingToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+      const stagingDir = path.join(runDir, `${stagingName}.${stagingToken}`);
+      mkdirPrivate(stagingDir);
+      const staging = path.join(stagingDir, `${sha256}.tmp`);
 
       // Keep try/finally fully synchronous (no yield*) so staging cleanup always runs.
       type PublishOutcome =
@@ -395,16 +393,17 @@ export function createArtifactStore(options: CreateArtifactStoreOptions): Artifa
               /* ignore */
             }
           }
-          // Clean only this writer's exact staging pathname, then try non-recursive rmdir.
+          // Each process owns a unique staging directory, so exact cleanup cannot
+          // remove a competing writer's parent between its mkdir and open calls.
           try {
             if (fs.existsSync(staging)) fs.unlinkSync(staging);
           } catch {
             /* ignore */
           }
           try {
-            fs.rmdirSync(stagingRoot);
+            fs.rmdirSync(stagingDir);
           } catch {
-            /* not empty or missing — preserve competing/unknown entries */
+            /* preserve unexpected entries for diagnosis */
           }
         }
       })();
