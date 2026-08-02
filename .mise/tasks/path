@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#MISE description="Rebuild .mise/path: symlinks to node_modules/.bin minus pi, pi-ai"
+
+set -e
+
+DEST=".mise/path"
+rm -rf "$DEST"
+mkdir -p "$DEST"
+
+for f in node_modules/.bin/*; do
+	[ -e "$f" ] || continue
+	name="$(basename "$f")"
+	case "$name" in
+	pi | pi-ai) continue ;;
+	esac
+	ln -s "../../node_modules/.bin/$name" "$DEST/$name"
+done
+
+echo "✓ .mise/path rebuilt ($(ls "$DEST" | wc -l) binaries)"

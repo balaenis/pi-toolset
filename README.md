@@ -33,6 +33,8 @@ mise run build --package packages/pi-lsp              # build a package
 pi -e ./packages/pi-lsp/dist/index.js                 # load it into Pi
 ```
 
+`setup` also rebuilds `.mise/path/`, a filtered PATH dir over `node_modules/.bin` (excludes `pi`/`pi-ai`, so the repo's pinned Pi CLI doesn't shadow your shell's). After installing new dependencies, rerun `mise run path`.
+
 ## Development
 
 Per-package tasks take `--package`. Type checking runs on the TS7 native compiler (`tsgo` from `@typescript/native-preview`); TypeScript 6 stays installed for the ESLint toolchain.
