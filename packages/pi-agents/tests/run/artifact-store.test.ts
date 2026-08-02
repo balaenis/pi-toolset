@@ -62,6 +62,9 @@ describe('artifact-store', () => {
     expect(fs.readFileSync(path.join(runDir, jsonRef.relativePath), 'utf8')).toBe(
       serializeJsonArtifact(value)
     );
+    expect(fs.readdirSync(runDir).filter((name) => name.startsWith('.artifact-staging.'))).toEqual(
+      []
+    );
 
     fs.rmSync(runDir, { recursive: true, force: true });
   });
@@ -193,7 +196,7 @@ describe('artifact-store', () => {
       }
       expect(published).toEqual([]);
     }
-    // Writer exact staging entry cleaned; foreign entry preserved (rmdir refuses non-empty).
+    // Writer-owned staging directory is cleaned; the unrelated foreign root is preserved.
     expect(fs.existsSync(foreign)).toBe(true);
     expect(fs.readFileSync(foreign, 'utf8')).toBe('foreign\n');
     expect(fs.readdirSync(stagingRoot)).toEqual(['foreign-keep.tmp']);
@@ -208,8 +211,11 @@ describe('artifact-store', () => {
     fs.writeFileSync(foreign, 'foreign\n');
     const store = createTestArtifactStore();
     await store.writeTextArtifact('run-stage-iso', runDir, 'final-output', 'writer-bytes');
-    // Foreign entry must survive exact-pathname cleanup + non-recursive rmdir.
+    // Foreign entry must survive cleanup of the writer's unique staging directory.
     expect(fs.existsSync(foreign)).toBe(true);
+    expect(fs.readdirSync(runDir).filter((name) => name.startsWith('.artifact-staging.'))).toEqual(
+      []
+    );
     fs.rmSync(runDir, { recursive: true, force: true });
   });
 
@@ -306,6 +312,9 @@ describe('artifact-store', () => {
     const store = createTestArtifactStore();
     expect(await store.readTextArtifact('run-conc', runDir, ra)).toBe('shared-payload');
     expect(await store.readTextArtifact('run-conc', runDir, rc)).toBe('unique-diff');
+    expect(fs.readdirSync(runDir).filter((name) => name.startsWith('.artifact-staging.'))).toEqual(
+      []
+    );
     fs.rmSync(runDir, { recursive: true, force: true });
   }, 15_000);
 });

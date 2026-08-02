@@ -7,13 +7,46 @@ import * as path from 'node:path';
 import * as Either from 'effect/Either';
 import { WORKTREE_NAME_MAX_CHARS } from '../shared/constants.ts';
 
+function canonicalPath(candidate: string): string {
+  const resolved = path.resolve(candidate);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    // Paths that do not exist yet cannot be fully resolved; canonicalize the
+    // deepest existing ancestor and re-append the remainder so symlinked
+    // prefixes (e.g. macOS /var -> /private/var) stay consistent for
+    // containment checks on missing paths.
+    const suffix: string[] = [];
+    let probe = resolved;
+    for (;;) {
+      try {
+        return path.join(fs.realpathSync.native(probe), ...suffix.reverse());
+      } catch {
+        const parent = path.dirname(probe);
+        if (parent === probe) return path.normalize(resolved);
+        suffix.push(path.basename(probe));
+        probe = parent;
+      }
+    }
+  }
+}
+
+function normalizedPathIdentity(candidate: string): string {
+  const normalized = path.normalize(path.resolve(candidate));
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+export function pathIdentity(candidate: string): string {
+  return normalizedPathIdentity(canonicalPath(candidate));
+}
+
 export function getGitRoot(cwd: string): string | undefined {
   const result = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
     encoding: 'utf-8',
   });
   if (result.status !== 0) return undefined;
   const out = result.stdout.trim();
-  return out || undefined;
+  return out ? canonicalPath(out) : undefined;
 }
 
 function safeName(name: string): string {
@@ -31,9 +64,15 @@ function createAgentWorktreeEither(
   agentName: string,
   index: number
 ): Either.Either<AgentWorktree, Error> {
-  const root = path.resolve(repoRoot);
-  const baseDir = path.join(root, '.worktrees');
-  fs.mkdirSync(baseDir, { recursive: true });
+  const root = canonicalPath(repoRoot);
+  const lexicalBaseDir = path.join(root, '.worktrees');
+  fs.mkdirSync(lexicalBaseDir, { recursive: true });
+  const baseDir = canonicalPath(lexicalBaseDir);
+  if (normalizedPathIdentity(baseDir) !== normalizedPathIdentity(lexicalBaseDir)) {
+    return Either.left(
+      new Error(`Refusing to create worktree through redirected .worktrees: ${lexicalBaseDir}`)
+    );
+  }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const rand = Math.random().toString(36).slice(2, 8);
@@ -205,10 +244,18 @@ export function runWorktreeSetupHook(
 }
 
 function isUnderWorktreesDir(repoRoot: string, candidate: string): boolean {
-  const root = path.resolve(repoRoot);
-  const target = path.resolve(candidate);
-  const expectedBase = path.join(root, '.worktrees') + path.sep;
-  return target !== root && target.startsWith(expectedBase);
+  const root = canonicalPath(repoRoot);
+  const lexicalBase = path.join(root, '.worktrees');
+  const base = canonicalPath(lexicalBase);
+  if (normalizedPathIdentity(base) !== normalizedPathIdentity(lexicalBase)) return false;
+  const target = canonicalPath(candidate);
+  const relative = path.relative(base, target);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }
 
 export type OpenWorktreeResult =
@@ -221,8 +268,8 @@ function openAgentWorktreeEither(
   repoRoot: string,
   storedPath: string
 ): Either.Either<AgentWorktree, OpenFailure> {
-  const root = path.resolve(repoRoot);
-  const candidate = path.resolve(storedPath);
+  const root = canonicalPath(repoRoot);
+  const candidate = canonicalPath(storedPath);
   if (!isUnderWorktreesDir(root, candidate)) {
     return Either.left({
       error: `Stored worktree path is outside <repo>/.worktrees: ${storedPath}`,
@@ -248,8 +295,8 @@ function openAgentWorktreeEither(
   const registered = list.stdout
     .split('\n')
     .filter((line) => line.startsWith('worktree '))
-    .map((line) => path.resolve(line.slice('worktree '.length).trim()));
-  if (!registered.includes(candidate)) {
+    .map((line) => pathIdentity(line.slice('worktree '.length).trim()));
+  if (!registered.includes(pathIdentity(candidate))) {
     return Either.left({
       error: `Stored worktree is no longer registered: ${storedPath}`,
       code: 'worktree_unavailable',

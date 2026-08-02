@@ -13,6 +13,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -4126,8 +4127,11 @@ describe('executeAgentTool public runId resume', () => {
       if (!loaded.ok) return;
       const unit = loaded.loaded.record.units.single!;
       expect(unit.status).toBe('failed');
-      expect(unit.worktreePath).toBe(wtPath);
-      expect(unit.result?.worktreePath).toBe(wtPath);
+      // Production persists canonical paths; compare against the native realpath
+      // form (expands 8.3 short names on Windows, matching canonicalPath).
+      const expectedWtPath = realpathSync.native(wtPath);
+      expect(unit.worktreePath).toBe(expectedWtPath);
+      expect(unit.result?.worktreePath).toBe(expectedWtPath);
       expect(unit.result?.worktreeDirty).toBe(true);
       expect(unit.result?.errorMessage ?? unit.result?.stderr ?? '').toMatch(
         /Interactive link registration failed|validation_error/
@@ -4448,9 +4452,12 @@ describe('executeAgentTool public runId resume', () => {
       const rec = loadedRecordOf(runs[0]!);
       const unit = rec.units.single ?? Object.values(rec.units)[0]!;
       expect(unit.status).toBe('failed');
-      expect(unit.result?.worktreePath).toBe(wtPath);
+      // Production persists canonical paths; compare against the native realpath
+      // form (expands 8.3 short names on Windows, matching canonicalPath).
+      const expectedWtPath = realpathSync.native(wtPath);
+      expect(unit.result?.worktreePath).toBe(expectedWtPath);
       expect(unit.result?.worktreeDirty).toBe(true);
-      expect(unit.worktreePath ?? unit.result?.worktreePath).toBe(wtPath);
+      expect(unit.worktreePath ?? unit.result?.worktreePath).toBe(expectedWtPath);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
