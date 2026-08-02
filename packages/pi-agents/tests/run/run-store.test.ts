@@ -2345,13 +2345,14 @@ describe('ticket claim locks', () => {
     const store = createRunStore({ rootDir: root, ...makeDeps() });
     const { runId } = await store.createRun(makeCreateInput());
     // Simulate a dead owner by claiming with a phantom PID then marking dead via a store
-    // that treats that pid as dead.
-    const deadDeps = { ...makeDeps(), pid: 7777, instanceId: 'dead-inst' };
+    // that treats that pid as dead. Use the maximum pid so no real process (e.g. a
+    // Windows system process at pid 7777) can ever be probed as alive.
+    const deadDeps = { ...makeDeps(), pid: 2_147_483_647, instanceId: 'dead-inst' };
     const deadStore = createRunStore({ rootDir: root, ...deadDeps });
     const deadClaim = await deadStore.claimRun(runId);
     expect(deadClaim.ok).toBe(true);
 
-    // A new store with a different pid claims; the dead owner (pid 7777) is not alive.
+    // A new store with a different pid claims; the dead owner is not alive.
     const liveDeps = makeDeps();
     const liveStore = createRunStore({ rootDir: root, ...liveDeps });
     // Ensure the live store's pid differs from the dead pid.

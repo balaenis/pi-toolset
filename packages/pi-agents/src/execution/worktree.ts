@@ -12,7 +12,22 @@ function canonicalPath(candidate: string): string {
   try {
     return fs.realpathSync.native(resolved);
   } catch {
-    return path.normalize(resolved);
+    // Paths that do not exist yet cannot be fully resolved; canonicalize the
+    // deepest existing ancestor and re-append the remainder so symlinked
+    // prefixes (e.g. macOS /var -> /private/var) stay consistent for
+    // containment checks on missing paths.
+    const suffix: string[] = [];
+    let probe = resolved;
+    for (;;) {
+      try {
+        return path.join(fs.realpathSync.native(probe), ...suffix.reverse());
+      } catch {
+        const parent = path.dirname(probe);
+        if (parent === probe) return path.normalize(resolved);
+        suffix.push(path.basename(probe));
+        probe = parent;
+      }
+    }
   }
 }
 
@@ -21,7 +36,7 @@ function normalizedPathIdentity(candidate: string): string {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
-function pathIdentity(candidate: string): string {
+export function pathIdentity(candidate: string): string {
   return normalizedPathIdentity(canonicalPath(candidate));
 }
 

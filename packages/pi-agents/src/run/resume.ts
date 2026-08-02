@@ -8,6 +8,7 @@ import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { AgentConfig } from '../config/agents.ts';
 import { DEFAULT_RUNTIME, GROK_ACP_RUNTIME } from '../shared/constants.ts';
 import { agentFingerprint, chainFanoutStepId, chainFanoutUnitId } from './run-coordinator.ts';
+import { pathIdentity } from '../execution/worktree.ts';
 import type { RunCoordinator } from './run-coordinator.ts';
 import type { RunStore } from './run-store.ts';
 import { createRunLifecycle } from './run-lifecycle.ts';
@@ -583,8 +584,8 @@ export async function inspectResumeRecord(
           const registered = list.stdout
             .split('\n')
             .filter((line) => line.startsWith('worktree '))
-            .map((line) => path.resolve(line.slice('worktree '.length).trim()));
-          if (!registered.includes(path.resolve(unit.worktreePath))) {
+            .map((line) => pathIdentity(line.slice('worktree '.length).trim()));
+          if (!registered.includes(pathIdentity(unit.worktreePath))) {
             blockingReasons.push(
               `unit ${unit.unitId}: worktree no longer registered: ${unit.worktreePath}`
             );
