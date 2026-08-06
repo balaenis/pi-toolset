@@ -524,17 +524,18 @@ When the original `agent` tool-call activation terminates interrupted/cancelled,
 | Boundary                     |  Budget | Code / behavior                                                     |
 | ---------------------------- | ------: | ------------------------------------------------------------------- |
 | Ordinary RPC record          |   8 MiB | `stdout_overflow` — responses, UI, unknown, non-canonical           |
-| Canonical projectable record |  64 MiB | Exact Pi 0.80.9 prefix only; oversized payloads omitted             |
+| Canonical projectable record |  64 MiB | Exact Pi 0.80.9+ prefix only; oversized payloads omitted            |
 | Shell identity field         |  16 KiB | Oversized `role` / `toolCallId` / `toolName` revokes projectability |
 | Inline result payload        | 256 KiB | Spill to artifacts before terminal publication                      |
 | Run artifact                 |  64 MiB | `artifact_too_large`                                                |
 | Child reader chunk           |  48 KiB | `pi_agents_read_artifact` per call                                  |
 
-Canonical projectable top-level key orders (Pi 0.80.9 runtime):
+Canonical projectable top-level key orders (Pi 0.80.9+ runtime; `message_update` also accepts the pre-0.84 cumulative order):
 
 - `agent_end`: type → messages → willRetry
 - `message_start` / `message_end`: type → message
-- `message_update`: type → assistantMessageEvent → message
+- `message_update` (0.84+): type → assistantMessageEvent
+- `message_update` (pre-0.84): type → assistantMessageEvent → message
 - `turn_end`: type → message → toolResults
 - `tool_execution_start`: type → toolCallId → toolName → args
 - `tool_execution_update`: type → toolCallId → toolName → args → partialResult

@@ -1,5 +1,5 @@
 // ABOUTME: Incremental LF JSONL projector that validates Pi RPC records and emits bounded shells.
-// ABOUTME: Grants a 64 MiB budget only to exact-prefix canonical replayable Pi 0.80.9 events.
+// ABOUTME: Grants a 64 MiB budget only to exact-prefix canonical replayable Pi 0.84 events.
 
 import {
   MAX_PROJECTABLE_RPC_RECORD_BYTES,
@@ -87,18 +87,30 @@ type ProjectableType =
   | 'tool_execution_update'
   | 'tool_execution_end';
 
-const PROJECTABLE_PREFIXES: Record<ProjectableType, readonly string[]> = {
-  agent_end: ['type', 'messages', 'willRetry'],
-  message_start: ['type', 'message'],
-  message_update: ['type', 'assistantMessageEvent', 'message'],
-  message_end: ['type', 'message'],
-  turn_end: ['type', 'message', 'toolResults'],
-  tool_execution_start: ['type', 'toolCallId', 'toolName', 'args'],
-  tool_execution_update: ['type', 'toolCallId', 'toolName', 'args', 'partialResult'],
-  tool_execution_end: ['type', 'toolCallId', 'toolName', 'result', 'isError'],
+/**
+ * Accepted top-level key orders per event type (canonical first). Pi 0.84.0
+ * dropped the cumulative `message` field from wire `message_update` events
+ * (`toJsonEvent`); pre-0.84 runtimes emitted `{type, assistantMessageEvent, message}`,
+ * so both orders are accepted.
+ */
+const PROJECTABLE_PREFIXES: Record<ProjectableType, readonly (readonly string[])[]> = {
+  agent_end: [['type', 'messages', 'willRetry']],
+  message_start: [['type', 'message']],
+  message_update: [
+    ['type', 'assistantMessageEvent'],
+    ['type', 'assistantMessageEvent', 'message'],
+  ],
+  message_end: [['type', 'message']],
+  turn_end: [['type', 'message', 'toolResults']],
+  tool_execution_start: [['type', 'toolCallId', 'toolName', 'args']],
+  tool_execution_update: [['type', 'toolCallId', 'toolName', 'args', 'partialResult']],
+  tool_execution_end: [['type', 'toolCallId', 'toolName', 'result', 'isError']],
 };
 
 const PROJECTABLE_TYPE_SET = new Set<string>(Object.keys(PROJECTABLE_PREFIXES));
+
+/** Top-level key that marks the pre-0.84 cumulative-message message_update shape. */
+const MESSAGE_UPDATE_CUMULATIVE_MESSAGE_KEY = 'message';
 
 const REHYDRATE_TYPES = new Set<ProjectableType>([
   'message_start',
@@ -109,6 +121,31 @@ const REHYDRATE_TYPES = new Set<ProjectableType>([
   'tool_execution_update',
   'tool_execution_end',
 ]);
+
+/** True when `keys` is a (possibly partial) prefix of `order`. */
+function matchesPrefix(keys: readonly string[], order: readonly string[]): boolean {
+  if (keys.length > order.length) return false;
+  for (let i = 0; i < keys.length; i++) {
+    if (keys[i] !== order[i]) return false;
+  }
+  return true;
+}
+
+/** True when `keys` is a prefix of at least one accepted key order. */
+function matchesAnyPrefix(
+  keys: readonly string[],
+  accepted: readonly (readonly string[])[]
+): boolean {
+  return accepted.some((order) => matchesPrefix(keys, order));
+}
+
+/** True when `keys` exactly equals at least one accepted key order. */
+function matchesExactPrefix(
+  keys: readonly string[],
+  accepted: readonly (readonly string[])[]
+): boolean {
+  return accepted.some((order) => keys.length === order.length && matchesPrefix(keys, order));
+}
 
 interface ResolvedLimits {
   ordinaryMaxBytes: number;
@@ -552,11 +589,7 @@ class JsonRecordParser {
   /** True only when type is a known projectable event and top-level keys match its prefix so far. */
   private isKnownProjectablePrefix(): boolean {
     if (this.revoked || this.knownOrdinary || !this.projectableType) return false;
-    const expected = PROJECTABLE_PREFIXES[this.projectableType];
-    for (let i = 0; i < this.topLevelKeys.length; i++) {
-      if (i >= expected.length || this.topLevelKeys[i] !== expected[i]) return false;
-    }
-    return true;
+    return matchesAnyPrefix(this.topLevelKeys, PROJECTABLE_PREFIXES[this.projectableType]);
   }
 
   private beginValue(ch: string): void {
@@ -846,12 +879,8 @@ class JsonRecordParser {
       return;
     }
     if (!this.projectableType) return;
-    const expected = PROJECTABLE_PREFIXES[this.projectableType];
-    for (let i = 0; i < this.topLevelKeys.length; i++) {
-      if (i >= expected.length || this.topLevelKeys[i] !== expected[i]) {
-        this.revokeProjectability();
-        return;
-      }
+    if (!matchesAnyPrefix(this.topLevelKeys, PROJECTABLE_PREFIXES[this.projectableType])) {
+      this.revokeProjectability();
     }
   }
 
@@ -865,10 +894,8 @@ class JsonRecordParser {
 
   private canProject(): boolean {
     if (this.revoked || this.knownOrdinary || !this.projectableType) return false;
-    const expected = PROJECTABLE_PREFIXES[this.projectableType];
-    if (this.topLevelKeys.length !== expected.length) return false;
-    for (let i = 0; i < expected.length; i++) {
-      if (this.topLevelKeys[i] !== expected[i]) return false;
+    if (!matchesExactPrefix(this.topLevelKeys, PROJECTABLE_PREFIXES[this.projectableType])) {
+      return false;
     }
     // Validate bulk-field structural types.
     for (const [key, shape] of this.bulkFieldShapes) {
@@ -879,9 +906,15 @@ class JsonRecordParser {
       case 'agent_end':
         return typeof this.willRetry === 'boolean';
       case 'message_start':
-      case 'message_update':
       case 'message_end':
         return typeof this.role === 'string';
+      case 'message_update':
+        // 0.84 wire events carry no role; streaming updates are always assistant.
+        // The pre-0.84 cumulative-message shape must carry a string role instead.
+        if (this.topLevelKeys.includes(MESSAGE_UPDATE_CUMULATIVE_MESSAGE_KEY)) {
+          return typeof this.role === 'string';
+        }
+        return true;
       case 'turn_end':
         return true;
       case 'tool_execution_start':
@@ -911,7 +944,7 @@ class JsonRecordParser {
       case 'message_start':
       case 'message_update':
       case 'message_end':
-        return { type: t, payloadOmitted: true, role: this.role! };
+        return { type: t, payloadOmitted: true, role: this.role ?? 'assistant' };
       case 'turn_end':
         return { type: 'turn_end', payloadOmitted: true };
       case 'tool_execution_start':

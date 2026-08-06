@@ -103,7 +103,7 @@ The per-run layout:
 | Boundary                                    |             Budget | Behavior                                                                   |
 | ------------------------------------------- | -----------------: | -------------------------------------------------------------------------- |
 | Ordinary RPC stdout record                  |              8 MiB | Non-canonical / unknown / response records fail closed                     |
-| Canonical projectable RPC record            |             64 MiB | Exact-prefix Pi 0.80.9 replayable events may project to bounded shells     |
+| Canonical projectable RPC record            |             64 MiB | Exact-prefix Pi 0.80.9+ replayable events may project to bounded shells    |
 | Projected shell identity string             |             16 KiB | Oversized `role` / `toolCallId` / `toolName` revokes projectability        |
 | Inline authoritative result payload         |            256 KiB | Larger text/JSON spills to run-local artifacts before terminal publication |
 | One run artifact                            |             64 MiB | Larger writes fail with `artifact_too_large`                               |
@@ -112,7 +112,7 @@ The per-run layout:
 
 `get_messages` is disabled on the Pi RPC transport (`get_messages_disabled`); hydrate from the validated `sessionFile` instead. Oversized canonical message/tool/turn shells rehydrate from the native session at `agent_settled`.
 
-Pi peer dependencies are `"*"`; development and compatibility tests pin exact Pi `0.80.9`.
+Pi peer dependencies are `"*"`; development and compatibility tests pin exact Pi `0.84.0`. Wire `message_update` records accept both the 0.84 shape (`{type, assistantMessageEvent}`) and the pre-0.84 cumulative shape (`{type, assistantMessageEvent, message}`).
 
 Artifacts may contain sensitive model/tool output. They live only under the owning run directory, are verified on every trusted read, and are removed with the entire inactive run directory (no partial GC).
 
