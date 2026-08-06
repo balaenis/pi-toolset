@@ -44,7 +44,8 @@ if [ "${TAG}" = "next" ]; then
 	echo " > bumping version: ${CURRENT_VERSION} -> ${PRERELEASE_VERSION}"
 
 	if [ "${usage_dry_run}" != "true" ]; then
-		npm version "${PRERELEASE_VERSION}" --no-git-tag-version --allow-same-version
+		# npm version (npm >= 11) triggers an implicit install that can fail with ERESOLVE; npm pkg set is a pure file edit.
+		npm pkg set version="${PRERELEASE_VERSION}"
 	fi
 fi
 
