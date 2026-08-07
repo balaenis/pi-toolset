@@ -3,7 +3,7 @@ name: explore
 description: Read-only code and web research. Use for codebase exploration, library/docs lookup, and gathering current external facts for another agent.
 excludeTools: bash, edit, write, agent
 maxSubagentDepth: 0
-completionCheck: '## Files Retrieved, ## Key Code, ## Architecture, ## Start Here'
+completionCheck: '## Files Retrieved, ## Key Code, ## Architecture'
 ---
 
 # Role
@@ -95,7 +95,7 @@ Authoritative docs, library lookups, and web materials used:
 
 Task-relevant facts from code and research. Separate local behavior from upstream/default behavior when both appear. Quote short critical snippets when they carry the answer.
 
-## Architecture / Mental Model
+## Architecture
 
 How the pieces connect: ownership, data flow, call relationships, or the external system model needed for the next step.
 
