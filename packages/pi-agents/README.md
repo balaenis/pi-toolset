@@ -199,11 +199,10 @@ List/widget status glyphs (Agent Nav uses the same mapping for every endpoint):
 | Enter                 | Pi: steer when running, prompt when idle/detached/error. Grok ACP: prompt only when not running |
 | Alt+Enter             | Pi: queue follow-up when running; prompt otherwise. Grok ACP: prompt only when not running      |
 | Ctrl+X                | Abort/cancel only the selected child's current turn                                             |
-| Ctrl+O                | Toggle last-15-line preview vs complete retained/bounded Agent View transcript                  |
 | Escape / Left         | Return to the navigator list (Left only when the prompt is empty)                               |
 | Up/Down / End         | Scroll transcript / resume tail-follow                                                          |
 
-Detail opens in a **last-15-line** tail preview (fixed height, not terminal-row dependent). Use **Ctrl+O** to expand the complete retained/bounded Agent View transcript (assistant/tool-call presentation plus final output — not raw child tool-result bodies); Ctrl+O again collapses to the last 15 lines and jumps back to the tail. Raw/full native history is available only for reloadable native sessions (Pi `sessionFile` or Grok ACP `session/load`). Grok ACP history hydrates lazily on first detail open via a hydrate-only ACP `session/load` (no model prompt).
+Detail opens as a **last-15-line** tail preview (fixed height, not terminal-row dependent). Use **Up/Down** to page through the full retained/bounded Agent View transcript (assistant/tool-call presentation plus final output — not raw child tool-result bodies); **End** returns to the tail. Raw/full native history is available only for reloadable native sessions (Pi `sessionFile` or Grok ACP `session/load`). Grok ACP history hydrates lazily on first detail open via a hydrate-only ACP `session/load` (no model prompt).
 
 **Scope and limits (Version 1):**
 
