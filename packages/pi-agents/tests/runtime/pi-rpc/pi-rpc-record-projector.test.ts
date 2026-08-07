@@ -181,7 +181,7 @@ describe('PiRpcRecordProjector classification and projection', () => {
     ]);
   });
 
-  it('projects oversized message_update with exact runtime key order', () => {
+  it('projects oversized pre-0.84 message_update with cumulative message', () => {
     const line = JSON.stringify({
       type: 'message_update',
       assistantMessageEvent: { type: 'text_delta', delta: 'z' },
@@ -193,6 +193,51 @@ describe('PiRpcRecordProjector classification and projection', () => {
       requiresSettleRehydrate: true,
       event: { type: 'message_update', payloadOmitted: true, role: 'assistant' },
     });
+  });
+
+  it('projects oversized 0.84 message_update without cumulative message', () => {
+    const line = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'z'.repeat(500) },
+    });
+    const out = projectAll([`${line}\n`], smallLimits);
+    expect(out[0]).toMatchObject({
+      kind: 'projected',
+      requiresSettleRehydrate: true,
+      event: { type: 'message_update', payloadOmitted: true, role: 'assistant' },
+    });
+  });
+
+  it('fails closed when pre-0.84 message_update lacks a string role', () => {
+    // Canonical pre-0.84 key order {type, assistantMessageEvent, message} with
+    // the cumulative message missing its role — must not project with a
+    // synthesized 'assistant' role.
+    const missingRole = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'z' },
+      message: { content: 'Z'.repeat(500) },
+    });
+    expect(Buffer.byteLength(missingRole)).toBeGreaterThan(smallLimits.ordinaryMaxBytes);
+    expectOverflow(() => projectAll([`${missingRole}\n`], smallLimits));
+
+    // Same canonical shape with a non-string role (null) — also fail closed.
+    const nullRole = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'z' },
+      message: { role: null, content: 'Z'.repeat(500) },
+    });
+    expect(Buffer.byteLength(nullRole)).toBeGreaterThan(smallLimits.ordinaryMaxBytes);
+    expectOverflow(() => projectAll([`${nullRole}\n`], smallLimits));
+  });
+
+  it('fails above ordinary cap for reordered 0.84 message_update keys', () => {
+    const line = JSON.stringify({
+      type: 'message_update',
+      message: { role: 'assistant', content: 'M'.repeat(400) },
+      assistantMessageEvent: { type: 'text_delta', delta: 'z' },
+    });
+    // Non-canonical key order never receives the projectable budget.
+    expectOverflow(() => projectAll([`${line}\n`], smallLimits));
   });
 
   it('projects tool_execution_end shell fields including isError', () => {

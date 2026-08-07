@@ -2089,8 +2089,7 @@ describe('interactive-view widget metadata refresh', () => {
   });
 });
 
-describe('interactive-view detail preview (last 15 + Ctrl+O)', () => {
-  const CTRL_O = '\x0f'; // ctrl+o
+describe('interactive-view detail preview (last N lines)', () => {
   const previewN = __test.DETAIL_PREVIEW_LINES;
 
   /** Unique per-line token so substring checks cannot collide (e.g. marker-2 vs marker-25). */
@@ -2120,7 +2119,6 @@ describe('interactive-view detail preview (last 15 + Ctrl+O)', () => {
 
   function makePanel(lineCount: number, terminalRows = 40) {
     const current = longHistorySnap(lineCount);
-    let inputHandled: string[] = [];
     const panel = new AgentDetailPanel({
       tui: { requestRender: () => undefined, terminal: { rows: terminalRows } } as never,
       theme: fakeTheme() as never,
@@ -2134,18 +2132,11 @@ describe('interactive-view detail preview (last 15 + Ctrl+O)', () => {
       onBack: () => undefined,
       onResume: () => undefined,
     });
-    // Spy Input so we can assert Ctrl+O never reaches it.
-    const realInput = (panel as unknown as { input: { handleInput: (d: string) => void } }).input;
-    const orig = realInput.handleInput.bind(realInput);
-    realInput.handleInput = (d: string) => {
-      inputHandled.push(d);
-      orig(d);
-    };
-    return { panel, inputHandled: () => inputHandled };
+    return { panel };
   }
 
   it(`defaults to last ${__test.DETAIL_PREVIEW_LINES} lines regardless of terminal rows`, () => {
-    // Large terminal must not expand the collapsed preview beyond DETAIL_PREVIEW_LINES.
+    // Preview must not grow beyond DETAIL_PREVIEW_LINES on a tall terminal.
     const { panel } = makePanel(40, 80);
     const rows = panel.render(80);
     const joined = rows.join('\n');
@@ -2158,73 +2149,36 @@ describe('interactive-view detail preview (last 15 + Ctrl+O)', () => {
       expect(joined).not.toContain(lineToken(i));
     }
 
-    // Help clearly offers expand-all via Ctrl+O.
-    expect(joined).toMatch(/Ctrl\+O expand all/i);
-    expect(joined).not.toMatch(/Ctrl\+O collapse/i);
+    // No Ctrl+O hint remains in the help line.
+    expect(joined).not.toMatch(/Ctrl\+O/i);
 
-    // Collapsed content region is fixed at DETAIL_PREVIEW_LINES even on a tall terminal.
+    // Content region is fixed at DETAIL_PREVIEW_LINES even on a tall terminal.
     const markerRows = rows.filter((r) => /L\d{3}-END/.test(r));
     expect(markerRows.length).toBe(previewN);
 
     panel.dispose();
   });
 
-  it('Ctrl+O expands to full content and help switches to collapse', () => {
-    const { panel, inputHandled } = makePanel(40, 40);
-    panel.handleInput(CTRL_O);
-    expect(inputHandled()).toEqual([]);
+  it('scrolls through the full history with Up/Down against the fixed preview', () => {
+    const { panel } = makePanel(40, 40);
+    panel.render(80);
 
-    const rows = panel.render(80);
-    const joined = rows.join('\n');
-    for (let i = 0; i < 40; i++) {
-      expect(joined).toContain(lineToken(i));
+    // Page Up to the top: the oldest line becomes visible.
+    for (let i = 0; i < 5; i++) {
+      panel.handleInput('\x1b[A');
     }
-    expect(joined).toMatch(/Ctrl\+O collapse/i);
-    expect(joined).not.toMatch(/Ctrl\+O expand all/i);
-    expect(rows.filter((r) => /L\d{3}-END/.test(r)).length).toBe(40);
+    const up = panel.render(80).join('\n');
+    expect(up).toContain(lineToken(0));
+    expect(up).not.toContain(lineToken(39));
 
-    panel.dispose();
-  });
-
-  it('Ctrl+O again restores last-N preview at the tail', () => {
-    const { panel, inputHandled } = makePanel(40, 40);
-    panel.handleInput(CTRL_O); // expand
-    panel.handleInput(CTRL_O); // collapse
-    expect(inputHandled()).toEqual([]);
-
-    const joined = panel.render(80).join('\n');
-    for (let i = 40 - previewN; i < 40; i++) {
-      expect(joined).toContain(lineToken(i));
+    // Page Down back to the tail: the newest line reappears.
+    for (let i = 0; i < 20; i++) {
+      panel.handleInput('\x1b[B');
     }
-    for (let i = 0; i < 40 - previewN; i++) {
-      expect(joined).not.toContain(lineToken(i));
-    }
-    expect(joined).toMatch(/Ctrl\+O expand all/i);
+    const down = panel.render(80).join('\n');
+    expect(down).toContain(lineToken(39));
+    expect(down).not.toContain(lineToken(0));
 
-    // Scroll up while collapsed, then expand+collapse must snap back to the tail.
-    panel.handleInput('\x1b[A'); // up
-    panel.handleInput(CTRL_O); // expand
-    panel.handleInput(CTRL_O); // collapse → last N at tail
-    const after = panel.render(80).join('\n');
-    expect(after).toContain(lineToken(39));
-    expect(after).not.toContain(lineToken(0));
-    expect(after).toMatch(/Ctrl\+O expand all/i);
-    expect(inputHandled()).toEqual([]);
-
-    panel.dispose();
-  });
-
-  it('Ctrl+O is captured by the detail panel and never reaches Input', () => {
-    const { panel, inputHandled } = makePanel(5, 24);
-    // Type a letter first so Input is live; then Ctrl+O must still be intercepted.
-    panel.handleInput('a');
-    expect(inputHandled()).toEqual(['a']);
-    panel.handleInput(CTRL_O);
-    expect(inputHandled()).toEqual(['a']);
-    expect((panel as unknown as { contentExpanded: boolean }).contentExpanded).toBe(true);
-    panel.handleInput(CTRL_O);
-    expect(inputHandled()).toEqual(['a']);
-    expect((panel as unknown as { contentExpanded: boolean }).contentExpanded).toBe(false);
     panel.dispose();
   });
 
@@ -2390,13 +2344,11 @@ describe('Agent View host resume (Ctrl+R)', () => {
   it('help keys advertise Ctrl+R resume only when offered', () => {
     const withResume = formatDetailHelpKeys({
       grokAcp: false,
-      contentExpanded: false,
       offerResume: true,
     });
     expect(withResume).toContain('Ctrl+R resume');
     const without = formatDetailHelpKeys({
       grokAcp: false,
-      contentExpanded: false,
       offerResume: false,
     });
     expect(without).not.toContain('Ctrl+R');

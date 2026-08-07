@@ -103,7 +103,7 @@ The per-run layout:
 | Boundary                                    |             Budget | Behavior                                                                   |
 | ------------------------------------------- | -----------------: | -------------------------------------------------------------------------- |
 | Ordinary RPC stdout record                  |              8 MiB | Non-canonical / unknown / response records fail closed                     |
-| Canonical projectable RPC record            |             64 MiB | Exact-prefix Pi 0.80.9 replayable events may project to bounded shells     |
+| Canonical projectable RPC record            |             64 MiB | Exact-prefix Pi 0.80.9+ replayable events may project to bounded shells    |
 | Projected shell identity string             |             16 KiB | Oversized `role` / `toolCallId` / `toolName` revokes projectability        |
 | Inline authoritative result payload         |            256 KiB | Larger text/JSON spills to run-local artifacts before terminal publication |
 | One run artifact                            |             64 MiB | Larger writes fail with `artifact_too_large`                               |
@@ -112,7 +112,7 @@ The per-run layout:
 
 `get_messages` is disabled on the Pi RPC transport (`get_messages_disabled`); hydrate from the validated `sessionFile` instead. Oversized canonical message/tool/turn shells rehydrate from the native session at `agent_settled`.
 
-Pi peer dependencies are `"*"`; development and compatibility tests pin exact Pi `0.80.9`.
+Pi peer dependencies are `"*"`; development and compatibility tests pin exact Pi `0.84.0`. Wire `message_update` records accept both the 0.84 shape (`{type, assistantMessageEvent}`) and the pre-0.84 cumulative shape (`{type, assistantMessageEvent, message}`).
 
 Artifacts may contain sensitive model/tool output. They live only under the owning run directory, are verified on every trusted read, and are removed with the entire inactive run directory (no partial GC).
 
@@ -199,11 +199,10 @@ List/widget status glyphs (Agent Nav uses the same mapping for every endpoint):
 | Enter                 | Pi: steer when running, prompt when idle/detached/error. Grok ACP: prompt only when not running |
 | Alt+Enter             | Pi: queue follow-up when running; prompt otherwise. Grok ACP: prompt only when not running      |
 | Ctrl+X                | Abort/cancel only the selected child's current turn                                             |
-| Ctrl+O                | Toggle last-15-line preview vs complete retained/bounded Agent View transcript                  |
 | Escape / Left         | Return to the navigator list (Left only when the prompt is empty)                               |
 | Up/Down / End         | Scroll transcript / resume tail-follow                                                          |
 
-Detail opens in a **last-15-line** tail preview (fixed height, not terminal-row dependent). Use **Ctrl+O** to expand the complete retained/bounded Agent View transcript (assistant/tool-call presentation plus final output — not raw child tool-result bodies); Ctrl+O again collapses to the last 15 lines and jumps back to the tail. Raw/full native history is available only for reloadable native sessions (Pi `sessionFile` or Grok ACP `session/load`). Grok ACP history hydrates lazily on first detail open via a hydrate-only ACP `session/load` (no model prompt).
+Detail opens as a **last-15-line** tail preview (fixed height, not terminal-row dependent). Use **Up/Down** to page through the full retained/bounded Agent View transcript (assistant/tool-call presentation plus final output — not raw child tool-result bodies); **End** returns to the tail. Raw/full native history is available only for reloadable native sessions (Pi `sessionFile` or Grok ACP `session/load`). Grok ACP history hydrates lazily on first detail open via a hydrate-only ACP `session/load` (no model prompt).
 
 **Scope and limits (Version 1):**
 

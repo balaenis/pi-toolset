@@ -430,8 +430,6 @@ export class AgentDetailPanel implements Component, Focusable {
   private snap: InteractiveEndpointSnapshot | undefined;
   private scrollOffset = 0;
   private followTail = true;
-  /** When false, content viewport is fixed at last DETAIL_PREVIEW_LINES lines. */
-  private contentExpanded = false;
   private statusMessage = '';
   private _focused = false;
   /** True after dispose — async hydrate must not requestRender. */
@@ -512,21 +510,12 @@ export class AgentDetailPanel implements Component, Focusable {
     this.input.focused = value;
   }
 
-  /**
-   * Content rows shown. Collapsed is always last DETAIL_PREVIEW_LINES (not terminal-dependent).
-   * Expanded shows every content line so the full transcript is visible.
-   */
-  private contentViewportHeight(totalLines: number): number {
-    if (!this.contentExpanded) return DETAIL_PREVIEW_LINES;
-    return Math.max(1, totalLines);
-  }
-
   /** Keep scrollOffset in [0, maxOffset] so extra Up at top does not accumulate. */
   private clampScrollOffset(): void {
     const width = this.cachedWidth > 0 ? this.cachedWidth : 80;
     const { finalized, dynamic } = this.ensureSegmentCaches(width);
     const total = finalized.length + dynamic.length;
-    const vh = this.contentViewportHeight(total);
+    const vh = DETAIL_PREVIEW_LINES;
     const maxOffset = Math.max(0, total - vh);
     this.scrollOffset = Math.min(Math.max(0, this.scrollOffset), maxOffset);
   }
@@ -715,8 +704,7 @@ export class AgentDetailPanel implements Component, Focusable {
   render(width: number): string[] {
     const snap = this.snap;
     const { finalized, dynamic } = this.ensureSegmentCaches(width);
-    const totalLines = finalized.length + dynamic.length;
-    const vh = this.contentViewportHeight(totalLines);
+    const vh = DETAIL_PREVIEW_LINES;
     const view = this.extractViewport(finalized, dynamic, vh);
 
     const title = snap ? `${snap.title || snap.agent} · ${snap.status}` : this.opts.endpointKey;
@@ -731,10 +719,8 @@ export class AgentDetailPanel implements Component, Focusable {
       this.statusMessage ? 'warning' : 'dim',
       truncateToWidth(status, width)
     );
-    // Collapsed: hint expand-all; expanded: hint fold back to last-N preview.
     const helpKeys = formatDetailHelpKeys({
       grokAcp: this.isGrokAcp(),
-      contentExpanded: this.contentExpanded,
       offerResume,
     });
     const help = truncateToWidth(this.opts.theme.fg('dim', helpKeys), width);
@@ -776,7 +762,7 @@ export class AgentDetailPanel implements Component, Focusable {
     }
     if (matchesKey(data, 'up')) {
       this.followTail = false;
-      // Page against the collapsed preview height; expanded shows all lines at once.
+      // Page through the transcript by the fixed preview height.
       this.scrollOffset += DETAIL_PREVIEW_LINES;
       this.clampScrollOffset();
       this.opts.tui.requestRender();
@@ -813,16 +799,6 @@ export class AgentDetailPanel implements Component, Focusable {
         return;
       }
       this.opts.onResume(snap.runId);
-      return;
-    }
-    // Toggle last-N preview vs full transcript (must not fall into Input).
-    if (matchesKey(data, 'ctrl+o')) {
-      this.contentExpanded = !this.contentExpanded;
-      if (!this.contentExpanded) {
-        this.followTail = true;
-        this.scrollOffset = 0;
-      }
-      this.opts.tui.requestRender();
       return;
     }
     // Running Grok ACP: reject text/steer/follow-up input (cancel still works above).
@@ -917,17 +893,12 @@ export function formatDetailStatusLine(
 }
 
 /** Footer help keys for Agent View detail. */
-export function formatDetailHelpKeys(options: {
-  grokAcp: boolean;
-  contentExpanded: boolean;
-  offerResume: boolean;
-}): string {
-  const expand = options.contentExpanded ? 'Ctrl+O collapse' : 'Ctrl+O expand all';
+export function formatDetailHelpKeys(options: { grokAcp: boolean; offerResume: boolean }): string {
   const resume = options.offerResume ? ' · Ctrl+R resume' : '';
   if (options.grokAcp) {
-    return `Enter send · Ctrl+X cancel · ${expand} · Up/Down · End · ←/Esc back${resume}`;
+    return `Enter send · Ctrl+X cancel · Up/Down · End · ←/Esc back${resume}`;
   }
-  return `Enter send · Alt+Enter follow-up · Ctrl+X abort · ${expand} · Up/Down · End · ←/Esc back${resume}`;
+  return `Enter send · Alt+Enter follow-up · Ctrl+X abort · Up/Down · End · ←/Esc back${resume}`;
 }
 
 /** Host-facing prompt that asks the model to resume via the agent tool. */

@@ -10,6 +10,13 @@
 
 - **pi-agents:** lazy-load the optional Grok ACP runtime (and bundled ACP SDK/Zod graph) behind one memoized dynamic import with opt-in Bun code splitting under `dist/chunks/`. Extension import and Pi runtime paths no longer pay the ACP graph cost up front; the first `runtime: "grok-acp"` call loads the hashed façade chunk. Public tool schema, `package.json` exports, and the Pi extension entry (`dist/index.js`) are unchanged — published installs must retain `dist/chunks/`.
 
+## [0.3.2](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.3.1...pi-agents-v0.3.2) (2026-08-06)
+
+
+### Bug Fixes
+
+* **pi-agents:** support Pi 0.84 message_update wire shape ([65a6e0f](https://github.com/balaenis/pi-toolset/commit/65a6e0f2cb07fe563a6d95e7942156eba852be9a))
+
 ## [0.3.1](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.3.0...pi-agents-v0.3.1) (2026-08-02)
 
 

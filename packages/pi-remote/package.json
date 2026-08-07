@@ -1,0 +1,39 @@
+{
+  "name": "@balaenis/pi-remote",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension that runs read/write/edit/bash/grep/find/ls tools on a remote machine via SSH (--ssh flag).",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "balaenis",
+    "email": "pzyyll@gmail.com"
+  },
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "ssh",
+    "remote",
+    "connect"
+  ],
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/balaenis/pi-toolset.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
