@@ -213,8 +213,22 @@ Body.`
     expect(get('debugger')?.maxSubagentDepth).toBe(1);
     expect(get('explore')?.maxSubagentDepth).toBe(0);
     expect(get('planner')?.maxSubagentDepth).toBe(0);
-    expect(get('reviewer')?.maxSubagentDepth).toBe(0);
+    expect(get('reviewer')?.maxSubagentDepth).toBe(1);
+    expect(get('std-reviewer')?.maxSubagentDepth).toBe(0);
+    expect(get('spec-reviewer')?.maxSubagentDepth).toBe(0);
     expect(get('general')?.maxSubagentDepth).toBeUndefined();
+  });
+
+  it('bundled reviewer orchestrates read-only std/spec sub-agents', () => {
+    env = withAgentsDir(() => {});
+    const { agents } = discoverAgents(env.cwd, 'project');
+    const get = (name: string) => agents.find((a) => a.name === name);
+
+    expect(get('reviewer')?.excludeTools).toEqual(['edit', 'write']);
+    expect(get('std-reviewer')?.excludeTools).toEqual(['edit', 'write', 'agent']);
+    expect(get('spec-reviewer')?.excludeTools).toEqual(['edit', 'write', 'agent']);
+    expect(get('std-reviewer')?.completionCheck).toEqual(['## Standards Findings']);
+    expect(get('spec-reviewer')?.completionCheck).toEqual(['## Spec Findings']);
   });
 
   it('bundled debugger agent retains its operational contract', () => {

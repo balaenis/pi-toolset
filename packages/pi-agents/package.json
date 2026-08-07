@@ -26,6 +26,9 @@
     "prompts": [
       "./prompts"
     ],
+    "skills": [
+      "./skills"
+    ],
     "build": {
       "splitting": true
     }

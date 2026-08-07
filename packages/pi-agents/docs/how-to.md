@@ -421,11 +421,7 @@ Each prompt instructs Pi to run a chain with named steps. The general agent step
 must include `## Completed`, `## Files Changed`, and `## Validation` (also
 enforced by general's `completionCheck`). Explore output uses
 `## Files Retrieved` / `## Key Code` / `## Architecture` / `## Start Here`.
-Planner output starts with `# Plan`. The reviewer step classifies findings under
-`## Critical (must fix)`, `## Warnings (should fix)`, and
-`## Suggestions (consider)`, writing `- None.` under Critical when empty, using
-`path:line - [issue] — [why] — [fix or defer]` finding lines, and ending Summary
-with `Verdict: Ship` / `Ship with fixes` / `Do not ship`.
+Planner output follows the `writing-plans` skill shape. The reviewer step delegates to the `std-reviewer` (standards) and `spec-reviewer` (spec) sub-agents and reports their findings side by side under `## Standards` / `## Spec`, each axis verbatim with `- None.` when empty, ending with per-axis finding counts and each axis's worst issue. The final general step resolves every finding in both axes (fix or explicit deferral).
 
 ## Interactive agent view
 

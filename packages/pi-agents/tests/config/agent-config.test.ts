@@ -1,7 +1,8 @@
 // ABOUTME: Tests for layered agent config inspect/merge and atomic config.json patch writes.
 // ABOUTME: Covers provenance, dirty patch build, sibling preservation, and malformed-file repair.
 
-import { afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterEach, beforeAll, describe, expect, it, spyOn } from 'bun:test';
+import * as fs from 'node:fs';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -250,8 +251,24 @@ describe('path helpers', () => {
     );
 
     const bare = tmpDir();
-    expect(projectAgentConfigPath(bare)).toBe(
-      path.join(bare, '.pi', '@balaenis', 'pi-agents', 'config.json')
-    );
+    // Blind every real `.pi` directory (e.g. ~/.pi on machines whose tmp dir
+    // lives under the home dir) so the ancestor walk finds nothing and the
+    // fallback branch is exercised deterministically.
+    const originalStat = fs.statSync;
+    const statSpy = spyOn(fs, 'statSync').mockImplementation((p, opts) => {
+      if (path.basename(path.resolve(String(p))) === '.pi') {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${p}'`), {
+          code: 'ENOENT',
+        });
+      }
+      return originalStat(p, opts);
+    });
+    try {
+      expect(projectAgentConfigPath(bare)).toBe(
+        path.join(bare, '.pi', '@balaenis', 'pi-agents', 'config.json')
+      );
+    } finally {
+      statSpy.mockRestore();
+    }
   });
 });
