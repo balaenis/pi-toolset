@@ -255,14 +255,15 @@ describe('path helpers', () => {
     // lives under the home dir) so the ancestor walk finds nothing and the
     // fallback branch is exercised deterministically.
     const originalStat = fs.statSync;
-    const statSpy = spyOn(fs, 'statSync').mockImplementation((p, opts) => {
+    const statSpy = spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike) => {
       if (path.basename(path.resolve(String(p))) === '.pi') {
         throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${p}'`), {
           code: 'ENOENT',
         });
       }
-      return originalStat(p, opts);
-    });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (originalStat as any)(p);
+    }) as typeof fs.statSync);
     try {
       expect(projectAgentConfigPath(bare)).toBe(
         path.join(bare, '.pi', '@balaenis', 'pi-agents', 'config.json')
