@@ -44,6 +44,7 @@
     "dist",
     "agents",
     "prompts",
+    "skills",
     "THIRD_PARTY_NOTICES.md"
   ],
   "peerDependencies": {
