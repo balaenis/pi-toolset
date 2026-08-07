@@ -33,7 +33,7 @@ mise run build --package packages/pi-lsp              # build a package
 pi -e ./packages/pi-lsp/dist/index.js                 # load it into Pi
 ```
 
-`setup` also rebuilds `.mise/path/`, a filtered PATH dir over `node_modules/.bin` (excludes `pi`/`pi-ai`, so the repo's pinned Pi CLI doesn't shadow your shell's). After installing new dependencies, rerun `mise run path`.
+Node CLI tools (`eslint`, `prettier`, `tsgo`) are invoked via `bunx`, so the workspace does not put `node_modules/.bin` on PATH (avoids the pinned Pi CLI shadowing your shell's).
 
 ## Development
 

@@ -12,8 +12,6 @@ fi
 
 bun install
 
-mise run path
-
 echo ""
 echo "👍 Done"
 echo ""

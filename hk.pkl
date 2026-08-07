@@ -5,12 +5,16 @@ local linters = new Mapping<String, Step> {
     // eslint for TypeScript files
     ["eslint"] {
         glob = "**/*.ts"
-        check = "eslint {{files}}"
-        fix = "eslint --fix {{files}}"
+        check = "bunx eslint {{files}}"
+        fix = "bunx eslint --fix {{files}}"
     }
 
-    // uses builtin prettier linter config
-    ["prettier"] = Builtins.prettier
+    // bunx: no node_modules/.bin on PATH
+    ["prettier"] = (Builtins.prettier) {
+        check = "bunx prettier --check {{ files }}"
+        check_list_files = "bunx prettier --list-different {{ files }}"
+        fix = "bunx prettier --write {{ files }}"
+    }
 
     // define a custom linter
     ["pkl"] {
