@@ -106,12 +106,6 @@ the child's final message after an explicit warning that the output did not pass
 behavior from `tools`/`excludeTools`/`edit`/`write`/`bash`; agents opt in
 explicitly.
 
-In a chain workflow, a completion-check failure is advisory. The chain changes
-that unit to `status: "completed"` and exit code `0`, then passes the warning and
-the complete unchecked output to the next step. Other failure reasons still
-stop the chain. The same rule applies to fanout workers, so a missing heading
-does not fail the fanout aggregate.
-
 All bundled agents declare `completionCheck`. `debugger` requires `## Symptom`,
 `## Feedback Loop`, `## Reproduction`, `## Root Cause`, `## Recommended Fix`,
 and `## Blockers`; `general` requires `## Completed`, `## Files Changed`, and

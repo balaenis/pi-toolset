@@ -75,15 +75,6 @@ function makeFailureResult(agent: string, step: number, message: string): Single
   };
 }
 
-function makeCompletionCheckFailure(agent: string, text: string, step: number): SingleResult {
-  const result = makeAssistantResult(agent, text, step);
-  result.exitCode = 1;
-  result.status = 'failed';
-  result.stopReason = 'completion_check';
-  result.errorMessage = 'Completion check failed: missing ## Required';
-  return result;
-}
-
 function makeRunningPartial(agent: string, text: string, step: number): SingleResult {
   return {
     agent,
@@ -177,34 +168,6 @@ describe('runChainWorkflow', () => {
     const last = res.details.results[res.details.results.length - 1];
     expect(last.stopReason).toBe('template_error');
     expect(last.errorMessage).toContain('missing');
-  });
-
-  it('continues after a completion check warning and passes the full output forward', async () => {
-    const calls: ChainStepRequest[] = [];
-    const chain: ChainItemInput[] = [
-      { agent: 'a', task: 'first' },
-      { agent: 'b', task: 'judge {previous}' },
-    ];
-    const res = await runChainWorkflow({
-      chain,
-      signal: undefined,
-      onUpdate: undefined,
-      makeDetails,
-      runStep: async (req) => {
-        calls.push(req);
-        if (req.agent === 'a') {
-          return makeCompletionCheckFailure(req.agent, 'complete report', req.step);
-        }
-        return makeAssistantResult(req.agent, 'accepted', req.step);
-      },
-    });
-
-    expect(res.isError).toBeUndefined();
-    expect(calls).toHaveLength(2);
-    expect(calls[1].task).toContain('Completion check failed: missing ## Required');
-    expect(calls[1].task).toContain('Unchecked agent output:\ncomplete report');
-    expect(res.details.results[0]).toMatchObject({ exitCode: 0, status: 'completed' });
-    expect(res.details.results[0].stopReason).toBeUndefined();
   });
 
   it('stops the chain when a step fails and does not run later steps', async () => {
@@ -569,49 +532,6 @@ describe('runChainWorkflow', () => {
     expect(tasks).toContain('Process a');
     expect(tasks).toContain('Process b');
     expect(res.details.outputs!.results.structured).toHaveLength(2);
-  });
-
-  it('continues fanout when workers only fail completion checks', async () => {
-    const chain: ChainItemInput[] = [
-      {
-        agent: 'explore',
-        task: 'find items',
-        name: 'context',
-        outputSchema: {
-          type: 'object',
-          required: ['items'],
-          properties: { items: { type: 'array', items: { type: 'string' } } },
-        },
-      },
-      {
-        expand: { from: { output: 'context', path: '/items' } },
-        parallel: { agent: 'worker', task: 'Process {item}' },
-        collect: { name: 'results' },
-      },
-    ];
-    const res = await runChainWorkflow({
-      chain,
-      signal: undefined,
-      onUpdate: undefined,
-      makeDetails,
-      runStep: async (req) => {
-        if (req.agent === 'explore') {
-          return makeAssistantResult(req.agent, '{"items":["a","b"]}', req.step);
-        }
-        return makeCompletionCheckFailure(req.agent, `done ${req.task}`, req.step);
-      },
-    });
-
-    expect(res.isError).toBeUndefined();
-    expect(res.details.outputs!.results.structured).toEqual([
-      'Completion check failed: missing ## Required\n\nUnchecked agent output:\ndone Process a',
-      'Completion check failed: missing ## Required\n\nUnchecked agent output:\ndone Process b',
-    ]);
-    expect(res.details.chain!.steps[1]).toMatchObject({
-      status: 'completed',
-      completedCount: 2,
-      failedCount: 0,
-    });
   });
 
   it('stops fanout when JSON Pointer does not resolve to an array', async () => {
