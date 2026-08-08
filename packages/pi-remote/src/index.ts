@@ -590,7 +590,6 @@ export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDepende
       'ssh',
       ctx.ui.theme.fg('accent', `SSH: ${connection.remote}:${resolvedSsh.remoteCwd}`)
     );
-    ctx.ui.notify(`SSH mode: ${connection.remote}:${resolvedSsh.remoteCwd}`, 'info');
   });
 
   pi.on('session_shutdown', async () => {
