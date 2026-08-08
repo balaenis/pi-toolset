@@ -2,10 +2,25 @@
 description: Full implementation workflow - explore analyzes, planner plans, general implements, then review until clean
 ---
 
-Use the `agent` tool with the chain parameter to execute this workflow:
+Run a full implementation workflow as a single `agent` chain. The work is complete only when the requested change is implemented, validated, and reported.
 
-1. Use the "explore" agent (named `context`) to analyze and find all code and information relevant to: $@
-2. Use the "planner" agent (named `plan`) to create an implementation plan for "$@" using `{outputs.context}`.
-3. Use the "general" agent (named `implement`) to execute `{outputs.plan}`. End with `## Completed`, `## Files Changed`, and `## Validation` (commands run + pass/fail, or `Not run: <reason>`).
+Before running the chain, send a one-line update stating the target.
 
-Execute as a chain. Name each step so later steps can reference earlier outputs via `{outputs.<name>}`. The general agent's final output **must** include `## Completed`, `## Files Changed`, and `## Validation`.
+Run the chain with these steps, each later step referencing earlier output via `{outputs.<name>}`:
+
+1. `context` (explore): Analyze and find all code and information relevant to $@.
+2. `plan` (planner): Create an implementation plan for "$@" from `{outputs.context}`.
+3. `implement` (general): Before applying, confirm `{outputs.plan}` actually contains an implementation plan. If it is empty, missing, or carries no concrete steps, stop and report the problem instead of proceeding. Otherwise execute `{outputs.plan}`.
+
+Loop: run the review workflow on the result until it reports `Clean`.
+
+The `implement` output must include:
+
+- `## Completed`: what was done
+- `## Files Changed`: files touched
+- `## Validation`: commands run with pass/fail, or `Not run: <reason>`
+
+Stop rules:
+
+- Report a blocker, not completion, when a plan step cannot be applied safely or when validation fails without a stated reason.
+- If a plan step depends on missing context or permissions, stop and report what is missing instead of guessing.
