@@ -19,6 +19,11 @@
       "component": "pi-agents",
       "release-type": "node",
       "extra-files": ["src/shared/version.ts"]
+    },
+    "packages/pi-remote": {
+      "component": "pi-remote",
+      "release-type": "node",
+      "extra-files": ["src/version.ts"]
     }
   }
 }

@@ -9,8 +9,9 @@ A monorepo of [Pi](https://github.com/earendil-works/pi) extension packages. Eac
 | [`pi-lsp`](packages/pi-lsp/)       | LSP support for Pi (language-server lifecycle, diagnostics, tools, statusline) |
 | [`pi-format`](packages/pi-format/) | Format files via tool, `/format` command, and automatic post-write/edit hook   |
 | [`pi-agents`](packages/pi-agents/) | Delegate tasks to specialized subagents with isolated context windows          |
+| [`pi-remote`](packages/pi-remote/) | Run file/bash tools on a remote machine via SSH (`--ssh user@host`)            |
 
-The packages target the npm names `@balaenis/pi-lsp`, `@balaenis/pi-format`, and `@balaenis/pi-agents`, but are not published to a registry yet. Until they are, load them from a local build with `pi -e` (see each package's README).
+The packages target the npm names `@balaenis/pi-lsp`, `@balaenis/pi-format`, `@balaenis/pi-agents`, and `@balaenis/pi-remote`. Until they are published, load them from a local build with `pi -e` (see each package's README).
 
 See each package's `README.md` and `docs/` for usage and configuration.
 
