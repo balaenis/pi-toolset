@@ -2,12 +2,20 @@
 description: Closed review loop - reviewer reviews, planner plans fixes, general applies, re-review until clean
 ---
 
-Use the `agent` tool with the chain parameter to execute this workflow:
+Run a closed review loop as a single `agent` chain. The loop is complete only when both `## Standards` and `## Spec` axes report `- None.`
 
-1. Use the "reviewer" agent (named `review`) to review $@. It reports under `## Standards` and `## Spec`, each axis verbatim from its sub-agent, writing `- None.` under an axis with no findings, and ends with a one-line summary: per-axis finding counts and each axis's worst issue. If both axes read exactly `- None.`, the work is clean: stop and report `Clean`.
-2. Before each new fix round, confirm the staged baseline: run `git status` and `git diff --cached --stat`, and verify the staged changes match the intended fix scope. Do not start a round against an unconfirmed or drift-prone baseline; if the staged set does not match the plan, stop and report it.
-3. Otherwise, use the "planner" agent (named `fix`) to build a fix plan from `{outputs.review}`. Treat an axis of exactly `- None.` as "no findings" and leave it out of the plan. Every remaining finding must be addressed: fixed, or explicitly justified as out of scope.
-4. Use the "general" agent (named `implement`) to apply `{outputs.fix}`. End with `## Completed`, `## Files Changed`, and `## Validation`. If a fix cannot be applied safely, stop and report the blocker instead of pretending completion.
-5. Re-review the result: run the chain again with the fixed output as the new input, until step 1 clears both axes. Repeat the step 2 baseline confirmation at the start of each round.
+Before running the chain, send a one-line update stating the review target.
 
-Execute as a chain. Name each step so later steps can reference earlier outputs via `{outputs.<name>}`.
+Run the chain with these steps, each later step referencing earlier output via `{outputs.<name>}`:
+
+1. `review` (reviewer): Review $@. Report under `## Standards` and `## Spec`, each axis verbatim from its sub-agent, writing `- None.` under an axis with no findings. End with one line: per-axis finding counts and each axis's worst issue. If both axes read exactly `- None.`, stop and report `Clean`.
+2. `fix` (planner): Build a fix plan from `{outputs.review}`. Address every remaining finding: fix it, or explicitly justify it as out of scope.
+3. `implement` (general): Before applying, confirm `{outputs.fix}` actually contains a fix plan. If it is empty, missing, or carries no concrete fixes, stop and report the problem instead of proceeding. Otherwise confirm the staged baseline before each new fix round and apply.
+
+Loop: re-run the chain with the fixed output as the new input until step 1 clears both axes.
+
+Stop rules:
+
+- Report `Clean` the moment a review clears both axes.
+- Report a blocker, never fake completion, when a fix cannot be applied safely.
+- If a re-review round produces no new fix and no new blocker, stop and report the outstanding findings and the blocker map.
