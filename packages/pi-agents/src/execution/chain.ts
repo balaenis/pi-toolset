@@ -358,6 +358,17 @@ function previousTextFromResult(result: SingleResult): string {
   return getResultFinalOutput(result);
 }
 
+function softenCompletionCheckFailure(result: SingleResult): void {
+  if (result.stopReason !== 'completion_check') return;
+  const warning = result.errorMessage ?? 'Completion check failed';
+  const output = getResultFinalOutput(result) || '(no output)';
+  result.finalOutput = `${warning}\n\nUnchecked agent output:\n${output}`;
+  result.exitCode = 0;
+  result.status = 'completed';
+  delete result.stopReason;
+  delete result.errorMessage;
+}
+
 /**
  * Build a complete restored logical-step array from request topology.
  * Overlays trustworthy presentation state by step number (never by unchecked
@@ -999,6 +1010,7 @@ async function runSequentialStep(
   let terminalPostprocessed = false;
   const postprocessTerminal = (result: SingleResult): void => {
     terminalPostprocessed = true;
+    softenCompletionCheckFailure(result);
     applyStructuredOutputValidation(result, outputSchema, stepNumber);
     if (!result.status || result.status === 'running') applyTerminalStatus(result);
     result.step = stepNumber;
@@ -1435,6 +1447,7 @@ async function runFanoutStep(
     let invoked = false;
     const postprocessTerminal = (result: SingleResult): void => {
       invoked = true;
+      softenCompletionCheckFailure(result);
       applyStructuredOutputValidation(result, outputSchema, stepNumber);
       if (!result.status || result.status === 'running') applyTerminalStatus(result);
       result.step = stepNumber;

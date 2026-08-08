@@ -15,7 +15,7 @@ Delegate tasks to specialized subagents from [Pi](https://github.com/earendil-wo
 - **Agent config editor (TUI)** - `/agent config [name]` edits session-scoped overrides with layer provenance; `Ctrl+S`/`Ctrl+P` save to user/project, `Ctrl+D` unsets the selected field
 - **Interactive agent view (TUI)** - `/agent view` or `Ctrl+Alt+Down` opens a navigator for current-session Pi and Grok ACP subagents; Pi supports steer/follow-up, Grok ACP supports idle prompt and cancel
 - **Worktree isolation + setup hook** - run agents in a throw-away git worktree with an optional shell `worktreeSetupHook` and per-run diff metadata
-- **Completion check** - require final-message headings via frontmatter
+- **Completion check** - require final-message headings via frontmatter; chain workflows forward failures as warnings instead of stopping
 - **Compact live rendering** - collapsed view is a status summary (glyph, agent, truncated task or a short `title`, usage, at most one latest activity); Ctrl+O expands full task/transcript/final output
 - **Short collapse titles** - optional `title` (aim for ~30 characters) on single, parallel tasks, chain steps, and fanout steps replaces the task preview in the collapsed summary; longer values are accepted and clamped when rendered
 - **Parallel & Chain progress** - ordered per-task summaries; Chain fanout is one logical step with real item counts and collect metadata
