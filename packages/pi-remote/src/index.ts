@@ -688,10 +688,13 @@ export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDepende
     // Non-throwing accessor: on failure keep the local prompt (tools will error loudly).
     const ssh = !sshFailure ? resolvedSsh : null;
     if (ssh) {
-      const line = `Current working directory: ${ssh.remoteCwd} (via SSH: ${ssh.connection.remote})`;
-      // Replace whatever cwd line the prompt carries (format-tolerant); append if absent.
-      const modified = event.systemPrompt.replace(/Current working directory: .*/, line);
-      return { systemPrompt: modified.includes(line) ? modified : `${modified}\n${line}` };
+      const append = `
+[SSH Mode]
+Connected to a remote host \`${ssh.connection.remote}\` over SSH.
+Unless noted otherwise, file paths and commands refer to the remote host.
+Remote working directory: \`${ssh.remoteCwd}\`
+`;
+      return { systemPrompt: `${event.systemPrompt}\n\n${append}` };
     }
   });
 
