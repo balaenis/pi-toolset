@@ -1,7 +1,6 @@
 // ABOUTME: Pi extension that delegates read/write/edit/bash/grep/find/ls tools to a remote machine via SSH.
 // ABOUTME: Migrated from the official Pi example (examples/extensions/ssh.ts); --ssh user@host[:/path] runs all file/bash ops on the remote.
 
-import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import type {
@@ -29,11 +28,18 @@ import {
   truncateLine,
   type WriteOperations,
 } from '@earendil-works/pi-coding-agent';
+import { createSshConnection, type SshChildProcess, type SshConnection } from './ssh.ts';
 import {
   createRemoteAtAutocompleteFactory,
   type ListRemoteFiles,
   type RemoteFileEntry,
 } from './remote-autocomplete.ts';
+
+interface RemoteOperationContext {
+  connection: SshConnection;
+  remoteCwd: string;
+  localCwd: string;
+}
 
 const GREP_DEFAULT_LIMIT = 100;
 // Cap for remote fd listings; pure layer re-scores and takes the top REMOTE_AT_MAX_RESULTS.
@@ -55,9 +61,9 @@ function buildFdPathQuery(query: string): string {
   return normalized.endsWith('/') ? `${joined}${separatorPattern}` : joined;
 }
 
-function sshExec(remote: string, command: string): Promise<Buffer> {
+function sshExec(connection: SshConnection, command: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = spawn('ssh', [remote, command], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = connection.spawn(command);
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
     child.stdout.on('data', (data) => chunks.push(data));
@@ -75,14 +81,14 @@ function sshExec(remote: string, command: string): Promise<Buffer> {
 
 // Streams stdout lines from a remote command; resolves with exit code and stderr (no zero-exit requirement).
 function sshExecStream(
-  remote: string,
+  connection: SshConnection,
   command: string,
   onLine: (line: string) => void,
   signal: AbortSignal | undefined,
-  onSpawn?: (child: ChildProcess) => void
+  onSpawn?: (child: SshChildProcess) => void
 ): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn('ssh', [remote, command], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = connection.spawn(command);
     let stderr = '';
     const rl = createInterface({ input: child.stdout });
     rl.on('line', onLine);
@@ -102,14 +108,18 @@ function sshExecStream(
   });
 }
 
-function createRemoteReadOps(remote: string, remoteCwd: string, localCwd: string): ReadOperations {
+function createRemoteReadOps({
+  connection,
+  remoteCwd,
+  localCwd,
+}: RemoteOperationContext): ReadOperations {
   const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
   return {
-    readFile: (p) => sshExec(remote, `cat ${JSON.stringify(toRemote(p))}`),
-    access: (p) => sshExec(remote, `test -r ${JSON.stringify(toRemote(p))}`).then(() => {}),
+    readFile: (p) => sshExec(connection, `cat ${JSON.stringify(toRemote(p))}`),
+    access: (p) => sshExec(connection, `test -r ${JSON.stringify(toRemote(p))}`).then(() => {}),
     detectImageMimeType: async (p) => {
       try {
-        const r = await sshExec(remote, `file --mime-type -b ${JSON.stringify(toRemote(p))}`);
+        const r = await sshExec(connection, `file --mime-type -b ${JSON.stringify(toRemote(p))}`);
         const m = r.toString().trim();
         return ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(m) ? m : null;
       } catch {
@@ -119,37 +129,41 @@ function createRemoteReadOps(remote: string, remoteCwd: string, localCwd: string
   };
 }
 
-function createRemoteWriteOps(
-  remote: string,
-  remoteCwd: string,
-  localCwd: string
-): WriteOperations {
+function createRemoteWriteOps({
+  connection,
+  remoteCwd,
+  localCwd,
+}: RemoteOperationContext): WriteOperations {
   const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
   return {
     writeFile: async (p, content) => {
       const b64 = Buffer.from(content).toString('base64');
       await sshExec(
-        remote,
+        connection,
         `echo ${JSON.stringify(b64)} | base64 -d > ${JSON.stringify(toRemote(p))}`
       );
     },
-    mkdir: (dir) => sshExec(remote, `mkdir -p ${JSON.stringify(toRemote(dir))}`).then(() => {}),
+    mkdir: (dir) => sshExec(connection, `mkdir -p ${JSON.stringify(toRemote(dir))}`).then(() => {}),
   };
 }
 
-function createRemoteEditOps(remote: string, remoteCwd: string, localCwd: string): EditOperations {
-  const r = createRemoteReadOps(remote, remoteCwd, localCwd);
-  const w = createRemoteWriteOps(remote, remoteCwd, localCwd);
+function createRemoteEditOps(ctx: RemoteOperationContext): EditOperations {
+  const r = createRemoteReadOps(ctx);
+  const w = createRemoteWriteOps(ctx);
   return { readFile: r.readFile, access: r.access, writeFile: w.writeFile };
 }
 
-function createRemoteBashOps(remote: string, remoteCwd: string, localCwd: string): BashOperations {
+function createRemoteBashOps({
+  connection,
+  remoteCwd,
+  localCwd,
+}: RemoteOperationContext): BashOperations {
   const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
   return {
     exec: (command, cwd, { onData, signal, timeout }) =>
       new Promise((resolve, reject) => {
         const cmd = `cd ${JSON.stringify(toRemote(cwd))} && ${command}`;
-        const child = spawn('ssh', [remote, cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = connection.spawn(cmd);
         let timedOut = false;
         const timer = timeout
           ? setTimeout(() => {
@@ -177,7 +191,7 @@ function createRemoteBashOps(remote: string, remoteCwd: string, localCwd: string
 }
 
 // The built-in grep tool spawns rg locally, so SSH mode needs its own implementation that runs rg on the remote.
-function createRemoteGrepExec(remote: string, remoteCwd: string, localCwd: string) {
+function createRemoteGrepExec({ connection, remoteCwd, localCwd }: RemoteOperationContext) {
   const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
   return async (
     params: GrepToolInput,
@@ -208,7 +222,7 @@ function createRemoteGrepExec(remote: string, remoteCwd: string, localCwd: strin
     let kill: (() => void) | undefined;
 
     const { code, stderr } = await sshExecStream(
-      remote,
+      connection,
       `rg ${args.map((a) => JSON.stringify(a)).join(' ')}`,
       (line) => {
         if (!line.trim() || matchCount >= effectiveLimit) return;
@@ -284,18 +298,22 @@ function createRemoteGrepExec(remote: string, remoteCwd: string, localCwd: strin
   };
 }
 
-function createRemoteLsOps(remote: string, remoteCwd: string, localCwd: string): LsOperations {
+function createRemoteLsOps({
+  connection,
+  remoteCwd,
+  localCwd,
+}: RemoteOperationContext): LsOperations {
   const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
   return {
     exists: (p) =>
-      sshExec(remote, `test -e ${JSON.stringify(toRemote(p))}`).then(
+      sshExec(connection, `test -e ${JSON.stringify(toRemote(p))}`).then(
         () => true,
         () => false
       ),
     stat: async (p) => {
       const kind = (
         await sshExec(
-          remote,
+          connection,
           `if test -d ${JSON.stringify(toRemote(p))}; then echo dir; elif test -e ${JSON.stringify(toRemote(p))}; then echo file; else echo missing; fi`
         )
       )
@@ -307,7 +325,7 @@ function createRemoteLsOps(remote: string, remoteCwd: string, localCwd: string):
     },
     // -A includes dotfiles but omits . and ..; the tool sorts entries and stats each for the / suffix.
     readdir: (p) =>
-      sshExec(remote, `ls -1A ${JSON.stringify(toRemote(p))}`).then((r) =>
+      sshExec(connection, `ls -1A ${JSON.stringify(toRemote(p))}`).then((r) =>
         r
           .toString()
           .split('\n')
@@ -319,7 +337,7 @@ function createRemoteLsOps(remote: string, remoteCwd: string, localCwd: string):
 // Lists remote files and directories via fd (same shape as local pi-tui @ completion).
 // Two typed passes in one SSH session so directories are first-class (not inferred from files).
 // Errors and aborts surface as an empty list, never a throw.
-function createSshRemoteFileLister(remote: string): ListRemoteFiles {
+function createSshRemoteFileLister(connection: SshConnection): ListRemoteFiles {
   return async ({ searchRoot, query, signal }) => {
     const common = [
       '--base-directory',
@@ -350,7 +368,7 @@ function createSshRemoteFileLister(remote: string): ListRemoteFiles {
       `fd --type f ${q} | sed 's|^\\./||; s|^|0 |'`;
     const entries: RemoteFileEntry[] = [];
     const { code } = await sshExecStream(
-      remote,
+      connection,
       `bash -c ${JSON.stringify(script)}`,
       (line) => {
         if (line.length < 3 || (line[0] !== '0' && line[0] !== '1') || line[1] !== ' ') return;
@@ -369,11 +387,15 @@ function createSshRemoteFileLister(remote: string): ListRemoteFiles {
   };
 }
 
-function createRemoteFindOps(remote: string, remoteCwd: string, localCwd: string): FindOperations {
+function createRemoteFindOps({
+  connection,
+  remoteCwd,
+  localCwd,
+}: RemoteOperationContext): FindOperations {
   const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
   return {
     exists: (p) =>
-      sshExec(remote, `test -e ${JSON.stringify(toRemote(p))}`).then(
+      sshExec(connection, `test -e ${JSON.stringify(toRemote(p))}`).then(
         () => true,
         () => false
       ),
@@ -389,7 +411,7 @@ function createRemoteFindOps(remote: string, remoteCwd: string, localCwd: string
         `rg --files --hidden --color=never ${globs} -- . | head -n ${limit}`;
       const lines: string[] = [];
       const { code, stderr } = await sshExecStream(
-        remote,
+        connection,
         `bash -c ${JSON.stringify(script)}`,
         (line) => lines.push(line),
         undefined
@@ -402,7 +424,11 @@ function createRemoteFindOps(remote: string, remoteCwd: string, localCwd: string
   };
 }
 
-export default function (pi: ExtensionAPI) {
+export interface PiRemoteDependencies {
+  createSshConnection: typeof createSshConnection;
+}
+
+export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDependencies) {
   pi.registerFlag('ssh', {
     description: 'SSH remote: user@host or user@host:/path',
     type: 'string',
@@ -418,7 +444,7 @@ export default function (pi: ExtensionAPI) {
   const localLs = createLsTool(localCwd);
 
   // Resolved lazily on session_start (CLI flags not available during factory)
-  let resolvedSsh: { remote: string; remoteCwd: string } | null = null;
+  let resolvedSsh: RemoteOperationContext | null = null;
   let sshFailure: string | null = null;
 
   // Throws when --ssh was given but the remote could not be reached, so tools
@@ -434,7 +460,7 @@ export default function (pi: ExtensionAPI) {
       const ssh = getSsh();
       if (ssh) {
         const tool = createReadTool(localCwd, {
-          operations: createRemoteReadOps(ssh.remote, ssh.remoteCwd, localCwd),
+          operations: createRemoteReadOps(ssh),
         });
         return tool.execute(id, params, signal, onUpdate);
       }
@@ -448,7 +474,7 @@ export default function (pi: ExtensionAPI) {
       const ssh = getSsh();
       if (ssh) {
         const tool = createWriteTool(localCwd, {
-          operations: createRemoteWriteOps(ssh.remote, ssh.remoteCwd, localCwd),
+          operations: createRemoteWriteOps(ssh),
         });
         return tool.execute(id, params, signal, onUpdate);
       }
@@ -462,7 +488,7 @@ export default function (pi: ExtensionAPI) {
       const ssh = getSsh();
       if (ssh) {
         const tool = createEditTool(localCwd, {
-          operations: createRemoteEditOps(ssh.remote, ssh.remoteCwd, localCwd),
+          operations: createRemoteEditOps(ssh),
         });
         return tool.execute(id, params, signal, onUpdate);
       }
@@ -476,7 +502,7 @@ export default function (pi: ExtensionAPI) {
       const ssh = getSsh();
       if (ssh) {
         const tool = createBashTool(localCwd, {
-          operations: createRemoteBashOps(ssh.remote, ssh.remoteCwd, localCwd),
+          operations: createRemoteBashOps(ssh),
         });
         return tool.execute(id, params, signal, onUpdate);
       }
@@ -489,7 +515,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate) {
       const ssh = getSsh();
       if (ssh) {
-        return createRemoteGrepExec(ssh.remote, ssh.remoteCwd, localCwd)(params, signal);
+        return createRemoteGrepExec(ssh)(params, signal);
       }
       return localGrep.execute(id, params, signal, onUpdate);
     },
@@ -501,7 +527,7 @@ export default function (pi: ExtensionAPI) {
       const ssh = getSsh();
       if (ssh) {
         const tool = createFindTool(localCwd, {
-          operations: createRemoteFindOps(ssh.remote, ssh.remoteCwd, localCwd),
+          operations: createRemoteFindOps(ssh),
         });
         return tool.execute(id, params, signal, onUpdate);
       }
@@ -515,7 +541,7 @@ export default function (pi: ExtensionAPI) {
       const ssh = getSsh();
       if (ssh) {
         const tool = createLsTool(localCwd, {
-          operations: createRemoteLsOps(ssh.remote, ssh.remoteCwd, localCwd),
+          operations: createRemoteLsOps(ssh),
         });
         return tool.execute(id, params, signal, onUpdate);
       }
@@ -526,37 +552,53 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
     // Resolve SSH config now that CLI flags are available
     const arg = pi.getFlag('ssh') as string | undefined;
-    if (arg) {
-      const [remote, path] = arg.split(':');
+    if (!arg) return;
+    const [remote, path] = arg.split(':');
+    let connection: SshConnection | undefined;
+    try {
+      connection = await dependencies.createSshConnection(remote);
       let remoteCwd: string;
       if (path) {
         remoteCwd = path;
       } else {
         // No path given, evaluate pwd on remote
-        try {
-          remoteCwd = (await sshExec(remote, 'pwd')).toString().trim();
-        } catch (e) {
-          // Surface the failure instead of silently falling back to local tools
-          const msg = e instanceof Error ? e.message : String(e);
-          sshFailure = msg;
-          ctx.ui.notify(`SSH mode failed: cannot reach ${remote}: ${msg}`, 'error');
-          ctx.ui.setStatus('ssh', ctx.ui.theme.fg('error', `SSH failed: ${remote}`));
-          return;
-        }
+        remoteCwd = (await sshExec(connection, 'pwd')).toString().trim();
       }
-      resolvedSsh = { remote, remoteCwd };
-      ctx.ui.addAutocompleteProvider(
-        createRemoteAtAutocompleteFactory({
-          getSsh: () => (!sshFailure ? resolvedSsh : null),
-          localCwd,
-          listRemoteFiles: createSshRemoteFileLister(resolvedSsh.remote),
-        })
-      );
-      ctx.ui.setStatus(
-        'ssh',
-        ctx.ui.theme.fg('accent', `SSH: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`)
-      );
-      ctx.ui.notify(`SSH mode: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`, 'info');
+      resolvedSsh = { connection, remoteCwd, localCwd };
+    } catch (e) {
+      // Surface the failure instead of silently falling back to local tools
+      resolvedSsh = null;
+      const msg = e instanceof Error ? e.message : String(e);
+      sshFailure = msg;
+      ctx.ui.notify(`SSH mode failed: cannot reach ${remote}: ${msg}`, 'error');
+      ctx.ui.setStatus('ssh', ctx.ui.theme.fg('error', `SSH failed: ${remote}`));
+      try {
+        await connection?.close();
+      } catch {
+        // Cleanup is best-effort on failed startup; keep the original SSH failure.
+      }
+      return;
+    }
+    ctx.ui.addAutocompleteProvider(
+      createRemoteAtAutocompleteFactory({
+        getSsh: () => (!sshFailure ? resolvedSsh : null),
+        localCwd,
+        listRemoteFiles: createSshRemoteFileLister(connection),
+      })
+    );
+    ctx.ui.setStatus(
+      'ssh',
+      ctx.ui.theme.fg('accent', `SSH: ${connection.remote}:${resolvedSsh.remoteCwd}`)
+    );
+    ctx.ui.notify(`SSH mode: ${connection.remote}:${resolvedSsh.remoteCwd}`, 'info');
+  });
+
+  pi.on('session_shutdown', async () => {
+    const connection = resolvedSsh?.connection;
+    resolvedSsh = null;
+    sshFailure = null;
+    if (connection) {
+      await connection.close();
     }
   });
 
@@ -564,7 +606,7 @@ export default function (pi: ExtensionAPI) {
   pi.on('user_bash', () => {
     const ssh = getSsh();
     if (!ssh) return; // No SSH, use local execution
-    return { operations: createRemoteBashOps(ssh.remote, ssh.remoteCwd, localCwd) };
+    return { operations: createRemoteBashOps(ssh) };
   });
 
   // Replace local cwd with remote cwd in system prompt
@@ -572,10 +614,14 @@ export default function (pi: ExtensionAPI) {
     // Non-throwing accessor: on failure keep the local prompt (tools will error loudly).
     const ssh = !sshFailure ? resolvedSsh : null;
     if (ssh) {
-      const line = `Current working directory: ${ssh.remoteCwd} (via SSH: ${ssh.remote})`;
+      const line = `Current working directory: ${ssh.remoteCwd} (via SSH: ${ssh.connection.remote})`;
       // Replace whatever cwd line the prompt carries (format-tolerant); append if absent.
       const modified = event.systemPrompt.replace(/Current working directory: .*/, line);
       return { systemPrompt: modified.includes(line) ? modified : `${modified}\n${line}` };
     }
   });
+}
+
+export default function (pi: ExtensionAPI) {
+  return registerPiRemote(pi, { createSshConnection });
 }
