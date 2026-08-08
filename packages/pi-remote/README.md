@@ -36,6 +36,14 @@ Without a path, the remote working directory is resolved via `pwd` over SSH.
 - The system prompt's `Current working directory:` line is rewritten to the remote cwd (format-tolerant: any cwd line is replaced, or one is appended).
 - The TUI status bar shows the active SSH target via `ctx.ui.setStatus`.
 
+## Connection multiplexing
+
+SSH connections are reused automatically; no new flag is required. Each session owns one OpenSSH multiplexed connection created with `ControlMaster=auto` and a fixed `ControlPersist=10m`. The control socket is stored in a process- and session-unique private directory under the XDG runtime directory (when safe) or a private temporary subdirectory, so parallel Pi sessions never collide.
+
+- `session_shutdown` sends a best-effort `ssh -O exit` to the master. The finite 10-minute persist bounds a master left by a hard Pi crash; such a crash can also leave an inert private directory for normal runtime/temp cleanup.
+- Explicit-path startup stays lazy. The first tool call pays the connection handshake; pathless startup pays it during remote `pwd` resolution.
+- Abort and timeout still kill the current SSH client/channel. The multiplexing master remains available for later commands.
+
 ## Remote `@` autocomplete
 
 When SSH mode is active, the interactive editor's `@` completion lists remote files under the remote working directory instead of local project files. Selected items insert `@path` text only (no file-body injection), matching local Pi behavior — the model can use the `read` tool for contents.
@@ -46,7 +54,7 @@ When SSH mode is active, the interactive editor's `@` completion lists remote fi
 - Errors, timeouts, and empty directories return an empty popup — never an error into the editor.
 - Scope v1: only unquoted `@` tokens are remote. Slash commands (`/…`), bare path Tab completion, and quoted `@"…` tokens keep the local provider.
 - The provider is registered only when SSH resolves successfully in `session_start`; without `--ssh` (or on failure) local `@` completion is untouched.
-- Latency note: each keystroke on `@` triggers one SSH round-trip (two `fd` passes: dirs then files).
+- Latency note: each keystroke on `@` still starts one remote listing command (two `fd` passes: dirs then files), but after the first command it reuses the authenticated multiplexed transport instead of performing a new SSH handshake.
 
 ## Install
 
