@@ -40,7 +40,7 @@ Anything in the repo that documents how code should be written — `CODING_STAND
 
 ### 4. Spawn both sub-agents
 
-One `agent` call, two `tasks` in a single message; wait for both before aggregating:
+One `agent` call, two `tasks` in a single message; wait for both before aggregating (don't run in background):
 
 - **`std-reviewer`** — the diff command and commit list, plus the standards-source files from step 3.
 - **`spec-reviewer`** — the diff command and commit list, plus the spec's path or fetched contents.
