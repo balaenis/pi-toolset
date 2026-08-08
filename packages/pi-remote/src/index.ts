@@ -473,100 +473,70 @@ export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDepende
     return resolvedSsh;
   };
 
-  pi.registerTool({
-    ...localRead,
-    async execute(id, params, signal, onUpdate) {
-      const ssh = getSsh();
-      if (ssh) {
-        const tool = createReadTool(localCwd, {
+  // Registers the SSH-backed tools. Only called after the remote has been reached,
+  // so the ssh context is guaranteed non-null and no local fallback is needed.
+  const registerSshTools = (ssh: RemoteOperationContext) => {
+    pi.registerTool({
+      ...localRead,
+      async execute(id, params, signal, onUpdate) {
+        return createReadTool(localCwd, {
           operations: createRemoteReadOps(ssh),
-        });
-        return tool.execute(id, params, signal, onUpdate);
-      }
-      return localRead.execute(id, params, signal, onUpdate);
-    },
-  });
+        }).execute(id, params, signal, onUpdate);
+      },
+    });
 
-  pi.registerTool({
-    ...localWrite,
-    async execute(id, params, signal, onUpdate) {
-      const ssh = getSsh();
-      if (ssh) {
-        const tool = createWriteTool(localCwd, {
+    pi.registerTool({
+      ...localWrite,
+      async execute(id, params, signal, onUpdate) {
+        return createWriteTool(localCwd, {
           operations: createRemoteWriteOps(ssh),
-        });
-        return tool.execute(id, params, signal, onUpdate);
-      }
-      return localWrite.execute(id, params, signal, onUpdate);
-    },
-  });
+        }).execute(id, params, signal, onUpdate);
+      },
+    });
 
-  pi.registerTool({
-    ...localEdit,
-    async execute(id, params, signal, onUpdate) {
-      const ssh = getSsh();
-      if (ssh) {
-        const tool = createEditTool(localCwd, {
+    pi.registerTool({
+      ...localEdit,
+      async execute(id, params, signal, onUpdate) {
+        return createEditTool(localCwd, {
           operations: createRemoteEditOps(ssh),
-        });
-        return tool.execute(id, params, signal, onUpdate);
-      }
-      return localEdit.execute(id, params, signal, onUpdate);
-    },
-  });
+        }).execute(id, params, signal, onUpdate);
+      },
+    });
 
-  pi.registerTool({
-    ...localBash,
-    async execute(id, params, signal, onUpdate) {
-      const ssh = getSsh();
-      if (ssh) {
-        const tool = createBashTool(localCwd, {
+    pi.registerTool({
+      ...localBash,
+      async execute(id, params, signal, onUpdate) {
+        return createBashTool(localCwd, {
           operations: createRemoteBashOps(ssh),
-        });
-        return tool.execute(id, params, signal, onUpdate);
-      }
-      return localBash.execute(id, params, signal, onUpdate);
-    },
-  });
+        }).execute(id, params, signal, onUpdate);
+      },
+    });
 
-  pi.registerTool({
-    ...localGrep,
-    async execute(id, params, signal, onUpdate) {
-      const ssh = getSsh();
-      if (ssh) {
+    pi.registerTool({
+      ...localGrep,
+      async execute(_id, params, signal, _onUpdate) {
         return createRemoteGrepExec(ssh)(params, signal);
-      }
-      return localGrep.execute(id, params, signal, onUpdate);
-    },
-  });
+      },
+    });
 
-  pi.registerTool({
-    ...localFind,
-    async execute(id, params, signal, onUpdate) {
-      const ssh = getSsh();
-      if (ssh) {
-        const tool = createFindTool(localCwd, {
+    pi.registerTool({
+      ...localFind,
+      async execute(id, params, signal, onUpdate) {
+        return createFindTool(localCwd, {
           operations: createRemoteFindOps(ssh),
-        });
-        return tool.execute(id, params, signal, onUpdate);
-      }
-      return localFind.execute(id, params, signal, onUpdate);
-    },
-  });
+        }).execute(id, params, signal, onUpdate);
+      },
+    });
 
-  pi.registerTool({
-    ...localLs,
-    async execute(id, params, signal, onUpdate) {
-      const ssh = getSsh();
-      if (ssh) {
-        const tool = createLsTool(localCwd, {
+    pi.registerTool({
+      ...localLs,
+      async execute(id, params, signal, onUpdate) {
+        return createLsTool(localCwd, {
           operations: createRemoteLsOps(ssh),
-        });
-        return tool.execute(id, params, signal, onUpdate);
-      }
-      return localLs.execute(id, params, signal, onUpdate);
-    },
-  });
+        }).execute(id, params, signal, onUpdate);
+      },
+    });
+  };
 
   pi.on('session_start', async (_event, ctx) => {
     // Resolve SSH config now that CLI flags are available
@@ -583,7 +553,9 @@ export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDepende
         // No path given, evaluate pwd on remote
         remoteCwd = (await sshExec(connection, 'pwd')).toString().trim();
       }
-      resolvedSsh = { connection, remoteCwd, localCwd };
+      const sshContext: RemoteOperationContext = { connection, remoteCwd, localCwd };
+      resolvedSsh = sshContext;
+      registerSshTools(sshContext);
     } catch (e) {
       // Surface the failure instead of silently falling back to local tools
       resolvedSsh = null;
