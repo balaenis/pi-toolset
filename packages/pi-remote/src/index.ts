@@ -3,9 +3,12 @@
 
 import path from 'node:path';
 import { createInterface } from 'node:readline';
+import { readFileSync } from 'node:fs';
+import os from 'node:os';
 import type {
   AgentToolResult,
   ExtensionAPI,
+  ExtensionUIContext,
   GrepToolDetails,
   GrepToolInput,
 } from '@earendil-works/pi-coding-agent';
@@ -447,6 +450,68 @@ export interface PiRemoteDependencies {
   createSshConnection: typeof createSshConnection;
 }
 
+interface ParsedTarget {
+  remote: string;
+  path: string | undefined;
+  port: number | undefined;
+}
+
+// Reads SSH host aliases from ~/.ssh/config. Skips wildcards and negated patterns so
+// every returned alias is directly usable as `ssh <alias>`.
+function readSshConfigHosts(): string[] {
+  const configPath = path.join(os.homedir(), '.ssh', 'config');
+  let content: string;
+  try {
+    content = readFileSync(configPath, 'utf8');
+  } catch {
+    return [];
+  }
+  const hosts: string[] = [];
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = line.match(/^Host\s+(.+)$/);
+    if (!match) continue;
+    const alias = match[1]!.trim().split(/\s+/)[0]!;
+    if (!alias || /[*?!]/.test(alias)) continue;
+    hosts.push(alias);
+  }
+  return [...new Set(hosts)];
+}
+
+// Parses `/ssh user@host [:/path] [-p PORT]` (also accepts -pPORT, -p=PORT, --port).
+function parseRemoteTarget(args: string): ParsedTarget | null {
+  const tokens = args.trim().split(/\s+/);
+  let port: number | undefined;
+  const hostTokens: string[] = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token === '-p' || token === '--port') {
+      const next = tokens[i + 1];
+      if (next && /^\d+$/.test(next)) {
+        port = Number(next);
+        i += 1;
+      } else {
+        return null;
+      }
+      continue;
+    }
+    const inline = token.match(/^(?:-p|--port)=?(\d+)$/);
+    if (inline) {
+      port = Number(inline[1]);
+      continue;
+    }
+    hostTokens.push(token);
+  }
+  const target = hostTokens.join('');
+  if (!target) return null;
+  const sep = target.indexOf(':');
+  const remote = sep === -1 ? target : target.slice(0, sep);
+  const sshPath = sep === -1 ? undefined : target.slice(sep + 1);
+  if (!remote) return null;
+  return { remote, path: sshPath, port };
+}
+
 export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDependencies) {
   pi.registerFlag('ssh', {
     description: 'SSH remote: user@host or user@host:/path',
@@ -538,49 +603,68 @@ export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDepende
     });
   };
 
+  let autocompleteRegistered = false;
+
+  // Connects to a remote, wires the SSH-backed tools, and updates UI. Reused by
+  // session_start (--ssh flag) and the /ssh command. On failure it keeps any working
+  // previous connection instead of leaving the session half-configured.
+  const connectSsh = async (
+    ui: ExtensionUIContext,
+    remote: string,
+    sshPath?: string,
+    port?: number
+  ): Promise<boolean> => {
+    const previous = resolvedSsh;
+    let connection: SshConnection | undefined;
+    try {
+      connection = await dependencies.createSshConnection(remote, {}, port);
+      const remoteCwd = sshPath ?? (await sshExec(connection, 'pwd')).toString().trim();
+      const sshContext: RemoteOperationContext = { connection, remoteCwd, localCwd };
+      resolvedSsh = sshContext;
+      sshFailure = null;
+      registerSshTools(sshContext);
+      if (!autocompleteRegistered) {
+        ui.addAutocompleteProvider(
+          createRemoteAtAutocompleteFactory({
+            getSsh: () => resolvedSsh,
+            localCwd,
+            listRemoteFiles: (request) => {
+              const conn = resolvedSsh?.connection;
+              return conn ? createSshRemoteFileLister(conn)(request) : Promise.resolve([]);
+            },
+          })
+        );
+        autocompleteRegistered = true;
+      }
+      ui.setStatus('ssh', ui.theme.fg('accent', `SSH: ${connection.remote}:${remoteCwd}`));
+      if (previous && previous !== sshContext) {
+        await previous.connection.close().catch(() => {});
+      }
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (previous) {
+        // Keep the previous working connection fully functional.
+        resolvedSsh = previous;
+        sshFailure = null;
+        ui.notify(`SSH connection failed: ${remote}: ${msg} (kept previous connection)`, 'error');
+      } else {
+        resolvedSsh = null;
+        sshFailure = msg;
+        ui.notify(`SSH connection failed: cannot reach ${remote}: ${msg}`, 'error');
+        ui.setStatus('ssh', ui.theme.fg('error', `SSH failed: ${remote}`));
+      }
+      await connection?.close().catch(() => {});
+      return false;
+    }
+  };
+
   pi.on('session_start', async (_event, ctx) => {
     // Resolve SSH config now that CLI flags are available
     const arg = pi.getFlag('ssh') as string | undefined;
     if (!arg) return;
-    const [remote, path] = arg.split(':');
-    let connection: SshConnection | undefined;
-    try {
-      connection = await dependencies.createSshConnection(remote);
-      let remoteCwd: string;
-      if (path) {
-        remoteCwd = path;
-      } else {
-        // No path given, evaluate pwd on remote
-        remoteCwd = (await sshExec(connection, 'pwd')).toString().trim();
-      }
-      const sshContext: RemoteOperationContext = { connection, remoteCwd, localCwd };
-      resolvedSsh = sshContext;
-      registerSshTools(sshContext);
-    } catch (e) {
-      // Surface the failure instead of silently falling back to local tools
-      resolvedSsh = null;
-      const msg = e instanceof Error ? e.message : String(e);
-      sshFailure = msg;
-      ctx.ui.notify(`SSH mode failed: cannot reach ${remote}: ${msg}`, 'error');
-      ctx.ui.setStatus('ssh', ctx.ui.theme.fg('error', `SSH failed: ${remote}`));
-      try {
-        await connection?.close();
-      } catch {
-        // Cleanup is best-effort on failed startup; keep the original SSH failure.
-      }
-      return;
-    }
-    ctx.ui.addAutocompleteProvider(
-      createRemoteAtAutocompleteFactory({
-        getSsh: () => (!sshFailure ? resolvedSsh : null),
-        localCwd,
-        listRemoteFiles: createSshRemoteFileLister(connection),
-      })
-    );
-    ctx.ui.setStatus(
-      'ssh',
-      ctx.ui.theme.fg('accent', `SSH: ${connection.remote}:${resolvedSsh.remoteCwd}`)
-    );
+    const [remote, sshPath] = arg.split(':');
+    await connectSsh(ctx.ui, remote, sshPath);
   });
 
   pi.on('session_shutdown', async () => {
@@ -609,6 +693,38 @@ export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDepende
       const modified = event.systemPrompt.replace(/Current working directory: .*/, line);
       return { systemPrompt: modified.includes(line) ? modified : `${modified}\n${line}` };
     }
+  });
+
+  // Interactive connect: no args → pick from ~/.ssh/config; otherwise parse a manual target.
+  pi.registerCommand('ssh', {
+    description:
+      'Connect to a remote via SSH. No args: pick from ~/.ssh/config. Or /ssh user@host [:/path] [-p PORT]',
+    getArgumentCompletions: (prefix: string) => {
+      const items = readSshConfigHosts().map((host) => ({ value: host, label: host }));
+      const filtered = items.filter((i) => i.value.startsWith(prefix));
+      return filtered.length > 0 ? filtered : null;
+    },
+    handler: async (args, ctx) => {
+      const trimmed = args.trim();
+      if (!trimmed) {
+        const hosts = readSshConfigHosts();
+        if (hosts.length === 0) {
+          ctx.ui.notify('No hosts in ~/.ssh/config. Use /ssh user@host [-p PORT]', 'warning');
+          return;
+        }
+        const target =
+          hosts.length === 1 ? hosts[0]! : await ctx.ui.select('Select SSH host', hosts);
+        if (!target) return;
+        await connectSsh(ctx.ui, target);
+        return;
+      }
+      const parsed = parseRemoteTarget(trimmed);
+      if (!parsed) {
+        ctx.ui.notify('Invalid target. Use /ssh user@host [:/path] [-p PORT]', 'error');
+        return;
+      }
+      await connectSsh(ctx.ui, parsed.remote, parsed.path, parsed.port);
+    },
   });
 }
 

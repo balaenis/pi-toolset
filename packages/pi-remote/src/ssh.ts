@@ -81,15 +81,22 @@ export class SshConnection {
   readonly controlPath: string;
   private readonly directory: string;
   private readonly spawnProcess: typeof spawn;
+  private readonly port: number | undefined;
   private closed = false;
   private closePromise: Promise<void> | null = null;
   private spawnedAny = false;
 
-  constructor(remote: string, controlPath: SshControlPath, spawnProcess: typeof spawn) {
+  constructor(
+    remote: string,
+    controlPath: SshControlPath,
+    spawnProcess: typeof spawn,
+    port?: number
+  ) {
     this.remote = remote;
     this.controlPath = controlPath.socketPath;
     this.directory = controlPath.directory;
     this.spawnProcess = spawnProcess;
+    this.port = port;
   }
 
   spawn(command: string): SshChildProcess {
@@ -110,7 +117,8 @@ export class SshConnection {
       '-o',
       `ConnectionAttempts=${CONNECTION_ATTEMPTS}`,
     ];
-    const child = this.spawnSsh([...opts, this.remote, command], {
+    const portOpts = this.port !== undefined ? ['-p', String(this.port)] : [];
+    const child = this.spawnSsh([...opts, ...portOpts, this.remote, command], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.spawnedAny = true;
@@ -162,11 +170,14 @@ export class SshConnection {
 
 export async function createSshConnection(
   remote: string,
-  dependencies: SshRuntimeDependencies = {}
+  dependencies: SshRuntimeDependencies = {},
+  port?: number
 ): Promise<SshConnection> {
   const spawnProcess = dependencies.spawnProcess ?? spawn;
-  const controlPath = await createSshControlPath(remote, dependencies);
-  return new SshConnection(remote, controlPath, spawnProcess);
+  // Key the control path on remote+port so same-host/different-port targets get distinct sockets.
+  const controlRemote = port !== undefined ? `${remote}#${port}` : remote;
+  const controlPath = await createSshControlPath(controlRemote, dependencies);
+  return new SshConnection(remote, controlPath, spawnProcess, port);
 }
 
 async function createPrivateControlPath(

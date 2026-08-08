@@ -56,6 +56,7 @@ class FakeSshConnection {
 function makePi(flags: Record<string, string | boolean> = {}) {
   const handlers: Record<string, ((...args: unknown[]) => unknown)[]> = {};
   const tools: unknown[] = [];
+  const commands: unknown[] = [];
   const ui = {
     notifications: [] as { message: string; kind: string }[],
     statuses: [] as { key: string; text: string }[],
@@ -77,17 +78,22 @@ function makePi(flags: Record<string, string | boolean> = {}) {
     registerTool: mock((tool: unknown) => {
       tools.push(tool);
     }),
+    registerCommand: mock((name: string, options: unknown) => {
+      commands.push({ name, ...(options as object) });
+    }),
     on: mock((event: string, handler: (...args: unknown[]) => unknown) => {
       (handlers[event] ??= []).push(handler);
     }),
   };
-  return { pi, handlers, ui, tools, ctx: { ui } };
+  return { pi, handlers, ui, tools, commands, ctx: { ui } };
 }
 
 function makeHarness(flag: string) {
-  const { pi, handlers, ui, tools, ctx } = makePi({ ssh: flag });
+  const { pi, handlers, ui, tools, commands, ctx } = makePi({ ssh: flag });
   const connections: FakeSshConnection[] = [];
-  const createSshConnection = mock((remote: string) => {
+  const connectionArgs: { remote: string; port: number | undefined }[] = [];
+  const createSshConnection = mock((remote: string, _deps?: unknown, port?: number) => {
+    connectionArgs.push({ remote, port });
     const conn = new FakeSshConnection(remote);
     connections.push(conn);
     return Promise.resolve(conn);
@@ -98,7 +104,18 @@ function makeHarness(flag: string) {
     return tool;
   };
   registerPiRemote(pi as unknown as ExtensionAPI, { createSshConnection });
-  return { pi, handlers, ui, tools, ctx, connections, createSshConnection, getTool };
+  return {
+    pi,
+    handlers,
+    ui,
+    tools,
+    commands,
+    ctx,
+    connections,
+    connectionArgs,
+    createSshConnection,
+    getTool,
+  };
 }
 
 describe('registerPiRemote session lifecycle', () => {
@@ -218,6 +235,59 @@ describe('registerPiRemote session lifecycle', () => {
   });
 });
 
+interface SshCommand {
+  name?: string;
+  handler: (args: string, ctx: unknown) => Promise<void>;
+}
+
+describe('registerPiRemote /ssh command', () => {
+  it('registers a ssh command', () => {
+    const { commands } = makeHarness('');
+    const names = commands.map((c) => (c as SshCommand).name);
+    expect(names).toContain('ssh');
+  });
+
+  it('connects with a manual target and port', async () => {
+    const { commands, ctx, connections, connectionArgs, ui } = makeHarness('');
+    const handler = commands.find((c) => (c as SshCommand).name === 'ssh') as SshCommand;
+    await handler.handler('user@host:/remote/path -p 2222', ctx);
+
+    expect(connectionArgs).toEqual([{ remote: 'user@host', port: 2222 }]);
+    expect(connections).toHaveLength(1);
+    expect(connections[0]!.remote).toBe('user@host');
+    const status = ui.statuses.find((s) => s.key === 'ssh')!;
+    expect(status.text).toContain('/remote/path');
+  });
+
+  it('rejects an invalid manual target without connecting', async () => {
+    const { commands, ctx, connections, ui } = makeHarness('');
+    const handler = commands.find((c) => (c as SshCommand).name === 'ssh') as SshCommand;
+    await handler.handler('user@host -p', ctx);
+    expect(connections).toHaveLength(0);
+    expect(ui.notifications.some((n) => n.kind === 'error')).toBe(true);
+  });
+
+  it('keeps the previous connection when a reconnect fails', async () => {
+    const { commands, ctx, connections, handlers } = makeHarness('');
+    const handler = commands.find((c) => (c as SshCommand).name === 'ssh') as SshCommand;
+
+    await handler.handler('user@a:/p1', ctx);
+    const first = connections[0]!;
+
+    const reconnect = handler.handler('user@b', ctx);
+    await Promise.resolve();
+    const second = connections[1]!;
+    const child = second.children[0]!;
+    child.stderr.write('refused');
+    child.emit('close', 255);
+    await reconnect;
+
+    expect(second.closeCalls).toBe(1);
+    expect(first.closeCalls).toBe(0);
+    expect(handlers.user_bash![0]!({}, ctx)).not.toBeUndefined();
+  });
+});
+
 async function assertFailedPathlessStartup(cleanupError?: Error) {
   const { handlers, ui, tools, ctx, connections } = makeHarness('user@host');
   const startHandler = handlers.session_start![0]!;
@@ -233,6 +303,7 @@ async function assertFailedPathlessStartup(cleanupError?: Error) {
 
   expect(conn.spawnCalls.map((c) => c.command)).toEqual(['pwd']);
   expect(conn.closeCalls).toBe(1);
+  expect(tools).toHaveLength(0);
   expect(ui.providers).toHaveLength(0);
   const status = ui.statuses.find((s) => s.key === 'ssh')!;
   expect(status.text).toContain('user@host');
@@ -241,13 +312,6 @@ async function assertFailedPathlessStartup(cleanupError?: Error) {
   if (cleanupError) {
     expect(errorNotify.message).not.toContain(cleanupError.message);
   }
-
-  const readTool = tools[0] as {
-    execute: (id: string, params: unknown, signal: unknown, onUpdate: unknown) => Promise<unknown>;
-  };
-  await expect(readTool.execute('id', {}, undefined, undefined)).rejects.toThrow(
-    'SSH mode unavailable: SSH failed (255): Permission denied'
-  );
 }
 
 type ToolExecute = (

@@ -231,6 +231,25 @@ describe('createSshConnection', () => {
     expect(first!.stdio).toEqual(['ignore', 'pipe', 'pipe']);
   });
 
+  it('emits -p PORT and keys the control path by host+port', async () => {
+    const tempRoot = await freshRoot();
+    const { calls, children, spawnProcess } = makeSpawnRecorder();
+    const deps = makeDeps({ temporaryDirectory: tempRoot, spawnProcess });
+
+    const conn = await createSshConnection('user@host', deps, 2222);
+    conn.spawn('echo hi');
+    children[0]!.emit('close', 0);
+
+    expect(calls).toHaveLength(1);
+    const args = calls[0]!.args;
+    expect(args).toContain('-p');
+    expect(args[args.indexOf('-p') + 1]).toBe('2222');
+    expect(args).toContain('user@host');
+
+    const noPort = await createSshConnection('user@host', deps);
+    expect(noPort.controlPath).not.toBe(conn.controlPath);
+  });
+
   it('closes the master and cleans resources once', async () => {
     const tempRoot = await freshRoot();
     const { calls, children, spawnProcess } = makeSpawnRecorder();

@@ -24,6 +24,22 @@ pi -e ./src/index.ts --ssh user@host:/remote/path
 
 Without a path, the remote working directory is resolved via `pwd` over SSH.
 
+## Interactive connection (`/ssh`)
+
+While running in the TUI, connect at any time with the `/ssh` command:
+
+```
+/ssh                          # pick a host from ~/.ssh/config
+/ssh user@host                # manual target
+/ssh user@host:/remote/path   # manual target with a remote path
+/ssh user@host -p 2222        # manual target with a custom port
+```
+
+- With no arguments, the hosts listed in `~/.ssh/config` are offered for selection. A single host connects directly; multiple hosts open a picker; no hosts shows a warning.
+- Manual targets accept an optional `:/path` suffix and `-p PORT` (also `-pPORT`, `-p=PORT`, or `--port PORT`).
+- Reconnecting switches the active connection; a failed reconnect keeps the previous working connection.
+- The same SSH-backed tools, `@` autocomplete, `!commands`, and status indicator are wired as for `--ssh`.
+
 ## How it works
 
 - Path remapping: local absolute paths are rewritten from the local cwd to the remote cwd.
