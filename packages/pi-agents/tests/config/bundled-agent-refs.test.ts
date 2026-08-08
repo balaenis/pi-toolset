@@ -43,6 +43,8 @@ const EXPLICIT_AGENT_PATTERNS: RegExp[] = [
     String.raw`/(?:implement-and-review|implement|explore-and-plan)\s+(?:["'\`](${AGENT_ID})["'\`]|(${AGENT_ID}))\s+agent\b`,
     'gi'
   ),
+  // Chain step with bundled agent in parens: `context` (explore):
+  new RegExp(String.raw`\`[^\`]+\`\s*\(\s*(${AGENT_ID})\s*\)`, 'gi'),
 ];
 
 function listMarkdownFiles(dir: string, recursive = false): string[] {
