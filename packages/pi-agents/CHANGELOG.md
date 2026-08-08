@@ -10,6 +10,13 @@
 
 - **pi-agents:** lazy-load the optional Grok ACP runtime (and bundled ACP SDK/Zod graph) behind one memoized dynamic import with opt-in Bun code splitting under `dist/chunks/`. Extension import and Pi runtime paths no longer pay the ACP graph cost up front; the first `runtime: "grok-acp"` call loads the hashed façade chunk. Public tool schema, `package.json` exports, and the Pi extension entry (`dist/index.js`) are unchanged — published installs must retain `dist/chunks/`.
 
+## [0.4.4](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.4.3...pi-agents-v0.4.4) (2026-08-08)
+
+
+### Bug Fixes
+
+* **pi-agents:** drop review loop from implement prompt ([a6d9b8c](https://github.com/balaenis/pi-toolset/commit/a6d9b8c657a9197233f5df8156f01c67611b7dbc))
+
 ## [0.4.3](https://github.com/balaenis/pi-toolset/compare/pi-agents-v0.4.2...pi-agents-v0.4.3) (2026-08-08)
 
 
