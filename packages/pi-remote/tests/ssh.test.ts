@@ -15,14 +15,21 @@ import {
 import { FakeChild } from './helpers/fake-child.ts';
 
 function makeSpawnRecorder() {
-  const calls: { command: string; args: string[]; stdio: unknown }[] = [];
+  const calls: { command: string; args: string[]; stdio: unknown; detached?: boolean }[] = [];
   const children: FakeChild[] = [];
-  const spawnProcess = mock((command: string, args: string[], options: { stdio: unknown }) => {
-    calls.push({ command, args, stdio: options.stdio });
-    const child = new FakeChild();
-    children.push(child);
-    return child;
-  }) as unknown as typeof spawn;
+  const spawnProcess = mock(
+    (command: string, args: string[], options: { stdio: unknown; detached?: boolean }) => {
+      calls.push({
+        command,
+        args,
+        stdio: options.stdio,
+        detached: options.detached,
+      });
+      const child = new FakeChild();
+      children.push(child);
+      return child;
+    }
+  ) as unknown as typeof spawn;
   return { calls, children, spawnProcess };
 }
 
@@ -222,6 +229,10 @@ describe('createSshConnection', () => {
       'ConnectTimeout=15',
       '-o',
       'ConnectionAttempts=2',
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'StrictHostKeyChecking=accept-new',
       'user@host',
       command,
     ];
@@ -229,6 +240,7 @@ describe('createSshConnection', () => {
     expect(second!.args).toEqual(expectedArgs('ls -la'));
     expect(first!.args[5]).toBe(second!.args[5]);
     expect(first!.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+    expect(first!.detached).toBe(true);
   });
 
   it('emits -p PORT and keys the control path by host+port', async () => {
@@ -274,6 +286,7 @@ describe('createSshConnection', () => {
       'user@host',
     ]);
     expect(cleanupCalls[0]!.stdio).toBe('ignore');
+    expect(cleanupCalls[0]!.detached).toBeUndefined();
 
     expect(existsSync(path.dirname(conn.controlPath))).toBe(false);
     expect(() => conn.spawn('x')).toThrow('SSH connection is closed');

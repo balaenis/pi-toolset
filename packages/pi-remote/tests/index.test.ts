@@ -268,7 +268,7 @@ describe('registerPiRemote /ssh command', () => {
   });
 
   it('keeps the previous connection when a reconnect fails', async () => {
-    const { commands, ctx, connections, handlers } = makeHarness('');
+    const { commands, ctx, connections, handlers, ui } = makeHarness('');
     const handler = commands.find((c) => (c as SshCommand).name === 'ssh') as SshCommand;
 
     await handler.handler('user@a:/p1', ctx);
@@ -285,6 +285,10 @@ describe('registerPiRemote /ssh command', () => {
     expect(second.closeCalls).toBe(1);
     expect(first.closeCalls).toBe(0);
     expect(handlers.user_bash![0]!({}, ctx)).not.toBeUndefined();
+    const errorNotify = ui.notifications.find((n) => n.kind === 'error')!;
+    expect(errorNotify.message).toBe(
+      'SSH connection failed: user@b: refused (kept previous connection)'
+    );
   });
 });
 
@@ -308,7 +312,9 @@ async function assertFailedPathlessStartup(cleanupError?: Error) {
   const status = ui.statuses.find((s) => s.key === 'ssh')!;
   expect(status.text).toContain('user@host');
   const errorNotify = ui.notifications.find((n) => n.kind === 'error')!;
-  expect(errorNotify.message).toContain('SSH failed (255): Permission denied');
+  expect(errorNotify.message).toBe(
+    'SSH connection failed: cannot reach user@host: Permission denied'
+  );
   if (cleanupError) {
     expect(errorNotify.message).not.toContain(cleanupError.message);
   }

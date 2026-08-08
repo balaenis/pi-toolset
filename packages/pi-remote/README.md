@@ -6,7 +6,8 @@ When `--ssh` is provided, the `read`, `write`, `edit`, `bash`, `grep`, `find`, a
 
 ## Requirements
 
-- SSH key-based auth to the remote host (no password prompts)
+- SSH key-based auth to the remote host (password and interactive prompts are rejected immediately via `BatchMode=yes` — they would freeze the TUI)
+- Unknown host keys are accepted on first connect (`StrictHostKeyChecking=accept-new`); changed keys still fail
 - `bash` on the remote
 - `rg` (ripgrep) on the remote (for the `grep` and `find` tools)
 - `fd` on the remote (for interactive `@` file completion; same tool local Pi uses)
@@ -37,7 +38,7 @@ While running in the TUI, connect at any time with the `/ssh` command:
 
 - With no arguments, the hosts listed in `~/.ssh/config` are offered for selection. A single host connects directly; multiple hosts open a picker; no hosts shows a warning.
 - Manual targets accept an optional `:/path` suffix and `-p PORT` (also `-pPORT`, `-p=PORT`, or `--port PORT`).
-- Reconnecting switches the active connection; a failed reconnect keeps the previous working connection.
+- Reconnecting switches the active connection; a failed reconnect keeps the previous working connection and shows the failure reason as an error notification.
 - The same SSH-backed tools, `@` autocomplete, `!commands`, and status indicator are wired as for `--ssh`.
 
 ## How it works
@@ -49,7 +50,7 @@ While running in the TUI, connect at any time with the `/ssh` command:
 - `ls` delegates to the tool's `LsOperations`: remote `test` stats and `ls -1A` directory listings.
 - `ls` and `find` treat only a remote `test -e` exit status of `1` as a missing path and report `Path not found`. Every other SSH failure (any other nonzero status) and every local process error propagates unchanged from the registered tool; no exit status is classified as a transport failure.
 - `!commands` (user bash) also execute remotely when SSH mode is active.
-- When `--ssh` is given but the remote cannot be reached (e.g. `pwd` resolution fails), SSH mode fails loudly: a session-start notification and error status are shown, and every remote tool call errors with `SSH mode unavailable` instead of silently running on the local machine.
+- When `--ssh` or `/ssh` cannot reach the remote (auth, host key, network, etc.), SSH mode fails loudly: an error notification shows the cleaned SSH reason (stderr), the status bar marks the failure, and every remote tool call errors with `SSH mode unavailable` instead of hanging on interactive prompts or silently running locally.
 - The system prompt's `Current working directory:` line is rewritten to the remote cwd (format-tolerant: any cwd line is replaced, or one is appended).
 - The TUI status bar shows the active SSH target via `ctx.ui.setStatus`.
 
@@ -57,7 +58,7 @@ While running in the TUI, connect at any time with the `/ssh` command:
 
 SSH connections are reused automatically; no new flag is required. Each session owns one OpenSSH multiplexed connection created with `ControlMaster=auto` and a fixed `ControlPersist=10m`. The control socket is stored in a process- and session-unique private directory under the XDG runtime directory (when safe) or a private temporary subdirectory, so parallel Pi sessions never collide.
 
-- Every normal SSH child runs with fixed internal bounds: `ServerAliveInterval=15`, `ServerAliveCountMax=3`, `ConnectTimeout=15`, and `ConnectionAttempts=2`. These values bound failure detection and connection attempts; they are not user configuration.
+- Every normal SSH child runs in a separate process session with fixed internal bounds: `ServerAliveInterval=15`, `ServerAliveCountMax=3`, `ConnectTimeout=15`, `ConnectionAttempts=2`, `BatchMode=yes`, and `StrictHostKeyChecking=accept-new`. The separate session prevents `ProxyJump` and `ProxyCommand` children from opening Pi's controlling terminal. Failures return through stderr instead of showing interactive prompts.
 - A failed in-flight operation is never automatically replayed. A later invocation starts another SSH attempt on the same session-owned connection and control path: `ControlMaster=auto` reuses a live master or opens a new transport. This is a new attempt, not a retry of the failed command.
 - `bash`, `write`, and `edit` can have partial or uncertain remote side effects after a failure. Inspect the remote state before manually repeating them.
 - `session_shutdown` sends a best-effort `ssh -O exit` to the master. The finite 10-minute persist bounds a master left by a hard Pi crash; such a crash can also leave an inert private directory for normal runtime/temp cleanup.

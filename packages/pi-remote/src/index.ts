@@ -69,11 +69,33 @@ function buildFdPathQuery(query: string): string {
 class SshCommandError extends Error {
   constructor(
     message: string,
-    readonly exitStatus: number | null
+    readonly exitStatus: number | null,
+    readonly stderr: string = ''
   ) {
     super(message);
     this.name = 'SshCommandError';
   }
+}
+
+// OpenSSH often emits CR-terminated lines; strip them before UI/tool messages.
+function cleanSshText(text: string): string {
+  return text.replace(/\r/g, '').trim();
+}
+
+// Prefer stderr detail for notifications; fall back to exit status or Error.message.
+function formatSshFailureReason(error: unknown): string {
+  if (error instanceof SshCommandError) {
+    const detail = cleanSshText(error.stderr);
+    if (detail) return detail;
+    if (error.exitStatus !== null) return `SSH exited with status ${error.exitStatus}`;
+    return 'SSH command failed';
+  }
+  if (error instanceof Error) {
+    const message = cleanSshText(error.message);
+    return message || 'Unknown error';
+  }
+  const message = cleanSshText(String(error));
+  return message || 'Unknown error';
 }
 
 function sshExec(connection: SshConnection, command: string): Promise<Buffer> {
@@ -86,9 +108,9 @@ function sshExec(connection: SshConnection, command: string): Promise<Buffer> {
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) {
-        reject(
-          new SshCommandError(`SSH failed (${code}): ${Buffer.concat(errChunks).toString()}`, code)
-        );
+        const stderr = cleanSshText(Buffer.concat(errChunks).toString());
+        const message = stderr ? `SSH failed (${code}): ${stderr}` : `SSH failed (${code})`;
+        reject(new SshCommandError(message, code, stderr));
       } else {
         resolve(Buffer.concat(chunks));
       }
@@ -642,16 +664,21 @@ export function registerPiRemote(pi: ExtensionAPI, dependencies: PiRemoteDepende
       }
       return true;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      // Surface the cleaned SSH reason as an error notification so the TUI never
+      // only shows raw /dev/tty prompts or a silent hang.
+      const reason = formatSshFailureReason(e);
       if (previous) {
         // Keep the previous working connection fully functional.
         resolvedSsh = previous;
         sshFailure = null;
-        ui.notify(`SSH connection failed: ${remote}: ${msg} (kept previous connection)`, 'error');
+        ui.notify(
+          `SSH connection failed: ${remote}: ${reason} (kept previous connection)`,
+          'error'
+        );
       } else {
         resolvedSsh = null;
-        sshFailure = msg;
-        ui.notify(`SSH connection failed: cannot reach ${remote}: ${msg}`, 'error');
+        sshFailure = reason;
+        ui.notify(`SSH connection failed: cannot reach ${remote}: ${reason}`, 'error');
         ui.setStatus('ssh', ui.theme.fg('error', `SSH failed: ${remote}`));
       }
       await connection?.close().catch(() => {});

@@ -14,6 +14,10 @@ const SERVER_ALIVE_INTERVAL = '15';
 const SERVER_ALIVE_COUNT_MAX = '3';
 const CONNECT_TIMEOUT = '15';
 const CONNECTION_ATTEMPTS = '2';
+// Never open /dev/tty for passwords or host-key prompts — the Pi TUI owns the keyboard.
+const BATCH_MODE = 'yes';
+// Accept unknown host keys on first connect; still reject changed keys.
+const STRICT_HOST_KEY_CHECKING = 'accept-new';
 
 export const CONTROL_PERSIST = '10m';
 
@@ -116,10 +120,16 @@ export class SshConnection {
       `ConnectTimeout=${CONNECT_TIMEOUT}`,
       '-o',
       `ConnectionAttempts=${CONNECTION_ATTEMPTS}`,
+      '-o',
+      `BatchMode=${BATCH_MODE}`,
+      '-o',
+      `StrictHostKeyChecking=${STRICT_HOST_KEY_CHECKING}`,
     ];
     const portOpts = this.port !== undefined ? ['-p', String(this.port)] : [];
     const child = this.spawnSsh([...opts, ...portOpts, this.remote, command], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Start a new session so ProxyJump/ProxyCommand children cannot prompt on Pi's /dev/tty.
+      detached: true,
     });
     this.spawnedAny = true;
     return child;
@@ -133,7 +143,10 @@ export class SshConnection {
     return this.closePromise;
   }
 
-  private spawnSsh(args: string[], options: { stdio: StdioOptions }): SshChildProcess {
+  private spawnSsh(
+    args: string[],
+    options: { stdio: StdioOptions; detached?: boolean }
+  ): SshChildProcess {
     return this.spawnProcess('ssh', args, options) as SshChildProcess;
   }
 
