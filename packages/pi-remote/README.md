@@ -1,4 +1,4 @@
-# @myagent/ssh-remote
+# @balaenis/pi-remote
 
 Pi extension that delegates tool operations to a remote machine via SSH.
 
@@ -79,7 +79,7 @@ When SSH mode is active, the interactive editor's `@` completion lists remote fi
 ## Install
 
 ```bash
-pi install ./packages/ssh-remote
+pi install ./packages/pi-remote
 ```
 
 The extension is based on the official Pi example [`examples/extensions/ssh.ts`](https://github.com/earendil-works/pi-coding-agent/blob/main/examples/extensions/ssh.ts).
