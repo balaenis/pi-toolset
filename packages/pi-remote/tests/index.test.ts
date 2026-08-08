@@ -92,8 +92,13 @@ function makeHarness(flag: string) {
     connections.push(conn);
     return Promise.resolve(conn);
   }) as unknown as PiRemoteDependencies['createSshConnection'];
+  const getTool = (name: string) => {
+    const tool = tools.find((t) => (t as { name?: string }).name === name);
+    if (!tool) throw new Error(`registered tool not found: ${name}`);
+    return tool;
+  };
   registerPiRemote(pi as unknown as ExtensionAPI, { createSshConnection });
-  return { pi, handlers, ui, tools, ctx, connections, createSshConnection };
+  return { pi, handlers, ui, tools, ctx, connections, createSshConnection, getTool };
 }
 
 describe('registerPiRemote session lifecycle', () => {
@@ -244,3 +249,103 @@ async function assertFailedPathlessStartup(cleanupError?: Error) {
     'SSH mode unavailable: SSH failed (255): Permission denied'
   );
 }
+
+type ToolExecute = (
+  id: string,
+  params: { path: string; pattern?: string; limit?: number },
+  signal: unknown,
+  onUpdate: unknown
+) => Promise<unknown>;
+
+async function captureError(promise: Promise<unknown>): Promise<Error> {
+  const settled = await promise.then(
+    () => null,
+    (error: unknown) => error
+  );
+  return settled as Error;
+}
+
+async function assertMissingPathRule(scenario: MissingPathScenario): Promise<void> {
+  const { handlers, ctx, connections, getTool } = makeHarness('user@host:/remote/path');
+  await handlers.session_start![0]!({}, ctx);
+  const conn = connections[0]!;
+  const tool = getTool(scenario.toolName) as { execute: ToolExecute };
+
+  const transport = tool.execute('missing-path-transport', scenario.input, undefined, undefined);
+  const transportChild = conn.children[0]!;
+  transportChild.stderr.write(scenario.transportStderr);
+  transportChild.emit('close', 255);
+  const transportError = await captureError(transport);
+  expect(transportError.message).toBe(scenario.expectedTransportError);
+  expect(transportError.message).not.toContain('Path not found');
+  expect(conn.spawnCalls).toHaveLength(1);
+  expect(conn.spawnCalls[0]!.command.startsWith('test -e ')).toBe(true);
+
+  const missing = tool.execute(
+    'missing-path-not-found',
+    { ...scenario.input, path: 'missing' },
+    undefined,
+    undefined
+  );
+  const missingChild = conn.children[1]!;
+  missingChild.emit('close', 1);
+  const missingError = await captureError(missing);
+  expect(missingError.message).toContain('Path not found: ');
+  expect(missingError.message).toContain(path.resolve(process.cwd(), 'missing'));
+  expect(conn.spawnCalls).toHaveLength(2);
+  for (const call of conn.spawnCalls) {
+    expect(call.command.includes(scenario.forbiddenFollowUpCommand)).toBe(false);
+  }
+}
+
+type MissingPathScenario = {
+  toolName: 'ls' | 'find';
+  input: { path: string; pattern?: string };
+  forbiddenFollowUpCommand: string;
+  transportStderr: string;
+  expectedTransportError: string;
+};
+
+const missingPathScenarios: MissingPathScenario[] = [
+  {
+    toolName: 'ls',
+    input: { path: 'lost' },
+    forbiddenFollowUpCommand: 'ls -1A',
+    transportStderr: 'Connection reset',
+    expectedTransportError: 'SSH failed (255): Connection reset',
+  },
+  {
+    toolName: 'find',
+    input: { pattern: '*.ts', path: 'lost' },
+    forbiddenFollowUpCommand: 'rg --files',
+    transportStderr: 'Broken pipe',
+    expectedTransportError: 'SSH failed (255): Broken pipe',
+  },
+];
+
+describe('registerPiRemote missing-path rule', () => {
+  for (const scenario of missingPathScenarios) {
+    it(`${scenario.toolName} treats only test status 1 as a missing path`, async () => {
+      await assertMissingPathRule(scenario);
+    });
+  }
+
+  it('ls propagates SSH process errors', async () => {
+    const { handlers, ctx, connections, getTool } = makeHarness('user@host:/remote/path');
+    await handlers.session_start![0]!({}, ctx);
+    const conn = connections[0]!;
+    const lsTool = getTool('ls') as { execute: ToolExecute };
+
+    const processError = lsTool.execute(
+      'ls-process-error',
+      { path: 'broken' },
+      undefined,
+      undefined
+    );
+    const brokenChild = conn.children[0]!;
+    brokenChild.emit('error', new Error('ssh process failed'));
+    const processFailure = await captureError(processError);
+    expect(processFailure.message).toBe('ssh process failed');
+    expect(conn.spawnCalls).toHaveLength(1);
+  });
+});

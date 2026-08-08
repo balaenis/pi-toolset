@@ -190,39 +190,43 @@ describe('createSshControlPath', () => {
 });
 
 describe('createSshConnection', () => {
-  it('adds multiplexing options and reuses one control path', async () => {
+  it('adds bounded liveness options, never replays a failed child, and reuses one control path', async () => {
     const tempRoot = await freshRoot();
-    const { calls, spawnProcess } = makeSpawnRecorder();
+    const { calls, children, spawnProcess } = makeSpawnRecorder();
     const deps = makeDeps({ temporaryDirectory: tempRoot, spawnProcess });
 
     const conn = await createSshConnection('user@host', deps);
     expect(calls).toHaveLength(0);
 
     conn.spawn('echo hi');
+    children[0]!.emit('close', 255);
+
+    expect(calls).toHaveLength(1);
+
     conn.spawn('ls -la');
 
     expect(calls).toHaveLength(2);
     const [first, second] = calls;
-    expect(first!.args).toEqual([
+    const expectedArgs = (command: string) => [
       '-o',
       'ControlMaster=auto',
       '-o',
       `ControlPersist=${CONTROL_PERSIST}`,
       '-o',
       `ControlPath=${conn.controlPath}`,
+      '-o',
+      'ServerAliveInterval=15',
+      '-o',
+      'ServerAliveCountMax=3',
+      '-o',
+      'ConnectTimeout=15',
+      '-o',
+      'ConnectionAttempts=2',
       'user@host',
-      'echo hi',
-    ]);
-    expect(second!.args).toEqual([
-      '-o',
-      'ControlMaster=auto',
-      '-o',
-      `ControlPersist=${CONTROL_PERSIST}`,
-      '-o',
-      `ControlPath=${conn.controlPath}`,
-      'user@host',
-      'ls -la',
-    ]);
+      command,
+    ];
+    expect(first!.args).toEqual(expectedArgs('echo hi'));
+    expect(second!.args).toEqual(expectedArgs('ls -la'));
     expect(first!.args[5]).toBe(second!.args[5]);
     expect(first!.stdio).toEqual(['ignore', 'pipe', 'pipe']);
   });

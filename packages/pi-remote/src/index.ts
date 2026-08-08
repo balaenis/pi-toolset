@@ -61,6 +61,18 @@ function buildFdPathQuery(query: string): string {
   return normalized.endsWith('/') ? `${joined}${separatorPattern}` : joined;
 }
 
+// Internal marker so failures keep the completed SSH exit status: only remote `test -e`
+// status 1 means “missing”; every other failure keeps its transport/process error.
+class SshCommandError extends Error {
+  constructor(
+    message: string,
+    readonly exitStatus: number | null
+  ) {
+    super(message);
+    this.name = 'SshCommandError';
+  }
+}
+
 function sshExec(connection: SshConnection, command: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = connection.spawn(command);
@@ -71,12 +83,19 @@ function sshExec(connection: SshConnection, command: string): Promise<Buffer> {
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error(`SSH failed (${code}): ${Buffer.concat(errChunks).toString()}`));
+        reject(
+          new SshCommandError(`SSH failed (${code}): ${Buffer.concat(errChunks).toString()}`, code)
+        );
       } else {
         resolve(Buffer.concat(chunks));
       }
     });
   });
+}
+
+function classifyTestExistsError(error: unknown): boolean {
+  if (error instanceof SshCommandError && error.exitStatus === 1) return false;
+  throw error;
 }
 
 // Streams stdout lines from a remote command; resolves with exit code and stderr (no zero-exit requirement).
@@ -308,7 +327,7 @@ function createRemoteLsOps({
     exists: (p) =>
       sshExec(connection, `test -e ${JSON.stringify(toRemote(p))}`).then(
         () => true,
-        () => false
+        classifyTestExistsError
       ),
     stat: async (p) => {
       const kind = (
@@ -397,7 +416,7 @@ function createRemoteFindOps({
     exists: (p) =>
       sshExec(connection, `test -e ${JSON.stringify(toRemote(p))}`).then(
         () => true,
-        () => false
+        classifyTestExistsError
       ),
     // Runs rg --files on the remote (rg is already required for grep). Globs follow gitignore-style
     // semantics, equivalent to fd --full-path. Output is relative so the tool can relativize it

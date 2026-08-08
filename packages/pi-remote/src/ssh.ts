@@ -10,6 +10,10 @@ import type { Readable } from 'node:stream';
 const CONTROL_PATH_MAX_BYTES = 100;
 const PRIVATE_DIR_PREFIX = 'pi-r-';
 const TARGET_HASH_LENGTH = 16;
+const SERVER_ALIVE_INTERVAL = '15';
+const SERVER_ALIVE_COUNT_MAX = '3';
+const CONNECT_TIMEOUT = '15';
+const CONNECTION_ATTEMPTS = '2';
 
 export const CONTROL_PERSIST = '10m';
 
@@ -97,6 +101,14 @@ export class SshConnection {
       `ControlPersist=${CONTROL_PERSIST}`,
       '-o',
       `ControlPath=${this.controlPath}`,
+      '-o',
+      `ServerAliveInterval=${SERVER_ALIVE_INTERVAL}`,
+      '-o',
+      `ServerAliveCountMax=${SERVER_ALIVE_COUNT_MAX}`,
+      '-o',
+      `ConnectTimeout=${CONNECT_TIMEOUT}`,
+      '-o',
+      `ConnectionAttempts=${CONNECTION_ATTEMPTS}`,
     ];
     const child = this.spawnSsh([...opts, this.remote, command], {
       stdio: ['ignore', 'pipe', 'pipe'],
