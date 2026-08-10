@@ -10,8 +10,8 @@ Run the chain with these steps, each later step referencing earlier output via `
 
 1. `context` (explore): Analyze and find all code and information relevant to $@.
 2. `plan` (planner): Create an implementation plan for "$@" from `{outputs.context}`.
-3. `implement` (general): Before applying, confirm that `{outputs.plan}` actually contains an implementation plan. If it is empty, missing, or contains no concrete steps, stop and report the problem instead of proceeding. Otherwise, apply the plan.
-4. `review` (reviewer): Review the implementation. Report under `## Standards` and `## Spec`. Write `- None.` under an axis with no findings. If both axes read exactly `- None.`, stop and report `Clean`.
+3. `implement` (general): Confirm `{outputs.plan}` holds a concrete plan; else stop and report. Fix the baseline: `git add` the working tree and verify the staged set is unchanged. Apply the plan.
+4. `review` (reviewer): Review the unstaged implementation relative to the baseline. Report under `## Standards` and `## Spec`. Write `- None.` under an axis with no findings. If both axes read exactly `- None.`, stop and report `Clean`.
 
 Loop: re-run the chain, using the review result as the next input until a review clears both axes.
 
