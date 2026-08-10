@@ -12,7 +12,7 @@ Run these steps in order. Each later step reads earlier output via `{outputs.<na
 2. `review` (reviewer): Review the implementation. Report under `## Standards` and `## Spec`. Write `- None.` under an axis with no findings. If both axes read exactly `- None.`, stop and report `Clean`.
 3. `fix-plan` (planner): Build a fix plan from `{outputs.review}`. Address every finding: fix it, or justify it as out of scope. If the review is missing or has no findings, stop and report the problem.
 
-Loop: use the fix plan as the next input to step 1. Repeat until a review clears both axes.
+Loop: re-run the chain using the fix plan as the next input until a review clears both axes.
 
 Success criteria:
 

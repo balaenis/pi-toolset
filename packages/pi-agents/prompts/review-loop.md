@@ -12,7 +12,7 @@ Run the chain with these steps, each later step referencing earlier output via `
 2. `fix` (planner): Build a fix plan from `{outputs.review}`. Address every remaining finding: fix it, or explicitly justify it as out of scope.
 3. `implement` (general): Before applying, confirm `{outputs.fix}` actually contains a fix plan. If it is empty, missing, or carries no concrete fixes, stop and report the problem instead of proceeding. Otherwise confirm the staged baseline before each new fix round and apply.
 
-Loop: re-run the chain with the fixed output as the new input until step 1 clears both axes.
+Loop: re-run the chain, using the review result as the next input until a review clears both axes.
 
 Stop rules:
 

@@ -13,7 +13,7 @@ Run the chain with these steps, each later step referencing earlier output via `
 3. `implement` (general): Before applying, confirm that `{outputs.plan}` actually contains an implementation plan. If it is empty, missing, or contains no concrete steps, stop and report the problem instead of proceeding. Otherwise, apply the plan.
 4. `review` (reviewer): Review the implementation. Report under `## Standards` and `## Spec`. Write `- None.` under an axis with no findings. If both axes read exactly `- None.`, stop and report `Clean`.
 
-Loop: use the review result as the next input to step 1. Repeat until a review clears both axes.
+Loop: re-run the chain, using the review result as the next input until a review clears both axes.
 
 Success criteria:
 
