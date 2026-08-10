@@ -8,6 +8,7 @@ import os from 'node:os';
 import type {
   AgentToolResult,
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionUIContext,
   GrepToolDetails,
   GrepToolInput,
@@ -31,6 +32,7 @@ import {
   truncateLine,
   type WriteOperations,
 } from '@earendil-works/pi-coding-agent';
+import type { AutocompleteItem } from '@earendil-works/pi-tui';
 import { createSshConnection, type SshChildProcess, type SshConnection } from './ssh.ts';
 import {
   createRemoteAtAutocompleteFactory,
@@ -47,6 +49,18 @@ interface RemoteOperationContext {
 const GREP_DEFAULT_LIMIT = 100;
 // Cap for remote fd listings; pure layer re-scores and takes the top REMOTE_AT_MAX_RESULTS.
 const REMOTE_LIST_CAP = 100;
+// Cap for remote /ssh:cwd directory listings; final candidates are capped separately.
+const REMOTE_DIR_LIST_CAP = 100;
+// Final /ssh:cwd completion/picker candidate cap: `..` plus at most 99 descendants.
+const CWD_CANDIDATE_CAP = 100;
+
+const MATCH_NONE = 0;
+const MATCH_ORDERED_SUBSEQUENCE = 1;
+const MATCH_FULL_PATH_SUBSTRING = 2;
+const MATCH_BASENAME_SUBSTRING = 3;
+const MATCH_BASENAME_PREFIX = 4;
+const MATCH_EXACT_BASENAME = 5;
+const PARENT_ENTRY_COUNT = 1;
 
 // Mirrors pi-tui buildFdPathQuery: path-shaped queries use a separator-tolerant regex for --full-path.
 function buildFdPathQuery(query: string): string {
@@ -80,6 +94,11 @@ class SshCommandError extends Error {
 // OpenSSH often emits CR-terminated lines; strip them before UI/tool messages.
 function cleanSshText(text: string): string {
   return text.replace(/\r/g, '').trim();
+}
+
+// Machine-readable command output: remove only a terminal run of CR/LF, keep valid path spaces.
+function stripTrailingLineEndings(value: string): string {
+  return value.replace(/[\r\n]+$/, '');
 }
 
 // Prefer stderr detail for notifications; fall back to exit status or Error.message.
@@ -123,7 +142,6 @@ function classifyTestExistsError(error: unknown): boolean {
   throw error;
 }
 
-// Streams stdout lines from a remote command; resolves with exit code and stderr (no zero-exit requirement).
 function sshExecStream(
   connection: SshConnection,
   command: string,
@@ -152,18 +170,171 @@ function sshExecStream(
   });
 }
 
+function normalizeDirPath(raw: string): string | null {
+  const rel = raw.replace(/^\.\//, '').replace(/\/+$/, '');
+  if (!rel || rel === '.') return null;
+  if (rel.split('/').some((segment) => segment === '.git')) return null;
+  return rel;
+}
+
+function quoteBashArg(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function mapLocalPathToRemote(value: string, localCwd: string, remoteCwd: string): string {
+  return value.replace(localCwd, () => remoteCwd);
+}
+
+function buildRemoteDirPrefilter(query: string): string {
+  return [...query.toLowerCase()]
+    .map((char) => char.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&'))
+    .join('.*');
+}
+
+// The awk fallback keeps consuming input after the cap so find never dies from SIGPIPE.
+async function listRemoteDirectories(
+  ssh: RemoteOperationContext,
+  query: string
+): Promise<string[]> {
+  const { connection, remoteCwd } = ssh;
+  const script =
+    `set -o pipefail; cd -- "$1" && ` +
+    `if command -v fd >/dev/null 2>&1; then ` +
+    `if [ -n "$2" ]; then fd --type d --max-results ${REMOTE_DIR_LIST_CAP} --follow --hidden --color=never --exclude .git --exclude '.git/*' --exclude '.git/**' --ignore-case --full-path -- "$2"; ` +
+    `else fd --type d --max-results ${REMOTE_DIR_LIST_CAP} --follow --hidden --color=never --exclude .git --exclude '.git/*' --exclude '.git/**'; fi; ` +
+    `else find -L . -mindepth 1 \\( -type d -name .git -prune \\) -o \\( -type d -print \\) | ` +
+    `awk -v pattern="$2" 'tolower($0) ~ pattern { if (count < ${REMOTE_DIR_LIST_CAP}) print; count += 1 }'; fi`;
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+  const { code, stderr } = await sshExecStream(
+    connection,
+    `bash -c ${quoteBashArg(script)} -- ${quoteBashArg(remoteCwd)} ${quoteBashArg(buildRemoteDirPrefilter(query))}`,
+    (line) => {
+      const rel = normalizeDirPath(line);
+      if (rel && !seen.has(rel)) {
+        seen.add(rel);
+        if (dirs.length < REMOTE_DIR_LIST_CAP) dirs.push(rel);
+      }
+    },
+    undefined
+  );
+  if (code !== 0) {
+    throw new Error(stderr.trim() || `remote directory listing failed with code ${code}`);
+  }
+  return dirs;
+}
+
+function isOrderedSubsequence(text: string, query: string): boolean {
+  let index = 0;
+  for (const char of query) {
+    index = text.indexOf(char, index);
+    if (index === -1) return false;
+    index += 1;
+  }
+  return true;
+}
+
+function dirMatchTier(relativePath: string, query: string): number {
+  if (!query) return MATCH_ORDERED_SUBSEQUENCE;
+  const lowerQuery = query.toLowerCase();
+  const lowerPath = relativePath.toLowerCase();
+  const lowerBase = path.basename(relativePath).toLowerCase();
+  if (lowerBase === lowerQuery) return MATCH_EXACT_BASENAME;
+  if (lowerBase.startsWith(lowerQuery)) return MATCH_BASENAME_PREFIX;
+  if (lowerBase.includes(lowerQuery)) return MATCH_BASENAME_SUBSTRING;
+  if (lowerPath.includes(lowerQuery)) return MATCH_FULL_PATH_SUBSTRING;
+  return isOrderedSubsequence(lowerPath, lowerQuery) ? MATCH_ORDERED_SUBSEQUENCE : MATCH_NONE;
+}
+
+// Deterministic Unicode code-point order (no localeCompare): compares scalar values
+// numerically, so a supplementary-plane code point sorts after any BMP code point.
+function compareCodePoints(a: string, b: string): number {
+  const aPoints = [...a];
+  const bPoints = [...b];
+  const shared = Math.min(aPoints.length, bPoints.length);
+  for (let i = 0; i < shared; i += 1) {
+    const diff = aPoints[i]!.codePointAt(0)! - bPoints[i]!.codePointAt(0)!;
+    if (diff !== 0) return diff;
+  }
+  return aPoints.length - bPoints.length;
+}
+
+function rankDirCandidates(paths: string[], query: string): string[] {
+  return paths
+    .map((p) => ({ path: p, tier: dirMatchTier(p, query) }))
+    .filter((candidate) => candidate.tier > MATCH_NONE)
+    .sort((a, b) => b.tier - a.tier || compareCodePoints(a.path, b.path))
+    .slice(0, CWD_CANDIDATE_CAP - PARENT_ENTRY_COUNT)
+    .map((candidate) => candidate.path);
+}
+
+async function listRemoteDirCandidates(
+  ssh: RemoteOperationContext,
+  prefix: string
+): Promise<AutocompleteItem[]> {
+  const dirs = await listRemoteDirectories(ssh, prefix);
+  const items: AutocompleteItem[] = [{ value: '..', label: '..' }];
+  for (const rel of rankDirCandidates(dirs, prefix)) {
+    const label = path.basename(rel);
+    items.push({ value: rel, label, description: label === rel ? undefined : rel });
+  }
+  return items;
+}
+
+// Quoted positional arguments do not perform tilde expansion, so the script resolves ~ itself.
+async function resolveRemoteCwd(ssh: RemoteOperationContext, target: string): Promise<string> {
+  const script =
+    `case "$2" in "~") target=$HOME ;; "~/"*) target=$HOME/\${2#\\~/} ;; *) target=$2 ;; esac; ` +
+    `cd -- "$1" && cd -- "$target" && pwd`;
+  const output = await sshExec(
+    ssh.connection,
+    `bash -c ${quoteBashArg(script)} -- ${quoteBashArg(ssh.remoteCwd)} ${quoteBashArg(target)}`
+  );
+  const cwd = stripTrailingLineEndings(output.toString());
+  if (!cwd) throw new Error('remote pwd returned an empty path');
+  if (!path.posix.isAbsolute(cwd))
+    throw new Error(`remote pwd returned a non-absolute path: ${cwd}`);
+  return cwd;
+}
+
+async function switchRemoteCwd(
+  ssh: RemoteOperationContext,
+  ctx: ExtensionCommandContext,
+  target: string,
+  getCurrentSsh: () => RemoteOperationContext | null
+): Promise<void> {
+  let cwd: string;
+  try {
+    cwd = await resolveRemoteCwd(ssh, target);
+  } catch (error) {
+    if (getCurrentSsh() !== ssh) {
+      ctx.ui.notify('Remote working directory switch superseded by a new connection.', 'warning');
+      return;
+    }
+    ctx.ui.notify(`Cannot change remote cwd: ${formatSshFailureReason(error)}`, 'error');
+    return;
+  }
+  if (getCurrentSsh() !== ssh) {
+    ctx.ui.notify('Remote working directory switch superseded by a new connection.', 'warning');
+    return;
+  }
+  ssh.remoteCwd = cwd;
+  ctx.ui.setStatus('ssh', ctx.ui.theme.fg('accent', `SSH: ${ssh.connection.remote}:${cwd}`));
+  ctx.ui.notify(`Remote working directory: ${cwd}`, 'info');
+}
+
 function createRemoteReadOps({
   connection,
   remoteCwd,
   localCwd,
 }: RemoteOperationContext): ReadOperations {
-  const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
+  const toRemote = (p: string) => mapLocalPathToRemote(p, localCwd, remoteCwd);
   return {
-    readFile: (p) => sshExec(connection, `cat ${JSON.stringify(toRemote(p))}`),
-    access: (p) => sshExec(connection, `test -r ${JSON.stringify(toRemote(p))}`).then(() => {}),
+    readFile: (p) => sshExec(connection, `cat -- ${quoteBashArg(toRemote(p))}`),
+    access: (p) => sshExec(connection, `test -r ${quoteBashArg(toRemote(p))}`).then(() => {}),
     detectImageMimeType: async (p) => {
       try {
-        const r = await sshExec(connection, `file --mime-type -b ${JSON.stringify(toRemote(p))}`);
+        const r = await sshExec(connection, `file --mime-type -b ${quoteBashArg(toRemote(p))}`);
         const m = r.toString().trim();
         return ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(m) ? m : null;
       } catch {
@@ -178,16 +349,17 @@ function createRemoteWriteOps({
   remoteCwd,
   localCwd,
 }: RemoteOperationContext): WriteOperations {
-  const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
+  const toRemote = (p: string) => mapLocalPathToRemote(p, localCwd, remoteCwd);
   return {
     writeFile: async (p, content) => {
       const b64 = Buffer.from(content).toString('base64');
       await sshExec(
         connection,
-        `echo ${JSON.stringify(b64)} | base64 -d > ${JSON.stringify(toRemote(p))}`
+        `printf %s ${quoteBashArg(b64)} | base64 -d > ${quoteBashArg(toRemote(p))}`
       );
     },
-    mkdir: (dir) => sshExec(connection, `mkdir -p ${JSON.stringify(toRemote(dir))}`).then(() => {}),
+    mkdir: (dir) =>
+      sshExec(connection, `mkdir -p -- ${quoteBashArg(toRemote(dir))}`).then(() => {}),
   };
 }
 
@@ -202,11 +374,11 @@ function createRemoteBashOps({
   remoteCwd,
   localCwd,
 }: RemoteOperationContext): BashOperations {
-  const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
+  const toRemote = (p: string) => mapLocalPathToRemote(p, localCwd, remoteCwd);
   return {
     exec: (command, cwd, { onData, signal, timeout }) =>
       new Promise((resolve, reject) => {
-        const cmd = `cd ${JSON.stringify(toRemote(cwd))} && ${command}`;
+        const cmd = `cd -- ${quoteBashArg(toRemote(cwd))} && ${command}`;
         const child = connection.spawn(cmd);
         let timedOut = false;
         const timer = timeout
@@ -236,7 +408,7 @@ function createRemoteBashOps({
 
 // The built-in grep tool spawns rg locally, so SSH mode needs its own implementation that runs rg on the remote.
 function createRemoteGrepExec({ connection, remoteCwd, localCwd }: RemoteOperationContext) {
-  const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
+  const toRemote = (p: string) => mapLocalPathToRemote(p, localCwd, remoteCwd);
   return async (
     params: GrepToolInput,
     signal: AbortSignal | undefined
@@ -267,7 +439,7 @@ function createRemoteGrepExec({ connection, remoteCwd, localCwd }: RemoteOperati
 
     const { code, stderr } = await sshExecStream(
       connection,
-      `rg ${args.map((a) => JSON.stringify(a)).join(' ')}`,
+      `rg ${args.map((a) => quoteBashArg(a)).join(' ')}`,
       (line) => {
         if (!line.trim() || matchCount >= effectiveLimit) return;
         let event: {
@@ -347,10 +519,10 @@ function createRemoteLsOps({
   remoteCwd,
   localCwd,
 }: RemoteOperationContext): LsOperations {
-  const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
+  const toRemote = (p: string) => mapLocalPathToRemote(p, localCwd, remoteCwd);
   return {
     exists: (p) =>
-      sshExec(connection, `test -e ${JSON.stringify(toRemote(p))}`).then(
+      sshExec(connection, `test -e ${quoteBashArg(toRemote(p))}`).then(
         () => true,
         classifyTestExistsError
       ),
@@ -358,7 +530,7 @@ function createRemoteLsOps({
       const kind = (
         await sshExec(
           connection,
-          `if test -d ${JSON.stringify(toRemote(p))}; then echo dir; elif test -e ${JSON.stringify(toRemote(p))}; then echo file; else echo missing; fi`
+          `if test -d ${quoteBashArg(toRemote(p))}; then echo dir; elif test -e ${quoteBashArg(toRemote(p))}; then echo file; else echo missing; fi`
         )
       )
         .toString()
@@ -369,7 +541,7 @@ function createRemoteLsOps({
     },
     // -A includes dotfiles but omits . and ..; the tool sorts entries and stats each for the / suffix.
     readdir: (p) =>
-      sshExec(connection, `ls -1A ${JSON.stringify(toRemote(p))}`).then((r) =>
+      sshExec(connection, `ls -1A -- ${quoteBashArg(toRemote(p))}`).then((r) =>
         r
           .toString()
           .split('\n')
@@ -404,7 +576,7 @@ function createSshRemoteFileLister(connection: SshConnection): ListRemoteFiles {
     if (query) {
       common.push(buildFdPathQuery(query));
     }
-    const q = common.map((a) => JSON.stringify(a)).join(' ');
+    const q = common.map((a) => quoteBashArg(a)).join(' ');
     // Prefix lines with "1 " (dir) / "0 " (file); fd does not emit a trailing-/ on directories.
     const script =
       `set -o pipefail; ` +
@@ -413,7 +585,7 @@ function createSshRemoteFileLister(connection: SshConnection): ListRemoteFiles {
     const entries: RemoteFileEntry[] = [];
     const { code } = await sshExecStream(
       connection,
-      `bash -c ${JSON.stringify(script)}`,
+      `bash -c ${quoteBashArg(script)}`,
       (line) => {
         if (line.length < 3 || (line[0] !== '0' && line[0] !== '1') || line[1] !== ' ') return;
         const isDirectory = line[0] === '1';
@@ -436,10 +608,10 @@ function createRemoteFindOps({
   remoteCwd,
   localCwd,
 }: RemoteOperationContext): FindOperations {
-  const toRemote = (p: string) => p.replace(localCwd, remoteCwd);
+  const toRemote = (p: string) => mapLocalPathToRemote(p, localCwd, remoteCwd);
   return {
     exists: (p) =>
-      sshExec(connection, `test -e ${JSON.stringify(toRemote(p))}`).then(
+      sshExec(connection, `test -e ${quoteBashArg(toRemote(p))}`).then(
         () => true,
         classifyTestExistsError
       ),
@@ -448,15 +620,15 @@ function createRemoteFindOps({
     // against the local search path. pipefail surfaces rg failures (e.g. missing binary).
     glob: async (pattern, cwd, { ignore, limit }) => {
       const globs = [pattern, ...ignore.map((i) => `!${i}`)]
-        .map((g) => `-g ${JSON.stringify(g)}`)
+        .map((g) => `-g ${quoteBashArg(g)}`)
         .join(' ');
       const script =
-        `set -o pipefail; cd ${JSON.stringify(toRemote(cwd))} && ` +
+        `set -o pipefail; cd -- ${quoteBashArg(toRemote(cwd))} && ` +
         `rg --files --hidden --color=never ${globs} -- . | head -n ${limit}`;
       const lines: string[] = [];
       const { code, stderr } = await sshExecStream(
         connection,
-        `bash -c ${JSON.stringify(script)}`,
+        `bash -c ${quoteBashArg(script)}`,
         (line) => lines.push(line),
         undefined
       );
@@ -754,6 +926,42 @@ Remote working directory: \`${ssh.remoteCwd}\`
         return;
       }
       await connectSsh(ctx.ui, parsed.remote, parsed.path, parsed.port);
+    },
+  });
+
+  pi.registerCommand('ssh:cwd', {
+    description: 'Change the remote working directory for SSH-backed tools',
+    getArgumentCompletions: (prefix: string) => {
+      const ssh = resolvedSsh;
+      if (!ssh) return null;
+      return listRemoteDirCandidates(ssh, prefix).catch(() => null);
+    },
+    handler: async (args, ctx) => {
+      const ssh = resolvedSsh;
+      if (!ssh) {
+        ctx.ui.notify('No active SSH connection. Use /ssh first.', 'error');
+        return;
+      }
+      if (!args) {
+        let items: AutocompleteItem[];
+        try {
+          items = await listRemoteDirCandidates(ssh, '');
+        } catch (error) {
+          ctx.ui.notify(
+            `Could not list remote directories: ${formatSshFailureReason(error)}`,
+            'error'
+          );
+          return;
+        }
+        const selected = await ctx.ui.select(
+          `Select remote directory under ${ssh.remoteCwd}`,
+          items.map((item) => item.value)
+        );
+        if (!selected) return;
+        await switchRemoteCwd(ssh, ctx, selected, () => resolvedSsh);
+        return;
+      }
+      await switchRemoteCwd(ssh, ctx, args, () => resolvedSsh);
     },
   });
 }

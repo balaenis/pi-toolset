@@ -10,7 +10,7 @@ When `--ssh` is provided, the `read`, `write`, `edit`, `bash`, `grep`, `find`, a
 - Unknown host keys are accepted on first connect (`StrictHostKeyChecking=accept-new`); changed keys still fail
 - `bash` on the remote
 - `rg` (ripgrep) on the remote (for the `grep` and `find` tools)
-- `fd` on the remote (for interactive `@` file completion; same tool local Pi uses)
+- `fd` on the remote (for interactive `@` file completion; same tool local Pi uses). `/ssh:cwd` prefers `fd` but falls back to standard `find`.
 - `file` on the remote (only for image mime-type detection; degrades gracefully)
 
 ## Usage
@@ -76,6 +76,25 @@ When SSH mode is active, the interactive editor's `@` completion lists remote fi
 - Scope v1: only unquoted `@` tokens are remote. Slash commands (`/…`), bare path Tab completion, and quoted `@"…` tokens keep the local provider.
 - The provider is registered only when SSH resolves successfully in `session_start`; without `--ssh` (or on failure) local `@` completion is untouched.
 - Latency note: each keystroke on `@` still starts one remote listing command (two `fd` passes: dirs then files), but after the first command it reuses the authenticated multiplexed transport instead of performing a new SSH handshake.
+
+## Remote working directory (`/ssh:cwd`)
+
+Change the active remote working directory at any time:
+
+```
+/ssh:cwd                  # pick a directory under the current remote cwd
+/ssh:cwd packages/app     # relative path under the current remote cwd
+/ssh:cwd /srv/app         # absolute path
+/ssh:cwd ~                # remote home directory
+/ssh:cwd ~/src/app        # directory under the remote home directory
+```
+
+- With no arguments, a picker lists directory candidates under the current remote cwd. Candidates include hidden directories, follow symlinks, and exclude `.git`. The list always includes `..`, even at the filesystem root.
+- Inline argument completion fuzzy-ranks candidates case-insensitively: exact basename, basename prefix, basename substring, path substring, then ordered subsequence. Selecting a candidate inserts an executable `/ssh:cwd <path>` argument.
+- The picker and inline completion each show at most 100 items total: `..` plus at most 99 descendants.
+- Remote `fd` is preferred for directory listing; standard `find` is the automatic fallback. `fd` is not required for `/ssh:cwd`.
+- The switch affects all later SSH-backed tools, `!commands`, remote `@` completion, the status bar, and the prompt context. Operations already in flight keep the cwd captured when they started.
+- The switch lasts only for the active SSH connection. A failed or cancelled switch leaves the previous cwd active; failures report the cleaned remote reason.
 
 ## Install
 
