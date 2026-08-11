@@ -6,7 +6,7 @@ Run the implementation workflow from an existing plan as a single `agent` chain,
 
 Send a one-line update stating the target before you run the chain. No other preamble.
 
-Run these steps in order. Each later step reads earlier output via `{outputs.<name>}`:
+Each chain round contains exactly these 3 steps, each later step referencing earlier output via `{outputs.<name>}`. A new chain round starts only after the current round finishes:
 
 1. `implement` (general): Confirm `$@` holds a concrete plan; else stop and report. Establish the review baseline before applying: `git add` the working tree and verify the staged set is unchanged. 
 2. `review` (reviewer): Review the unstaged implementation relative to the baseline. Report under `## Standards` and `## Spec`. Write `- None.` under an axis with no findings. If both axes read exactly `- None.`, stop and report `Clean`.

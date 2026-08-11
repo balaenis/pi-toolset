@@ -6,7 +6,7 @@ Run a closed review loop as a single `agent` chain. The loop is complete only wh
 
 Before running the chain, send a one-line update stating the review target.
 
-Each chain round contains exactly these 3 steps, each later step referencing earlier output via `{outputs.<name>}`. A new chain round starts only after the current round finishes.
+Each chain round contains exactly these 3 steps, each later step referencing earlier output via `{outputs.<name>}`. A new chain round starts only after the current round finishes:
 
 1. `review` (reviewer): Review $@. Report under `## Standards` and `## Spec`, each axis verbatim from its sub-agent, writing `- None.` under an axis with no findings. End with one line: per-axis finding counts and each axis's worst issue. If both axes read exactly `- None.`, stop and report `Clean`.
 2. `fix` (planner): Build a fix plan from `{outputs.review}`. Address every remaining finding: fix it, or explicitly justify it as out of scope.
