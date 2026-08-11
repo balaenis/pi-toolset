@@ -1,3 +1,2 @@
 // ABOUTME: Embedded package version, kept in sync by release-please on each release.
-// x-release-please-version
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0'; // x-release-please-version
