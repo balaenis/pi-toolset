@@ -33,6 +33,7 @@ import {
   type WriteOperations,
 } from '@earendil-works/pi-coding-agent';
 import type { AutocompleteItem } from '@earendil-works/pi-tui';
+import { mapLocalPathToRemote, resolveRemotePath } from './remote-path.ts';
 import { createSshConnection, type SshChildProcess, type SshConnection } from './ssh.ts';
 import {
   createRemoteAtAutocompleteFactory,
@@ -181,10 +182,6 @@ function quoteBashArg(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function mapLocalPathToRemote(value: string, localCwd: string, remoteCwd: string): string {
-  return value.replace(localCwd, () => remoteCwd);
-}
-
 function buildRemoteDirPrefilter(query: string): string {
   return [...query.toLowerCase()]
     .map((char) => char.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&'))
@@ -238,7 +235,7 @@ function dirMatchTier(relativePath: string, query: string): number {
   if (!query) return MATCH_ORDERED_SUBSEQUENCE;
   const lowerQuery = query.toLowerCase();
   const lowerPath = relativePath.toLowerCase();
-  const lowerBase = path.basename(relativePath).toLowerCase();
+  const lowerBase = path.posix.basename(relativePath).toLowerCase();
   if (lowerBase === lowerQuery) return MATCH_EXACT_BASENAME;
   if (lowerBase.startsWith(lowerQuery)) return MATCH_BASENAME_PREFIX;
   if (lowerBase.includes(lowerQuery)) return MATCH_BASENAME_SUBSTRING;
@@ -275,7 +272,7 @@ async function listRemoteDirCandidates(
   const dirs = await listRemoteDirectories(ssh, prefix);
   const items: AutocompleteItem[] = [{ value: '..', label: '..' }];
   for (const rel of rankDirCandidates(dirs, prefix)) {
-    const label = path.basename(rel);
+    const label = path.posix.basename(rel);
     items.push({ value: rel, label, description: label === rel ? undefined : rel });
   }
   return items;
@@ -408,13 +405,12 @@ function createRemoteBashOps({
 
 // The built-in grep tool spawns rg locally, so SSH mode needs its own implementation that runs rg on the remote.
 function createRemoteGrepExec({ connection, remoteCwd, localCwd }: RemoteOperationContext) {
-  const toRemote = (p: string) => mapLocalPathToRemote(p, localCwd, remoteCwd);
   return async (
     params: GrepToolInput,
     signal: AbortSignal | undefined
   ): Promise<AgentToolResult<GrepToolDetails>> => {
     if (signal?.aborted) throw new Error('Operation aborted');
-    const searchPath = toRemote(path.resolve(localCwd, params.path || '.'));
+    const searchPath = resolveRemotePath(params.path || '.', localCwd, remoteCwd);
     const contextValue = params.context && params.context > 0 ? params.context : 0;
     const effectiveLimit = Math.max(1, params.limit ?? GREP_DEFAULT_LIMIT);
 
@@ -426,9 +422,9 @@ function createRemoteGrepExec({ connection, remoteCwd, localCwd }: RemoteOperati
     args.push('--', params.pattern, searchPath);
 
     const formatPath = (filePath: string) => {
-      const relative = path.relative(searchPath, filePath);
-      if (relative && !relative.startsWith('..')) return relative.replace(/\\/g, '/');
-      return path.basename(filePath);
+      const relative = path.posix.relative(searchPath, filePath);
+      if (relative && !relative.startsWith('..')) return relative;
+      return path.posix.basename(filePath);
     };
 
     let matchCount = 0;
