@@ -261,7 +261,9 @@ describe('registerPiRemote session lifecycle', () => {
       const entries = await readdir(runtimeRoot);
       const privateDirs = entries.filter((e) => e.startsWith('pi-r-'));
       expect(privateDirs).toHaveLength(1);
-      expect((await stat(path.join(runtimeRoot, privateDirs[0]!))).mode & 0o777).toBe(0o700);
+      if (process.platform !== 'win32') {
+        expect((await stat(path.join(runtimeRoot, privateDirs[0]!))).mode & 0o777).toBe(0o700);
+      }
 
       await shutdownHandler({}, ctx);
       expect(await readdir(runtimeRoot)).toEqual([]);

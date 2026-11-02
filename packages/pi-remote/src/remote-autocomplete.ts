@@ -7,6 +7,7 @@ import type {
   AutocompleteSuggestions,
 } from '@earendil-works/pi-tui';
 import type { AutocompleteProviderFactory } from '@earendil-works/pi-coding-agent';
+import { resolveRemotePath } from './remote-path.ts';
 
 export const REMOTE_AT_MAX_RESULTS = 20;
 
@@ -106,7 +107,7 @@ export interface RemoteAtSuggestionOptions {
 
 // Mirrors pi-tui scoreEntry: exact filename, prefix, filename substring, then path substring; dirs get a bonus.
 function scoreEntry(filePath: string, query: string, isDirectory: boolean): number {
-  const fileName = path.basename(filePath);
+  const fileName = path.posix.basename(filePath);
   const lowerFileName = fileName.toLowerCase();
   const lowerQuery = query.toLowerCase();
   let score = 0;
@@ -119,20 +120,20 @@ function scoreEntry(filePath: string, query: string, isDirectory: boolean): numb
 }
 
 // Splits an at-prefix (e.g. "@src/a") into the remote search root and the fuzzy query.
-// Relative prefixes resolve under remoteCwd; absolute prefixes map localCwd→remoteCwd
-// via path.resolve (pure remote-absolute paths pass through unchanged).
+// Relative prefixes resolve under remoteCwd; absolute prefixes map localCwd→remoteCwd.
+// Pure remote-absolute paths pass through unchanged.
 function parseAtPrefix(atPrefix: string, localCwd: string, remoteCwd: string) {
   const raw = atPrefix.slice(1).replace(/\\/g, '/');
   const slashIndex = raw.lastIndexOf('/');
   const query = slashIndex === -1 ? raw : raw.slice(slashIndex + 1);
   const rawBase = slashIndex === -1 ? '' : raw.slice(0, slashIndex + 1);
-  const resolveRemote = (p: string) => path.resolve(localCwd, p).replace(localCwd, remoteCwd);
+  const searchRoot = resolveRemotePath(rawBase, localCwd, remoteCwd);
   const displayBase = rawBase.startsWith('/')
-    ? resolveRemote(rawBase) === '/'
+    ? searchRoot === '/'
       ? '/'
-      : `${resolveRemote(rawBase)}/`
+      : `${searchRoot}/`
     : rawBase;
-  return { searchRoot: resolveRemote(rawBase), query, displayBase };
+  return { searchRoot, query, displayBase };
 }
 
 export async function getRemoteAtSuggestions(
@@ -166,7 +167,7 @@ export async function getRemoteAtSuggestions(
       const displayPath = `${displayBase}${entry.relativePath}`;
       return {
         value: `@${displayPath}${entry.isDirectory ? '/' : ''}`,
-        label: `${path.basename(entry.relativePath)}${entry.isDirectory ? '/' : ''}`,
+        label: `${path.posix.basename(entry.relativePath)}${entry.isDirectory ? '/' : ''}`,
         description: displayPath,
       };
     });

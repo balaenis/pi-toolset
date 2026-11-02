@@ -40,14 +40,34 @@ export interface SshRuntimeDependencies {
   spawnProcess?: typeof spawn;
 }
 
-async function isSafeRuntimeDir(dir: string, uid: number): Promise<boolean> {
+function readProcessUid(): number | undefined {
+  const getUid = process.getuid;
+  return typeof getUid === 'function' ? getUid.call(process) : undefined;
+}
+
+function resolveUid(dependencies: SshRuntimeDependencies): number | undefined {
+  if (dependencies.getUid) return dependencies.getUid();
+  return readProcessUid();
+}
+
+/** Windows reports every directory as mode 0666 and uid 0, so those checks cannot be enforced. */
+function enforcesUnixOwnership(dependencies: SshRuntimeDependencies): boolean {
+  return dependencies.getUid !== undefined || typeof process.getuid === 'function';
+}
+
+async function isSafeRuntimeDir(
+  dir: string,
+  uid: number | undefined,
+  enforceUnixOwnership: boolean
+): Promise<boolean> {
   if (!dir || !path.isAbsolute(dir)) return false;
   try {
     const directoryStats = await stat(dir);
     if (!directoryStats.isDirectory()) return false;
+    if (!enforceUnixOwnership) return true;
     // Reject group/other write bits so a peer cannot tamper with the socket.
     if ((directoryStats.mode & 0o022) !== 0) return false;
-    if (directoryStats.uid !== uid) return false;
+    if (uid === undefined || directoryStats.uid !== uid) return false;
     return true;
   } catch {
     return false;
@@ -60,12 +80,13 @@ export async function createSshControlPath(
 ): Promise<SshControlPath> {
   const env = dependencies.env ?? process.env;
   const processId = dependencies.processId ?? process.pid;
-  const uid = dependencies.getUid ? dependencies.getUid() : process.getuid?.();
+  const uid = resolveUid(dependencies);
+  const enforceUnixOwnership = enforcesUnixOwnership(dependencies);
   const temporaryDirectory = dependencies.temporaryDirectory ?? os.tmpdir();
 
   const bases: string[] = [];
   const xdg = env.XDG_RUNTIME_DIR;
-  if (uid !== undefined && typeof xdg === 'string' && (await isSafeRuntimeDir(xdg, uid))) {
+  if (typeof xdg === 'string' && (await isSafeRuntimeDir(xdg, uid, enforceUnixOwnership))) {
     bases.push(xdg);
   }
   if (temporaryDirectory) bases.push(temporaryDirectory);

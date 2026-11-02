@@ -56,7 +56,7 @@ While running in the TUI, connect at any time with the `/ssh` command:
 
 ## Connection multiplexing
 
-SSH connections are reused automatically; no new flag is required. Each session owns one OpenSSH multiplexed connection created with `ControlMaster=auto` and a fixed `ControlPersist=10m`. The control socket is stored in a process- and session-unique private directory under the XDG runtime directory (when safe) or a private temporary subdirectory, so parallel Pi sessions never collide.
+SSH connections are reused automatically; no new flag is required. Each session owns one OpenSSH multiplexed connection created with `ControlMaster=auto` and a fixed `ControlPersist=10m`. The control socket is stored in a process- and session-unique private directory under the XDG runtime directory (when safe) or a private temporary subdirectory, so parallel Pi sessions never collide. On Windows, Unix owner and mode bits are not available: an absolute XDG runtime directory is accepted, and `chmod 0700` is best-effort. Remote paths always use POSIX separators.
 
 - Every normal SSH child runs in a separate process session with fixed internal bounds: `ServerAliveInterval=15`, `ServerAliveCountMax=3`, `ConnectTimeout=15`, `ConnectionAttempts=2`, `BatchMode=yes`, and `StrictHostKeyChecking=accept-new`. The separate session prevents `ProxyJump` and `ProxyCommand` children from opening Pi's controlling terminal. Failures return through stderr instead of showing interactive prompts.
 - A failed in-flight operation is never automatically replayed. A later invocation starts another SSH attempt on the same session-owned connection and control path: `ControlMaster=auto` reuses a live master or opens a new transport. This is a new attempt, not a retry of the failed command.

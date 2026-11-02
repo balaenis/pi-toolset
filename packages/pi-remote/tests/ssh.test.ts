@@ -1,6 +1,6 @@
 // ABOUTME: Verifies the SSH connection module: safe control paths, multiplexed spawning, reuse, and cleanup.
 // ABOUTME: Uses injected process and env dependencies; no live SSH in unit tests.
-import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { spawn, type StdioOptions } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
@@ -67,7 +67,7 @@ describe('createSshControlPath', () => {
     const differentDestinationPath = await createSshControlPath('admin@otherhost', deps);
 
     const parentMode = (await stat(path.dirname(firstSameDestinationPath.socketPath))).mode & 0o777;
-    expect(parentMode).toBe(0o700);
+    if (process.platform !== 'win32') expect(parentMode).toBe(0o700);
     expect(Buffer.byteLength(firstSameDestinationPath.socketPath, 'utf8')).toBeLessThanOrEqual(100);
 
     const basename = path.basename(firstSameDestinationPath.socketPath);
@@ -105,7 +105,9 @@ describe('createSshControlPath', () => {
     const fromFallback = path.relative(fallbackRoot, result.socketPath);
     expect(fromFallback && !fromFallback.startsWith('..')).toBe(true);
     expect(path.relative(unsafeXdg, result.socketPath).startsWith('..')).toBe(true);
-    expect((await stat(path.dirname(result.socketPath))).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') {
+      expect((await stat(path.dirname(result.socketPath))).mode & 0o777).toBe(0o700);
+    }
   });
 
   it('removes an overlong XDG candidate before using the next base', async () => {
@@ -148,21 +150,15 @@ describe('createSshControlPath', () => {
     const tempRoot = await freshRoot();
     const xdg = path.join(tempRoot, 'xdg');
     await mkdir(xdg, { mode: 0o700 });
-    const realUid = process.getuid?.();
-    const spy = spyOn(process, 'getuid').mockReturnValue((realUid ?? 0) + 1);
-    try {
-      const deps = makeDeps({
-        env: { XDG_RUNTIME_DIR: xdg },
-        temporaryDirectory: '',
-        getUid: undefined,
-      });
+    const deps = makeDeps({
+      env: { XDG_RUNTIME_DIR: xdg },
+      temporaryDirectory: '',
+      getUid: () => (process.getuid?.() ?? 0) + 1,
+    });
 
-      await expect(createSshControlPath('user@host', deps)).rejects.toThrow(
-        'Unable to create a safe SSH ControlPath within 100 bytes'
-      );
-    } finally {
-      spy.mockRestore();
-    }
+    await expect(createSshControlPath('user@host', deps)).rejects.toThrow(
+      'Unable to create a safe SSH ControlPath within 100 bytes'
+    );
   });
 
   it('rejects XDG runtime dir when the current UID is unavailable', async () => {
