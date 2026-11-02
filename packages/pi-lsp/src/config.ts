@@ -3,7 +3,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { Value } from 'typebox/value';
+import { compile } from '@earendil-works/pi-schema';
 import { getAgentDir, CONFIG_DIR_NAME } from '@earendil-works/pi-coding-agent';
 import { logError, logForDebugging } from './log.ts';
 import { BUILTIN_RECIPES, getDetectedRecipeServers } from './recipes.ts';
@@ -15,6 +15,8 @@ import type {
   LspServerRole,
 } from './types.ts';
 import { InputScopedLspServerConfigSchema } from './types.ts';
+
+const serverConfigValidator = compile(InputScopedLspServerConfigSchema);
 
 /**
  * Best-effort languageId guess for the `extensions` sugar. Covers the common
@@ -118,8 +120,8 @@ function normalizeServer(
       }
     : raw;
 
-  if (!Value.Check(InputScopedLspServerConfigSchema, merged)) {
-    const errors = Value.Errors(InputScopedLspServerConfigSchema, merged);
+  if (!serverConfigValidator.check(merged)) {
+    const errors = serverConfigValidator.errors(merged);
     logError(
       new Error(
         `LSP server '${name}' config invalid: ${errors.map((error) => error.message).join('; ')}`

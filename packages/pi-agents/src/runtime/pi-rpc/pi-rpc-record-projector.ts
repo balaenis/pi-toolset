@@ -1,5 +1,5 @@
 // ABOUTME: Incremental LF JSONL projector that validates Pi RPC records and emits bounded shells.
-// ABOUTME: Grants a 64 MiB budget only to exact-prefix canonical replayable Pi 0.84 events.
+// ABOUTME: Grants a 64 MiB budget only to exact-prefix canonical replayable Pi wire events.
 
 import {
   MAX_PROJECTABLE_RPC_RECORD_BYTES,
@@ -88,15 +88,17 @@ type ProjectableType =
   | 'tool_execution_end';
 
 /**
- * Accepted top-level key orders per event type (canonical first). Pi 0.84.0
+ * Accepted top-level key orders per event type (canonical first). Pi 1.5 adds
+ * usage before assistantMessageEvent and trailing tool_execution_end durationMs. Pi 0.84.0
  * dropped the cumulative `message` field from wire `message_update` events
  * (`toJsonEvent`); pre-0.84 runtimes emitted `{type, assistantMessageEvent, message}`,
- * so both orders are accepted.
+ * so all three orders are accepted.
  */
 const PROJECTABLE_PREFIXES: Record<ProjectableType, readonly (readonly string[])[]> = {
   agent_end: [['type', 'messages', 'willRetry']],
   message_start: [['type', 'message']],
   message_update: [
+    ['type', 'usage', 'assistantMessageEvent'],
     ['type', 'assistantMessageEvent'],
     ['type', 'assistantMessageEvent', 'message'],
   ],
@@ -104,7 +106,10 @@ const PROJECTABLE_PREFIXES: Record<ProjectableType, readonly (readonly string[])
   turn_end: [['type', 'message', 'toolResults']],
   tool_execution_start: [['type', 'toolCallId', 'toolName', 'args']],
   tool_execution_update: [['type', 'toolCallId', 'toolName', 'args', 'partialResult']],
-  tool_execution_end: [['type', 'toolCallId', 'toolName', 'result', 'isError']],
+  tool_execution_end: [
+    ['type', 'toolCallId', 'toolName', 'result', 'isError', 'durationMs'],
+    ['type', 'toolCallId', 'toolName', 'result', 'isError'],
+  ],
 };
 
 const PROJECTABLE_TYPE_SET = new Set<string>(Object.keys(PROJECTABLE_PREFIXES));
@@ -523,6 +528,14 @@ class JsonRecordParser {
         if (isNumberContinue(ch)) {
           this.note(ch);
           this.tokenBuf += ch;
+          const frame = this.stack[this.stack.length - 1];
+          if (
+            frame?.topLevel &&
+            frame.currentKey === 'durationMs' &&
+            this.tokenBuf.length > this.limits.shellFieldMaxBytes
+          ) {
+            this.revokeProjectability();
+          }
           return true;
         }
         this.endNumber();
@@ -638,6 +651,8 @@ class JsonRecordParser {
     'toolResults',
     'message',
     'assistantMessageEvent',
+    'usage',
+    'durationMs',
     'args',
     'partialResult',
     'result',
@@ -647,7 +662,13 @@ class JsonRecordParser {
   private static readonly ARRAY_BULK_FIELDS = new Set(['messages', 'toolResults']);
 
   /** Top-level bulk fields that must be non-array objects. */
-  private static readonly OBJECT_BULK_FIELDS = new Set(['message', 'assistantMessageEvent']);
+  private static readonly OBJECT_BULK_FIELDS = new Set([
+    'message',
+    'assistantMessageEvent',
+    'usage',
+  ]);
+
+  private static readonly NUMBER_BULK_FIELDS = new Set(['durationMs']);
 
   private recordBulkFieldShape(ch: string): void {
     const frame = this.stack[this.stack.length - 1];
@@ -669,7 +690,8 @@ class JsonRecordParser {
     // or wrong container cannot receive the 64 MiB projectable budget.
     if (
       (JsonRecordParser.ARRAY_BULK_FIELDS.has(key) && kind !== 'array') ||
-      (JsonRecordParser.OBJECT_BULK_FIELDS.has(key) && kind !== 'object')
+      (JsonRecordParser.OBJECT_BULK_FIELDS.has(key) && kind !== 'object') ||
+      (JsonRecordParser.NUMBER_BULK_FIELDS.has(key) && kind !== 'number')
     ) {
       this.revokeProjectability();
     }
@@ -832,6 +854,14 @@ class JsonRecordParser {
     if (!isValidJsonNumber(this.tokenBuf)) {
       throw new PiRpcProjectorError('malformed_json', `Invalid JSON number '${this.tokenBuf}'`);
     }
+    const frame = this.stack[this.stack.length - 1];
+    if (
+      frame?.topLevel &&
+      frame.currentKey === 'durationMs' &&
+      !Number.isFinite(Number(this.tokenBuf))
+    ) {
+      this.revokeProjectability();
+    }
     this.tokenBuf = '';
     this.afterValue();
   }
@@ -901,6 +931,7 @@ class JsonRecordParser {
     for (const [key, shape] of this.bulkFieldShapes) {
       if (JsonRecordParser.ARRAY_BULK_FIELDS.has(key) && shape !== 'array') return false;
       if (JsonRecordParser.OBJECT_BULK_FIELDS.has(key) && shape !== 'object') return false;
+      if (JsonRecordParser.NUMBER_BULK_FIELDS.has(key) && shape !== 'number') return false;
     }
     switch (this.projectableType) {
       case 'agent_end':

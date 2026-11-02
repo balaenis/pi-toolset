@@ -2,6 +2,7 @@
 // ABOUTME: Uses an injected fake background manager and a fake workflow runner to avoid spawning real agents.
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { compile } from '@earendil-works/pi-schema';
 import type { AgentToolResult, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { EventEmitter } from 'node:events';
 import {
@@ -375,18 +376,17 @@ describe('agent tool title parameter', () => {
   it('accepts titles longer than 30 chars on single, task, chain, and fanout schemas', async () => {
     const { SubagentParams, TaskItem, SequentialChainItem, FanoutChainItem } =
       await import('../../src/shared/schema.ts');
-    const { Value } = await import('typebox/value');
     const shortTitle = 'a'.repeat(30);
     const longTitle = 'a'.repeat(31);
-    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y', title: shortTitle })).toBe(true);
-    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y', title: longTitle })).toBe(true);
-    expect(Value.Check(SubagentParams, { agent: 'x', task: 'y' })).toBe(true);
-    expect(Value.Check(TaskItem, { agent: 'x', task: 'y', title: shortTitle })).toBe(true);
-    expect(Value.Check(TaskItem, { agent: 'x', task: 'y', title: longTitle })).toBe(true);
-    expect(Value.Check(SequentialChainItem, { agent: 'x', task: 'y', title: shortTitle })).toBe(
+    expect(compile(SubagentParams).check({ agent: 'x', task: 'y', title: shortTitle })).toBe(true);
+    expect(compile(SubagentParams).check({ agent: 'x', task: 'y', title: longTitle })).toBe(true);
+    expect(compile(SubagentParams).check({ agent: 'x', task: 'y' })).toBe(true);
+    expect(compile(TaskItem).check({ agent: 'x', task: 'y', title: shortTitle })).toBe(true);
+    expect(compile(TaskItem).check({ agent: 'x', task: 'y', title: longTitle })).toBe(true);
+    expect(compile(SequentialChainItem).check({ agent: 'x', task: 'y', title: shortTitle })).toBe(
       true
     );
-    expect(Value.Check(SequentialChainItem, { agent: 'x', task: 'y', title: longTitle })).toBe(
+    expect(compile(SequentialChainItem).check({ agent: 'x', task: 'y', title: longTitle })).toBe(
       true
     );
     const fanout = {
@@ -394,13 +394,13 @@ describe('agent tool title parameter', () => {
       parallel: { agent: 'x', task: 'y', title: shortTitle },
       collect: { name: 'r' },
     };
-    expect(Value.Check(FanoutChainItem, fanout)).toBe(true);
+    expect(compile(FanoutChainItem).check(fanout)).toBe(true);
     const fanoutLong = {
       expand: { from: { output: 'o', path: '/p' } },
       parallel: { agent: 'x', task: 'y', title: longTitle },
       collect: { name: 'r' },
     };
-    expect(Value.Check(FanoutChainItem, fanoutLong)).toBe(true);
+    expect(compile(FanoutChainItem).check(fanoutLong)).toBe(true);
   });
 
   it('passes the single title through to the workflow runner', async () => {
@@ -542,13 +542,12 @@ describe('runtime override schema and grok-acp skill/fork warnings', () => {
 
   it('accepts only pi and grok-acp and omits replay parameters', async () => {
     const { RuntimeSchema, SubagentParams } = await import('../../src/shared/schema.ts');
-    const { Value } = await import('typebox/value');
-    expect(Value.Check(RuntimeSchema, 'pi')).toBe(true);
-    expect(Value.Check(RuntimeSchema, 'grok')).toBe(false);
-    expect(Value.Check(RuntimeSchema, 'grok-acp')).toBe(true);
-    expect(Value.Check(RuntimeSchema, 'claude')).toBe(false);
-    expect(Value.Check(RuntimeSchema, 'weird')).toBe(false);
-    expect('allowReplay' in SubagentParams.properties).toBe(false);
+    expect(compile(RuntimeSchema).check('pi')).toBe(true);
+    expect(compile(RuntimeSchema).check('grok')).toBe(false);
+    expect(compile(RuntimeSchema).check('grok-acp')).toBe(true);
+    expect(compile(RuntimeSchema).check('claude')).toBe(false);
+    expect(compile(RuntimeSchema).check('weird')).toBe(false);
+    expect(SubagentParams.properties).not.toHaveProperty('allowReplay');
   });
 
   it('emits skill and fork warnings for grok-acp before spawn failure', async () => {

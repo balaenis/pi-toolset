@@ -30,8 +30,8 @@ SOFTWARE.
 ## Bundled runtime dependencies
 
 The published `dist/index.js` bundle includes the following third-party packages
-(derived from a Bun build metafile with Pi host peers externalized). Host peers
-(`@earendil-works/pi-*`, `typebox`) remain external and are not redistributed here.
+(derived from a Bun build metafile with Pi SDK peers and `pi-schema` externalized).
+These external dependencies are not redistributed here.
 
 ### effect@3.22.0
 

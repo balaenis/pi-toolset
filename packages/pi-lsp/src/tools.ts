@@ -4,8 +4,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { StringEnum, Type } from '@earendil-works/pi-ai';
-import type { Static } from '@earendil-works/pi-ai';
+import { int, obj, oneOf, str, type Static } from '@earendil-works/pi-schema';
 import { Text } from '@earendil-works/pi-tui';
 import { truncateTail } from '@earendil-works/pi-coding-agent';
 import type {
@@ -57,22 +56,25 @@ const OPERATIONS = [
   'outgoingCalls',
 ] as const;
 
-const PARAMETERS = Type.Object({
-  operation: StringEnum([...OPERATIONS], {
-    description: 'The LSP operation to perform.',
-  }),
-  filePath: Type.String({
-    description: 'The absolute or relative path to the file.',
-  }),
-  line: Type.Integer({
-    minimum: 1,
-    description: 'The line number (1-based, as shown in editors).',
-  }),
-  character: Type.Integer({
-    minimum: 1,
-    description: 'The character offset (1-based, as shown in editors).',
-  }),
-});
+const PARAMETERS = obj(
+  {
+    operation: oneOf(OPERATIONS, {
+      description: 'The LSP operation to perform.',
+    }),
+    filePath: str({
+      description: 'The absolute or relative path to the file.',
+    }),
+    line: int({
+      minimum: 1,
+      description: 'The line number (1-based, as shown in editors).',
+    }),
+    character: int({
+      minimum: 1,
+      description: 'The character offset (1-based, as shown in editors).',
+    }),
+  },
+  { open: true }
+);
 
 type Params = Static<typeof PARAMETERS>;
 
@@ -109,9 +111,10 @@ export function registerLspTool(pi: ExtensionAPI): void {
     description: DESCRIPTION,
     parameters: PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return runLsp(params, ctx);
+      return runLsp(params as Params, ctx);
     },
-    renderCall(args, theme, _context) {
+    renderCall(input, theme, _context) {
+      const args = input as Params;
       let text = theme.fg('dim', 'LSP › ');
       text += theme.fg('toolTitle', theme.bold(args.operation));
       text += theme.fg('dim', ' ');

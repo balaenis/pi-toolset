@@ -26,6 +26,8 @@ release-please-config.json        # manifest-mode release config
 
 ## Getting started
 
+Use Pi 1.5.0 or later in the 1.x release line. Schemas use `@earendil-works/pi-schema`. These packages no longer declare TypeBox as a direct dependency. Schema users declare `pi-schema` as a runtime dependency and keep it external via `pi.external`; Pi 1.5.0 does not provide a loader alias for it.
+
 This repo uses [`mise`](https://mise.jdx.dev) for tooling and [`bun`](https://bun.sh) as the package manager (bun workspaces).
 
 ```sh

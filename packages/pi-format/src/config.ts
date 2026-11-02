@@ -3,7 +3,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { Value } from 'typebox/value';
+import { compile } from '@earendil-works/pi-schema';
 import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent';
 import { logDebug, logError } from './log.ts';
 import { BUILTIN_FORMATTER_RECIPES } from './recipes.ts';
@@ -17,6 +17,8 @@ import {
 
 const CONFIG_FILENAME = path.join('@balaenis', 'pi-format', 'config.json');
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+const formatterConfigValidator = compile(InputFormatterConfigSchema);
 
 /** Top-level boolean flags editable via `/format config`. */
 export const CONFIG_FLAG_KEYS = ['enabled', 'formatOnWrite'] as const;
@@ -75,8 +77,8 @@ export function normalizeFormatterConfig(
   name: string,
   raw: InputFormatterConfig
 ): FormatterConfig | undefined {
-  if (!Value.Check(InputFormatterConfigSchema, raw)) {
-    const errors = Value.Errors(InputFormatterConfigSchema, raw);
+  if (!formatterConfigValidator.check(raw)) {
+    const errors = formatterConfigValidator.errors(raw);
     logError(
       new Error(
         `Formatter '${name}' config invalid: ${errors.map((error) => error.message).join('; ')}`

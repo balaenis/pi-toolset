@@ -2,7 +2,7 @@
 // ABOUTME: Uses fake renderer contexts and an injectable spinner scheduler (no wall-clock waits).
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import type { Theme } from '@earendil-works/pi-coding-agent';
+import { keyText, type MessageRenderOptions, type Theme } from '@earendil-works/pi-coding-agent';
 import type { Component } from '@earendil-works/pi-tui';
 import {
   activeSpinnerCount,
@@ -68,6 +68,15 @@ function fakeTheme(): Theme {
     bold: (text: string) => text,
     fg: (_color: string, text: string) => text,
   } as Theme;
+}
+
+function messageRenderOptions(expanded = false): MessageRenderOptions {
+  return {
+    expanded,
+    outputPad: 0,
+    keyText,
+    keyHint: (keybinding, description) => `${keyText(keybinding)} ${description}`,
+  };
 }
 
 let nextToolCallId = 0;
@@ -1321,9 +1330,7 @@ describe('renderResult misc', () => {
       },
       timestamp: 3200,
     };
-    const text = renderText(
-      renderBackgroundMessage(message, { expanded: false, outputPad: 0 }, theme)
-    );
+    const text = renderText(renderBackgroundMessage(message, messageRenderOptions(), theme));
     expect(text).toContain('✔');
     expect(text).toContain('└─ general - find things');
     expect(text).toContain('(3.2s)');
@@ -1346,9 +1353,7 @@ describe('renderResult misc', () => {
       },
       timestamp: 1000,
     };
-    const text = renderText(
-      renderBackgroundMessage(message, { expanded: false, outputPad: 0 }, theme)
-    );
+    const text = renderText(renderBackgroundMessage(message, messageRenderOptions(), theme));
     expect(text).toContain('legacy unit job');
     expect(text).not.toContain('└─');
   });
@@ -1410,9 +1415,7 @@ describe('renderResult misc', () => {
       },
       timestamp: 1000,
     };
-    const text = renderText(
-      renderBackgroundMessage(message, { expanded: true, outputPad: 0 }, theme)
-    );
+    const text = renderText(renderBackgroundMessage(message, messageRenderOptions(true), theme));
     expect(text).toContain('├─ 1. explore - analyze');
     expect(text).toContain('└─ 2. general - build');
     expect(text).not.toContain('Task: chain run');

@@ -2,7 +2,7 @@
 // ABOUTME: Owns single/parallel/chain execution flows so `index.ts` stays a thin extension entrypoint.
 
 import * as path from 'node:path';
-import type { Static } from '@earendil-works/pi-ai';
+import type { Static } from '@earendil-works/pi-schema';
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,

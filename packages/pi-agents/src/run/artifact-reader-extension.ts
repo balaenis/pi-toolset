@@ -4,7 +4,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Type } from 'typebox';
+import { int, obj, oneOf, opt, str, type Static } from '@earendil-works/pi-schema';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { ARTIFACT_READER_CHUNK_MAX_BYTES, RUN_ARTIFACT_MAX_BYTES } from '../shared/constants.ts';
 
@@ -128,22 +128,25 @@ export default function registerArtifactReaderExtension(
   fsOps?: ArtifactReaderFs
 ): void {
   const afs: ArtifactReaderFs = fsOps ?? defaultFs;
+  const parameters = obj(
+    {
+      runId: str(),
+      sha256: str(),
+      mediaType: oneOf(['text', 'json']),
+      offsetBytes: int({ minimum: 0 }),
+      maxBytes: opt(int({ minimum: MIN_CHUNK, maximum: ARTIFACT_READER_CHUNK_MAX_BYTES })),
+    },
+    { open: true }
+  );
   pi.registerTool({
     name: 'pi_agents_read_artifact',
     label: 'Read run artifact',
     description:
       'Read a bounded chunk of a run-local artifact previously handed off to this child. ' +
       'Pass runId, sha256, mediaType (text|json), offsetBytes, and optional maxBytes.',
-    parameters: Type.Object({
-      runId: Type.String(),
-      sha256: Type.String(),
-      mediaType: Type.Union([Type.Literal('text'), Type.Literal('json')]),
-      offsetBytes: Type.Integer({ minimum: 0 }),
-      maxBytes: Type.Optional(
-        Type.Integer({ minimum: MIN_CHUNK, maximum: ARTIFACT_READER_CHUNK_MAX_BYTES })
-      ),
-    }),
-    async execute(_toolCallId, params) {
+    parameters,
+    async execute(_toolCallId, input) {
+      const params = input as Static<typeof parameters>;
       const runId = String(params.runId);
       // Validate original digest as lowercase hex; do not normalize case.
       const sha256 = String(params.sha256);

@@ -40,7 +40,7 @@ function createFakePi(): {
       list.push(handler);
       handlers.set(event, list);
     },
-    exec: async () => ({ stdout: '', stderr: '', code: 0, killed: false }),
+    exec: async () => ({ stdout: '', stderr: '', code: 0, killed: false, truncated: false }),
   } as unknown as ExtensionAPI;
   return { pi, handlers };
 }
@@ -100,7 +100,7 @@ describe('registerFormatHooks', () => {
     setExec(pi, async (command: string) => {
       expect(command).toBe('custom');
       ran = true;
-      return { stdout: '', stderr: '', code: 0, killed: false };
+      return { stdout: '', stderr: '', code: 0, killed: false, truncated: false };
     });
 
     const registered = await registerFormatHooks(pi, cwd);
@@ -124,7 +124,7 @@ describe('registerFormatHooks', () => {
     setExec(pi, async (command: string) => {
       expect(command).toBe('custom');
       ran = true;
-      return { stdout: '', stderr: '', code: 0, killed: false };
+      return { stdout: '', stderr: '', code: 0, killed: false, truncated: false };
     });
 
     const registered = await registerFormatHooks(pi, cwd);
@@ -141,7 +141,7 @@ describe('registerFormatHooks', () => {
     let ran = false;
     setExec(pi, async () => {
       ran = true;
-      return { stdout: '', stderr: '', code: 0, killed: false };
+      return { stdout: '', stderr: '', code: 0, killed: false, truncated: false };
     });
 
     await registerFormatHooks(pi, cwd);
@@ -158,7 +158,7 @@ describe('registerFormatHooks', () => {
     let ran = false;
     setExec(pi, async () => {
       ran = true;
-      return { stdout: '', stderr: '', code: 0, killed: false };
+      return { stdout: '', stderr: '', code: 0, killed: false, truncated: false };
     });
 
     const registered = await registerFormatHooks(pi, cwd);
@@ -177,7 +177,7 @@ describe('registerFormatHooks', () => {
     let ran = false;
     setExec(pi, async () => {
       ran = true;
-      return { stdout: '', stderr: '', code: 0, killed: false };
+      return { stdout: '', stderr: '', code: 0, killed: false, truncated: false };
     });
 
     const registered = await registerFormatHooks(pi, cwd);
@@ -202,6 +202,7 @@ describe('registerFormatHooks', () => {
       stderr: 'fail',
       code: 1,
       killed: false,
+      truncated: false,
     }));
 
     await registerFormatHooks(pi, cwd);

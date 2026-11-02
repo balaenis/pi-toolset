@@ -2,7 +2,7 @@
 // ABOUTME: Delegates discovery, orchestration, and rendering to focused modules.
 
 import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import type { Static } from '@earendil-works/pi-ai';
+import type { Static } from '@earendil-works/pi-schema';
 import { discoverAgents } from './config/agents.ts';
 import {
   BACKGROUND_MESSAGE_TYPE,
@@ -317,7 +317,8 @@ Used when a task matches the agent type, works independently in parallel, or ans
 - Durable run IDs appear on tool results; use \`agent({ runId })\` only to resume interrupted work or continue a completed run with an explicit \`task\`.`,
     parameters: SubagentParams,
     prepareArguments: (args) => normalizeAgentArgs(args) as Static<typeof SubagentParams>,
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+    async execute(_toolCallId, input, signal, onUpdate, ctx) {
+      const params = input as Static<typeof SubagentParams>;
       latestUiCtx = ctx;
       return withAgentToolFailureLogging(params, () =>
         executeAgentTool(params, signal, onUpdate, ctx, {

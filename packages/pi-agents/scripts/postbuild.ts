@@ -24,7 +24,6 @@ const FORBIDDEN_EXTERNAL_PACKAGES = ['effect', '@agentclientprotocol/sdk'] as co
 
 const REQUIRED_HOST_IMPORTS = [
   '@earendil-works/pi-coding-agent',
-  '@earendil-works/pi-ai',
   '@earendil-works/pi-tui',
 ] as const;
 

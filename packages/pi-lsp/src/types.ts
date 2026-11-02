@@ -1,146 +1,168 @@
-// ABOUTME: Shared types for the LSP extension.
-// ABOUTME: Server lifecycle state, scoped server configuration, and tool result details.
+// ABOUTME: Shared types and native pi-schema configuration schemas for the LSP extension.
+// ABOUTME: Server lifecycle state, open scoped server configuration, and tool result details.
 
-import Type from 'typebox';
+import {
+  arr,
+  bool,
+  lit,
+  map,
+  num,
+  obj,
+  opt,
+  type Static,
+  str,
+  union,
+  unknown as unknownSchema,
+} from '@earendil-works/pi-schema';
 
 export type LspServerState = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
 
-export const LspTransportSchema = Type.Union([Type.Literal('stdio'), Type.Literal('socket')], {
+export const LspTransportSchema = union([lit('stdio'), lit('socket')], {
   description:
     'Transport used to talk to the LSP server. Only "stdio" is implemented; "socket" is accepted for config compatibility and ignored at runtime.',
 });
-export type LspTransport = Type.Static<typeof LspTransportSchema>;
+export type LspTransport = Static<typeof LspTransportSchema>;
 
-export const LspServerRoleSchema = Type.Union(
-  [Type.Literal('primary'), Type.Literal('companion')],
-  {
-    description:
-      'Role of the server in multi-server routing. "primary" servers provide language understanding (navigation, hover, symbols) and at most one is consulted per file for tool requests. "companion" servers augment the primary with extra diagnostics or contextual help (e.g. lint, Tailwind CSS) and do not participate in primary-only operations.',
-  }
-);
-export type LspServerRole = Type.Static<typeof LspServerRoleSchema>;
+export const LspServerRoleSchema = union([lit('primary'), lit('companion')], {
+  description:
+    'Role of the server in multi-server routing. "primary" servers provide language understanding (navigation, hover, symbols) and at most one is consulted per file for tool requests. "companion" servers augment the primary with extra diagnostics or contextual help (e.g. lint, Tailwind CSS) and do not participate in primary-only operations.',
+});
+export type LspServerRole = Static<typeof LspServerRoleSchema>;
 
-export const LspServerBaseSchema = Type.Object({
-  command: Type.String({
+const LspServerBaseProperties = {
+  command: str({
     description: 'Executable used to launch the LSP server process.',
   }),
-  args: Type.Optional(
-    Type.Array(Type.String(), {
+  args: opt(
+    arr(str(), {
       description: 'Arguments passed to the server executable.',
     })
   ),
-  extensionToLanguage: Type.Record(Type.String(), Type.String(), {
+  extensionToLanguage: map(str(), {
     description:
       'Map from file extension (e.g. ".ts") to an LSP languageId (e.g. "typescript"). Single source of truth for both extension routing and the `languageId` sent in `textDocument/didOpen`.',
   }),
-  role: Type.Optional(LspServerRoleSchema),
-  startupTimeout: Type.Optional(
-    Type.Number({
+  role: opt(LspServerRoleSchema),
+  startupTimeout: opt(
+    num({
       description: 'Maximum time in milliseconds to wait for the server to finish initializing.',
     })
   ),
-  settings: Type.Optional(
-    Type.Unknown({
+  settings: opt(
+    unknownSchema({
       description: 'Server settings returned in response to `workspace/configuration` requests.',
     })
   ),
-  enabled: Type.Optional(
-    Type.Boolean({
+  enabled: opt(
+    bool({
       description:
         'When false, the server is disabled and excluded from routing entirely. Defaults to true.',
     })
   ),
-});
+};
 
-export const LspServerRecipeSchema = Type.Object({
-  ...LspServerBaseSchema.properties,
-  name: Type.String({
-    description: 'Name of the server.',
-  }),
-  installHint: Type.String({
-    description: 'Human-readable install hint shown when the command is not on PATH.',
-  }),
-});
-export type LspServerRecipe = Type.Static<typeof LspServerRecipeSchema>;
+export const LspServerBaseSchema = obj(LspServerBaseProperties, { open: true });
 
-export const ScopedLspServerConfigSchema = Type.Object({
-  ...LspServerBaseSchema.properties,
-  env: Type.Optional(
-    Type.Record(Type.String(), Type.String(), {
+export const LspServerRecipeSchema = obj(
+  {
+    ...LspServerBaseProperties,
+    name: str({
+      description: 'Name of the server.',
+    }),
+    installHint: str({
+      description: 'Human-readable install hint shown when the command is not on PATH.',
+    }),
+  },
+  { open: true }
+);
+export type LspServerRecipe = Static<typeof LspServerRecipeSchema>;
+
+const ScopedLspServerConfigProperties = {
+  ...LspServerBaseProperties,
+  env: opt(
+    map(str(), {
       description: 'Environment variables added to the spawned server process.',
     })
   ),
-  initializationOptions: Type.Optional(
-    Type.Unknown({
+  initializationOptions: opt(
+    unknownSchema({
       description: 'Value forwarded as `initializationOptions` in the LSP `initialize` request.',
     })
   ),
-  workspaceFolder: Type.Optional(
-    Type.String({
+  workspaceFolder: opt(
+    str({
       description:
         'Override the workspace root reported to the server. Defaults to the current working directory.',
     })
   ),
-  shutdownTimeout: Type.Optional(
-    Type.Number({
+  shutdownTimeout: opt(
+    num({
       description: 'Graceful shutdown timeout in milliseconds. Defaults to no timeout.',
     })
   ),
-  restartOnCrash: Type.Optional(
-    Type.Boolean({
+  restartOnCrash: opt(
+    bool({
       description: 'Auto-restart the server when it crashes. Defaults to false.',
     })
   ),
-  maxRestarts: Type.Optional(
-    Type.Number({
+  maxRestarts: opt(
+    num({
       description: 'Maximum number of automatic restart attempts when `restartOnCrash` is enabled.',
     })
   ),
-  transport: Type.Optional(LspTransportSchema),
-  conflictGroup: Type.Optional(
-    Type.String({
+  transport: opt(LspTransportSchema),
+  conflictGroup: opt(
+    str({
       description:
         'Grouping key for primary replacement scenarios (e.g. two TS-like servers should not both fire). Defaults to the server name for primary servers and is undefined for companions.',
     })
   ),
-});
+};
 
-export type ScopedLspServerConfig = Type.Static<typeof ScopedLspServerConfigSchema>;
+export const ScopedLspServerConfigSchema = obj(ScopedLspServerConfigProperties, { open: true });
 
-export const InputScopedLspServerConfigSchema = Type.Object({
-  ...ScopedLspServerConfigSchema.properties,
-  command: Type.Optional(
-    Type.String({
-      description:
-        'Executable used to launch the LSP server process. May be omitted when a user entry only tweaks or disables a built-in recipe by name; runtime validation catches non-recipe entries.',
-    })
-  ),
-  extensionToLanguage: Type.Optional(
-    Type.Record(Type.String(), Type.String(), {
-      description:
-        'Map from file extension (e.g. ".ts") to an LSP languageId (e.g. "typescript"). Optional on input; merged with a built-in recipe when extending one.',
-    })
-  ),
-  extensions: Type.Optional(
-    Type.Array(Type.String(), {
-      description:
-        'Shorthand list of file extensions to attach the server to, using each extension as its own languageId. Merged with `extensionToLanguage` when both are present.',
-    })
-  ),
-});
+export type ScopedLspServerConfig = Static<typeof ScopedLspServerConfigSchema>;
 
-export type InputScopedLspServerConfig = Type.Static<typeof InputScopedLspServerConfigSchema>;
+export const InputScopedLspServerConfigSchema = obj(
+  {
+    ...ScopedLspServerConfigProperties,
+    command: opt(
+      str({
+        description:
+          'Executable used to launch the LSP server process. May be omitted when a user entry only tweaks or disables a built-in recipe by name; runtime validation catches non-recipe entries.',
+      })
+    ),
+    extensionToLanguage: opt(
+      map(str(), {
+        description:
+          'Map from file extension (e.g. ".ts") to an LSP languageId (e.g. "typescript"). Optional on input; merged with a built-in recipe when extending one.',
+      })
+    ),
+    extensions: opt(
+      arr(str(), {
+        description:
+          'Shorthand list of file extensions to attach the server to, using each extension as its own languageId. Merged with `extensionToLanguage` when both are present.',
+      })
+    ),
+  },
+  { open: true }
+);
 
-export const InputLspConfigSchema = Type.Object({
-  servers: Type.Optional(
-    Type.Record(Type.String(), InputScopedLspServerConfigSchema, {
-      description:
-        'Map from server name to its input config. Names match built-in recipes to override or extend their defaults.',
-    })
-  ),
-});
+export type InputScopedLspServerConfig = Static<typeof InputScopedLspServerConfigSchema>;
 
-export type InputLspConfig = Type.Static<typeof InputLspConfigSchema>;
+export const InputLspConfigSchema = obj(
+  {
+    servers: opt(
+      map(InputScopedLspServerConfigSchema, {
+        description:
+          'Map from server name to its input config. Names match built-in recipes to override or extend their defaults.',
+      })
+    ),
+  },
+  { open: true }
+);
+
+export type InputLspConfig = Static<typeof InputLspConfigSchema>;
 
 export interface LspToolDetails {
   operation: string;

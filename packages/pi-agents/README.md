@@ -55,7 +55,7 @@ Failed `agent` tool invocations record the complete tool call parameters, failur
 
 ## Child Pi binary resolution
 
-Child `pi` spawns honor `PI_AGENTS_PI_PATH` (absolute path to the child Pi CLI); `PI_BINARY` is a fallback alias when the former is unset. When neither is set, the current host process is reused only when it is a known pi coding-agent entry — the packaged npm layout (`.../node_modules/@earendil-works/pi-coding-agent/dist/cli.js`) or the monorepo layout (`.../packages/coding-agent/dist/cli.js`) — or a standalone `pi`/`pi.exe`; otherwise PATH `pi` is used.
+Child `pi` spawns honor `PI_AGENTS_PI_PATH` (absolute path to the child Pi CLI); `PI_BINARY` is a fallback alias when the former is unset. When neither is set, the current host process is reused only when it is a known pi coding-agent entry — the packaged npm layouts (`.../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js` or `.../node_modules/@earendil-works/pi-coding-agent/dist/cli.js`) or the monorepo layout (`.../packages/coding-agent/dist/cli.js`) — or a standalone `pi`/`pi.exe`; otherwise PATH `pi` is used.
 
 ## Durable runs and resume
 
@@ -112,7 +112,7 @@ The per-run layout:
 
 `get_messages` is disabled on the Pi RPC transport (`get_messages_disabled`); hydrate from the validated `sessionFile` instead. Oversized canonical message/tool/turn shells rehydrate from the native session at `agent_settled`.
 
-Pi peer dependencies are `"*"`; development and compatibility tests pin exact Pi `0.84.0`. Wire `message_update` records accept both the 0.84 shape (`{type, assistantMessageEvent}`) and the pre-0.84 cumulative shape (`{type, assistantMessageEvent, message}`).
+Pi peer dependencies require `^1.5.0`; development and compatibility tests pin exact Pi `1.5.0`. Schemas use `@earendil-works/pi-schema` instead of TypeBox. Wire `message_update` records accept the Pi 1.5 shape (`{type, usage, assistantMessageEvent}`), the 0.84 shape (`{type, assistantMessageEvent}`), and the pre-0.84 cumulative shape (`{type, assistantMessageEvent, message}`). Pi 1.5 `tool_execution_end` records also accept the optional trailing `durationMs` field.
 
 Artifacts may contain sensitive model/tool output. They live only under the owning run directory, are verified on every trusted read, and are removed with the entire inactive run directory (no partial GC).
 

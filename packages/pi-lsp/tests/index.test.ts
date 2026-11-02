@@ -59,6 +59,7 @@ function makeCtx(cwd: string): ExtensionContext {
 function makeBeforeAgentStartEvent(): BeforeAgentStartEvent {
   return {
     type: 'before_agent_start',
+    messageType: 'user',
     prompt: 'hello',
     systemPrompt: 'sys',
     systemPromptOptions: {} as BeforeAgentStartEvent['systemPromptOptions'],

@@ -25,7 +25,7 @@ import { createRunStore } from '../../src/run/run-store.ts';
 import type { AgentConfig } from '../../src/config/agents.ts';
 import type { InteractiveAgentLinkV1 } from '../../src/run/run-types.ts';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
-import type { Theme } from '@earendil-works/pi-coding-agent';
+import { keyText, type MessageRenderOptions, type Theme } from '@earendil-works/pi-coding-agent';
 import type { PiRpcTransport } from '../../src/runtime/pi-rpc/pi-rpc-transport.ts';
 import { INTERACTIVE_IDLE_TRANSCRIPT_MAX_BYTES } from '../../src/shared/constants.ts';
 
@@ -976,6 +976,15 @@ describe('buildContinuationMessageContent', () => {
   });
 });
 
+function messageRenderOptions(expanded = false): MessageRenderOptions {
+  return {
+    expanded,
+    outputPad: 0,
+    keyText,
+    keyHint: (keybinding, description) => `${keyText(keybinding)} ${description}`,
+  };
+}
+
 describe('renderContinuationMessage', () => {
   function fakeTheme(): Theme {
     return {
@@ -998,7 +1007,7 @@ describe('renderContinuationMessage', () => {
     };
     const comp = renderContinuationMessage(
       { details, content: '' },
-      { expanded: false, outputPad: 0 },
+      messageRenderOptions(),
       fakeTheme()
     );
     const lines = comp.render!(80);
@@ -1008,7 +1017,7 @@ describe('renderContinuationMessage', () => {
   });
 
   it('renders without crashing when details are missing', () => {
-    const comp = renderContinuationMessage({}, { expanded: false, outputPad: 0 }, fakeTheme());
+    const comp = renderContinuationMessage({}, messageRenderOptions(), fakeTheme());
     const lines = comp.render!(80);
     expect(lines.join('\n')).toContain('no details');
   });

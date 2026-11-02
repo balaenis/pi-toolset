@@ -1,26 +1,28 @@
 // ABOUTME: Registers the LLM-callable `format` tool.
-// ABOUTME: Provides TypeBox schema, execution, and compact TUI renderers.
+// ABOUTME: Provides parameter schema, execution, and compact TUI renderers.
 
-import { Type } from '@earendil-works/pi-ai';
+import { arr, obj, opt, str, type Static } from '@earendil-works/pi-schema';
 import { Text } from '@earendil-works/pi-tui';
-import type { Static } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { getFormatConfig } from './config.ts';
 import { logDebug } from './log.ts';
 import { formatPaths, formatSummaryText } from './service.ts';
 import type { FormatServiceContext, FormatSummary } from './types.ts';
 
-const PARAMETERS = Type.Object({
-  paths: Type.Array(Type.String({ description: 'Path to a file to format' }), {
-    description: 'One or more file paths to format.',
-    minItems: 1,
-  }),
-  formatter: Type.Optional(
-    Type.String({
-      description: 'Optional formatter name to force for all files.',
-    })
-  ),
-});
+const PARAMETERS = obj(
+  {
+    paths: arr(str({ description: 'Path to a file to format' }), {
+      description: 'One or more file paths to format.',
+      minItems: 1,
+    }),
+    formatter: opt(
+      str({
+        description: 'Optional formatter name to force for all files.',
+      })
+    ),
+  },
+  { open: true }
+);
 
 type Params = Static<typeof PARAMETERS>;
 
@@ -77,7 +79,8 @@ export async function registerFormatTool(
         },
       };
     },
-    renderCall(args, theme) {
+    renderCall(input, theme) {
+      const args = input as Params;
       const paths = Array.isArray(args.paths) ? args.paths : [];
       const formatter = typeof args.formatter === 'string' ? args.formatter : undefined;
       let text = theme.fg('toolTitle', theme.bold('format'));

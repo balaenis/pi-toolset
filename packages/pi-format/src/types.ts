@@ -1,46 +1,49 @@
-// ABOUTME: Shared types for the Pi format extension.
-// ABOUTME: Config, formatter recipes, registry results, and format outcomes.
+// ABOUTME: Shared types and native pi-schema configuration schemas for the Pi format extension.
+// ABOUTME: Open input config, formatter recipes, registry results, and format outcomes.
 
-import type { Static } from 'typebox';
-import Type from 'typebox';
+import { arr, bool, map, num, obj, opt, type Static, str } from '@earendil-works/pi-schema';
 
 /**
  * Raw formatter entry from user config. All fields are optional so the user can
  * disable a built-in or override only the pieces they care about.
  */
-export const InputFormatterConfigSchema = Type.Object({
-  disabled: Type.Optional(Type.Boolean({ description: 'Disable this formatter.' })),
-  command: Type.Optional(
-    Type.Array(Type.String(), {
-      description: 'Command and arguments. Must include a $FILE token.',
-    })
-  ),
-  extensions: Type.Optional(
-    Type.Array(Type.String(), {
-      description: 'File extensions this formatter handles (must start with ".").',
-    })
-  ),
-  timeoutMs: Type.Optional(
-    Type.Number({ description: 'Per-file formatter timeout in milliseconds.' })
-  ),
-});
+export const InputFormatterConfigSchema = obj(
+  {
+    disabled: opt(bool({ description: 'Disable this formatter.' })),
+    command: opt(
+      arr(str(), {
+        description: 'Command and arguments. Must include a $FILE token.',
+      })
+    ),
+    extensions: opt(
+      arr(str(), {
+        description: 'File extensions this formatter handles (must start with ".").',
+      })
+    ),
+    timeoutMs: opt(num({ description: 'Per-file formatter timeout in milliseconds.' })),
+  },
+  { open: true }
+);
 
 export type InputFormatterConfig = Static<typeof InputFormatterConfigSchema>;
 
 /** Raw extension config as written by the user. */
-export const InputFormatConfigSchema = Type.Object({
-  enabled: Type.Optional(Type.Boolean({ description: 'Master switch for the format extension.' })),
-  formatOnWrite: Type.Optional(
-    Type.Boolean({
-      description: 'Format automatically after successful write/edit tool results.',
-    })
-  ),
-  formatters: Type.Optional(
-    Type.Record(Type.String(), InputFormatterConfigSchema, {
-      description: 'Per-formatter overrides and custom formatters.',
-    })
-  ),
-});
+export const InputFormatConfigSchema = obj(
+  {
+    enabled: opt(bool({ description: 'Master switch for the format extension.' })),
+    formatOnWrite: opt(
+      bool({
+        description: 'Format automatically after successful write/edit tool results.',
+      })
+    ),
+    formatters: opt(
+      map(InputFormatterConfigSchema, {
+        description: 'Per-formatter overrides and custom formatters.',
+      })
+    ),
+  },
+  { open: true }
+);
 
 export type InputFormatConfig = Static<typeof InputFormatConfigSchema>;
 

@@ -1,7 +1,7 @@
 // ABOUTME: Chain execution engine — orchestrates sequential subagent steps with templated handoff.
 // ABOUTME: Exposes runChainWorkflow with injectable runStep so the loop is unit-testable without spawning pi.
 
-import type { Static } from '@earendil-works/pi-ai';
+import type { Static } from '@earendil-works/pi-schema';
 import type { AgentToolResult, AgentToolUpdateCallback } from '@earendil-works/pi-coding-agent';
 import type { AgentConfig, AgentSource } from '../config/agents.ts';
 import {

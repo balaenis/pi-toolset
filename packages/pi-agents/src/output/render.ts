@@ -2,7 +2,6 @@
 // ABOUTME: Owns all pi-tui component construction and theme color usage so `index.ts` stays UI-free.
 
 import * as os from 'node:os';
-import type { Static } from '@earendil-works/pi-ai';
 import {
   getMarkdownTheme,
   type Theme,
@@ -320,7 +319,7 @@ export function formatToolCall(
 }
 
 /** Call title is hidden; result view is the visible tool block. */
-export function renderCall(_args: Static<typeof SubagentParams>, _theme: Theme): Component {
+export function renderCall(_args: unknown, _theme: Theme): Component {
   return new Text('', 0, 0);
 }
 

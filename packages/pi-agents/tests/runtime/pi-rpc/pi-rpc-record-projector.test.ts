@@ -2,11 +2,77 @@
 // ABOUTME: Covers framing, grammar, exact-prefix classification, caps, and shell projection.
 
 import { describe, expect, it } from 'bun:test';
+import type { AssistantMessage, Usage } from '@earendil-works/pi-ai';
+import type { AgentSessionEvent, JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import {
   createPiRpcRecordProjector,
   PiRpcProjectorError,
   type PiRpcProjectedRecord,
 } from '../../../src/runtime/pi-rpc/pi-rpc-record-projector.ts';
+
+type MessageUpdate = Extract<AgentSessionEvent, { type: 'message_update' }>;
+type JsonMessageUpdate = Extract<JsonAgentSessionEvent, { type: 'message_update' }>;
+type ToolExecutionEnd = Extract<AgentSessionEvent, { type: 'tool_execution_end' }>;
+
+const { toJsonEvent } = (await import(
+  new URL('./modes/json-event.js', import.meta.resolve('@earendil-works/pi-coding-agent')).href
+)) as {
+  toJsonEvent: {
+    (event: MessageUpdate): JsonMessageUpdate;
+    (event: ToolExecutionEnd): ToolExecutionEnd;
+  };
+};
+
+const PI_15_LIMITS = {
+  ordinaryMaxBytes: 1024,
+  projectableMaxBytes: 10_000,
+};
+const OVERSIZED_PI_15_PAYLOAD_BYTES = PI_15_LIMITS.ordinaryMaxBytes * 2;
+const PI_15_CHUNK_BYTES = 64;
+const TOOL_DURATION_MS = 12.5;
+const DURATION_TOKEN_MAX_BYTES = 16;
+const EMPTY_USAGE: Usage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function serializePi15Update(text: string, usage: Usage = EMPTY_USAGE): JsonMessageUpdate {
+  const message: AssistantMessage = {
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    api: 'openai-responses',
+    provider: 'openai',
+    model: 'test',
+    usage,
+    stopReason: 'stop',
+    timestamp: 0,
+  };
+  return toJsonEvent({
+    type: 'message_update',
+    message,
+    assistantMessageEvent: {
+      type: 'text_end',
+      contentIndex: 0,
+      content: text,
+      partial: message,
+    },
+  });
+}
+
+function serializePi15ToolEnd(text: string, durationMs?: number): ToolExecutionEnd {
+  return toJsonEvent({
+    type: 'tool_execution_end',
+    toolCallId: 'call_1',
+    toolName: 'probe',
+    result: { content: [{ type: 'text', text }], details: {} },
+    isError: false,
+    ...(durationMs === undefined ? {} : { durationMs }),
+  });
+}
 
 function projectAll(
   chunks: Array<string | Buffer>,
@@ -82,6 +148,206 @@ describe('PiRpcRecordProjector framing', () => {
         bytes: Buffer.byteLength('{"type":"tail"}'),
       },
     ]);
+  });
+});
+
+describe('PiRpcRecordProjector Pi 1.5 wire compatibility', () => {
+  it('preserves a small real serialized update within the ordinary budget', () => {
+    const event = serializePi15Update('small');
+    expect(Object.keys(event)).toEqual(['type', 'usage', 'assistantMessageEvent']);
+    const line = JSON.stringify(event);
+    expect(Buffer.byteLength(line)).toBeLessThan(PI_15_LIMITS.ordinaryMaxBytes);
+    expect(projectAll([`${line}\n`], PI_15_LIMITS)).toEqual([
+      { kind: 'ordinary', line, bytes: Buffer.byteLength(line) },
+    ]);
+  });
+
+  it.each(['content', 'usage'] as const)(
+    'drops oversized %s from real serialized updates across chunk boundaries',
+    (payload) => {
+      const large = 'X'.repeat(OVERSIZED_PI_15_PAYLOAD_BYTES);
+      const usage = payload === 'usage' ? { ...EMPTY_USAGE, metadata: large } : EMPTY_USAGE;
+      const event = serializePi15Update(payload === 'content' ? large : 'small', usage);
+      const line = JSON.stringify(event);
+      const bytes = Buffer.byteLength(line);
+      expect(bytes).toBeGreaterThan(PI_15_LIMITS.ordinaryMaxBytes);
+      expect(bytes).toBeLessThan(PI_15_LIMITS.projectableMaxBytes);
+      const chunks: string[] = [];
+      for (let offset = 0; offset < line.length; offset += PI_15_CHUNK_BYTES) {
+        chunks.push(line.slice(offset, offset + PI_15_CHUNK_BYTES));
+      }
+      chunks.push('\n');
+      expect(projectAll(chunks, PI_15_LIMITS)).toEqual([
+        {
+          kind: 'projected',
+          bytes,
+          requiresSettleRehydrate: true,
+          event: { type: 'message_update', payloadOmitted: true, role: 'assistant' },
+        },
+      ]);
+    }
+  );
+
+  it.each([null, [], 'invalid', false, 1].map((usage) => ({ usage })))(
+    'fails closed for non-object usage: %j',
+    ({ usage }) => {
+      const small = JSON.stringify({ ...serializePi15Update('small'), usage });
+      expect(projectAll([`${small}\n`], PI_15_LIMITS)).toEqual([
+        { kind: 'ordinary', line: small, bytes: Buffer.byteLength(small) },
+      ]);
+      const large = JSON.stringify({
+        ...serializePi15Update('X'.repeat(OVERSIZED_PI_15_PAYLOAD_BYTES)),
+        usage,
+      });
+      expectOverflow(() => projectAll([`${large}\n`], PI_15_LIMITS));
+    }
+  );
+
+  it('fails closed for unknown fields, duplicate usage, and noncanonical key order', () => {
+    const event = serializePi15Update('X'.repeat(OVERSIZED_PI_15_PAYLOAD_BYTES));
+    const unknown = JSON.stringify({ ...event, extra: true });
+    const duplicate = JSON.stringify(event).replace(
+      ',"assistantMessageEvent":',
+      ',"usage":{},"assistantMessageEvent":'
+    );
+    const reordered = JSON.stringify({
+      type: event.type,
+      assistantMessageEvent: event.assistantMessageEvent,
+      usage: event.usage,
+    });
+    for (const line of [unknown, duplicate, reordered]) {
+      expectOverflow(() => projectAll([`${line}\n`], PI_15_LIMITS));
+    }
+  });
+
+  it('still enforces the projectable cap on real serialized updates', () => {
+    const line = JSON.stringify(serializePi15Update('X'.repeat(PI_15_LIMITS.projectableMaxBytes)));
+    expectOverflow(() => projectAll([`${line}\n`], PI_15_LIMITS));
+  });
+});
+
+describe('PiRpcRecordProjector Pi 1.5 tool timing compatibility', () => {
+  it('preserves small real serialized tool results with timing', () => {
+    const event = serializePi15ToolEnd('small', TOOL_DURATION_MS);
+    expect(Object.keys(event)).toEqual([
+      'type',
+      'toolCallId',
+      'toolName',
+      'result',
+      'isError',
+      'durationMs',
+    ]);
+    const line = JSON.stringify(event);
+    expect(Buffer.byteLength(line)).toBeLessThan(PI_15_LIMITS.ordinaryMaxBytes);
+    expect(projectAll([`${line}\n`], PI_15_LIMITS)).toEqual([
+      { kind: 'ordinary', line, bytes: Buffer.byteLength(line) },
+    ]);
+  });
+
+  it.each([undefined, 0, TOOL_DURATION_MS])(
+    'projects real oversized tool results, omitting optional timing: %j',
+    (durationMs) => {
+      const line = JSON.stringify(
+        serializePi15ToolEnd('X'.repeat(OVERSIZED_PI_15_PAYLOAD_BYTES), durationMs)
+      );
+      expect(Buffer.byteLength(line)).toBeGreaterThan(PI_15_LIMITS.ordinaryMaxBytes);
+      const chunks: string[] = [];
+      for (let offset = 0; offset < line.length; offset += PI_15_CHUNK_BYTES) {
+        chunks.push(line.slice(offset, offset + PI_15_CHUNK_BYTES));
+      }
+      chunks.push('\n');
+      expect(projectAll(chunks, PI_15_LIMITS)).toEqual([
+        {
+          kind: 'projected',
+          bytes: Buffer.byteLength(line),
+          requiresSettleRehydrate: true,
+          event: {
+            type: 'tool_execution_end',
+            toolCallId: 'call_1',
+            toolName: 'probe',
+            payloadOmitted: true,
+            isError: false,
+          },
+        },
+      ]);
+    }
+  );
+
+  it.each([null, [], {}, '12', true].map((durationMs) => ({ durationMs })))(
+    'fails closed for nonnumeric durationMs: %j',
+    ({ durationMs }) => {
+      const small = JSON.stringify({
+        ...serializePi15ToolEnd('small', TOOL_DURATION_MS),
+        durationMs,
+      });
+      expect(
+        projectAll(
+          [
+            `${small}
+`,
+          ],
+          PI_15_LIMITS
+        )
+      ).toEqual([{ kind: 'ordinary', line: small, bytes: Buffer.byteLength(small) }]);
+      const line = JSON.stringify({
+        ...serializePi15ToolEnd('X'.repeat(OVERSIZED_PI_15_PAYLOAD_BYTES), TOOL_DURATION_MS),
+        durationMs,
+      });
+      expectOverflow(() => projectAll([`${line}\n`], PI_15_LIMITS));
+    }
+  );
+
+  it.each(['object', 'array', 'string'])(
+    'does not grant a larger budget to oversized %s timing',
+    (kind) => {
+      const large = 'X'.repeat(OVERSIZED_PI_15_PAYLOAD_BYTES);
+      const durationMs =
+        kind === 'object' ? { metadata: large } : kind === 'array' ? [large] : large;
+      const line = JSON.stringify({
+        ...serializePi15ToolEnd('small', TOOL_DURATION_MS),
+        durationMs,
+      });
+      expect(Buffer.byteLength(line)).toBeGreaterThan(PI_15_LIMITS.ordinaryMaxBytes);
+      expectOverflow(() => projectAll([`${line}\n`], PI_15_LIMITS));
+    }
+  );
+
+  it('fails closed for unknown fields, duplicate timing, and noncanonical key order', () => {
+    const event = serializePi15ToolEnd('X'.repeat(OVERSIZED_PI_15_PAYLOAD_BYTES), TOOL_DURATION_MS);
+    const line = JSON.stringify(event);
+    const unknown = JSON.stringify({ ...event, extra: true });
+    const duplicate = line.replace(
+      `"durationMs":${TOOL_DURATION_MS}`,
+      `"durationMs":${TOOL_DURATION_MS},"durationMs":0`
+    );
+    const reordered = JSON.stringify({
+      type: event.type,
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      result: event.result,
+      durationMs: event.durationMs,
+      isError: event.isError,
+    });
+    for (const record of [unknown, duplicate, reordered]) {
+      expectOverflow(() => projectAll([`${record}\n`], PI_15_LIMITS));
+    }
+  });
+
+  it('rejects malformed timing and does not project nonfinite or overlong numeric tokens', () => {
+    const small = JSON.stringify(serializePi15ToolEnd('small', TOOL_DURATION_MS));
+    const timing = `"durationMs":${TOOL_DURATION_MS}`;
+    expectMalformed(() => projectAll([small.replace(timing, '"durationMs":01')], PI_15_LIMITS));
+    const large = JSON.stringify(
+      serializePi15ToolEnd('X'.repeat(OVERSIZED_PI_15_PAYLOAD_BYTES), TOOL_DURATION_MS)
+    );
+    expectOverflow(() => projectAll([large.replace(timing, '"durationMs":1e999')], PI_15_LIMITS));
+    const longNumber = '1'.repeat(DURATION_TOKEN_MAX_BYTES + 1);
+    expectOverflow(() =>
+      projectAll([large.replace(timing, `"durationMs":${longNumber}`)], {
+        ...PI_15_LIMITS,
+        shellFieldMaxBytes: DURATION_TOKEN_MAX_BYTES,
+      })
+    );
   });
 });
 
