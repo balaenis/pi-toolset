@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/balaenis/pi-toolset/compare/pi-remote-v0.3.0...pi-remote-v0.4.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* extensions require Pi 1.5.0 or later and no longer use TypeBox as a peer.
+
+### Features
+
+* migrate extensions to Pi 1.5.0 and pi-schema ([a58cdf5](https://github.com/balaenis/pi-toolset/commit/a58cdf55d395800d7d387e1aecc9eb1e2ee6d957))
+
+
+### Bug Fixes
+
+* **pi-remote:** keep remote paths POSIX on Windows ([1af5a59](https://github.com/balaenis/pi-toolset/commit/1af5a594ae3ca442d916a642c88e4e58de45706f))
+
 ## [0.3.0](https://github.com/balaenis/pi-toolset/compare/pi-remote-v0.2.0...pi-remote-v0.3.0) (2026-08-27)
 
 

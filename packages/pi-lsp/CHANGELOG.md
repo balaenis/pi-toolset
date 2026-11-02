@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/balaenis/pi-toolset/compare/pi-lsp-v0.2.1...pi-lsp-v0.3.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* extensions require Pi 1.5.0 or later and no longer use TypeBox as a peer.
+
+### Features
+
+* migrate extensions to Pi 1.5.0 and pi-schema ([a58cdf5](https://github.com/balaenis/pi-toolset/commit/a58cdf55d395800d7d387e1aecc9eb1e2ee6d957))
+
 ## [0.2.1](https://github.com/balaenis/pi-toolset/compare/pi-lsp-v0.2.0...pi-lsp-v0.2.1) (2026-08-27)
 
 
