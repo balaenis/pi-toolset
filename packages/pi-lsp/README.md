@@ -11,7 +11,7 @@ Language Server Protocol support for [Pi](https://github.com/earendil-works/pi)'
 - Built-in Tailwind CSS companion (opt-in via `enabled: true` or `/lsp config`)
 - Built-in ESLint + oxlint companions for JS/TS lint diagnostics
 - Restart-on-crash with bounded retryable startup attempts
-- Statusline health indicator and `/lsp status|diagnostics|clean|start|config` commands
+- Statusline health indicator and `/lsp status|diagnostics|reset|start|config` commands
 - Per-project JSONC config with field-level recipe merging
 
 ## Local development
@@ -23,10 +23,19 @@ mise run build --package packages/pi-lsp
 pi -e ./packages/pi-lsp/dist/index.js
 ```
 
+## Reset LSP state
+
+Run `/lsp reset` to stop all language servers and clear pending/delivered
+diagnostics, file sync records, server errors, retry counters, and notification
+deduplication. It reloads configuration and refreshes the statusline. Servers
+start again on demand. Config files and session history do not change.
+
+This replaces `/lsp clean` and `/lsp clean force`; no `force` argument is needed.
+
 ## Documentation
 
 - [Tutorial: Get LSP intelligence in Pi](./docs/tutorials.md) - load the extension, rely on autodetection, query a symbol
-- [How-to guides](./docs/how-to.md) - configure custom servers, override/disable recipes, add companions, inspect/clean diagnostics
+- [How-to guides](./docs/how-to.md) - configure custom servers, override/disable recipes, add companions, inspect diagnostics, reset LSP state
 - [Reference](./docs/reference.md) - `lsp` operations, config fields, built-in recipes, statusline states, slash commands, env vars
 - [Explanation](./docs/explanation.md) - multi-server routing, startup failure classification, diagnostics push/pull, autodetection precedence
 

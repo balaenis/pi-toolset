@@ -116,7 +116,7 @@ with `/lsp config project` (space to toggle) or by writing:
 }
 ```
 
-Reload the Pi session after changing config. Once enabled, Tailwind receives file
+Run `/lsp reset` after changing config. Once enabled, Tailwind receives file
 notifications for covered extensions and publishes diagnostics alongside the
 primary language server.
 
@@ -125,7 +125,7 @@ primary language server.
 Use `/lsp config project` or `/lsp config global` (TUI only) to list built-in
 recipes plus that scope's user servers. Same-named scope entries override built-in
 defaults. Space toggles `enabled` and writes it to the corresponding
-`config.json`. Reload the session for the change to take effect.
+`config.json`. Run `/lsp reset` for the change to take effect.
 
 ## Inspect diagnostics
 
@@ -141,20 +141,22 @@ extension. It shows:
 Entries are grouped by file and tagged with severity, line/column, message,
 code, source, and originating server.
 
-## Clean residual diagnostics
+## Reset LSP state
 
-After a fix that did not trigger a clean server publish (or after a stale
-delivered snapshot), residual entries can stick around in `/lsp diagnostics`.
+Run `/lsp reset` to remove stale diagnostics, recover from a startup failure,
+or apply configuration changes without reloading the Pi session.
 
-- `/lsp clean` — re-sync every tracked file that has a covering language server
-  (pull diagnostics + short settle for push servers). Empty server reports clear
-  the matching pending/delivered state. Missing files are cleared locally; files
-  with no covering server are skipped and left intact.
-- `/lsp clean force` — discard all pending and delivered diagnostics immediately
-  without querying servers (does not start or wait for the LSP manager).
+The command waits for the agent to become idle, stops all language servers, and
+clears pending/delivered diagnostics, file sync records, server errors, retry
+counters, and notification deduplication. It then reloads configuration and
+refreshes the statusline. Servers start again on the next LSP request or file
+edit; reset does not re-query files or start servers.
 
-If `/lsp clean` still leaves residuals that look wrong, inspect them with
-`/lsp diagnostics` or discard them with `/lsp clean force`.
+Config files and session history do not change. Diagnostic messages already
+saved in session history remain there. An issue can be delivered again after
+a server reports it in the new runtime.
+
+`/lsp reset` replaces `/lsp clean` and `/lsp clean force`. It takes no arguments.
 
 ## Set a custom workspace root or environment
 

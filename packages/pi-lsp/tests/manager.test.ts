@@ -18,6 +18,7 @@ interface FakeInstance extends LSPServerInstance {
   notificationHandlers: Map<string, (params: unknown) => void>;
   requestResponses: Map<string, (params: unknown) => unknown | Promise<unknown>>;
   setCapabilities(value: LSPServerInstance['capabilities']): void;
+  setState(state: LspServerState): void;
 }
 
 function fakeInstance(
@@ -58,6 +59,7 @@ function fakeInstance(
     setCapabilities(value) {
       capabilities = value;
     },
+    setState,
     async start() {
       setState('running');
     },
@@ -654,4 +656,88 @@ describe('manager: pull diagnostics', () => {
     // The 2s timeout bounds the wait; allow generous slack for slow CI.
     expect(elapsed).toBeLessThan(5000);
   }, 10_000);
+});
+
+describe('manager: reset teardown', () => {
+  it('stops servers in every lifecycle state and clears file routing and sync records', async () => {
+    const { manager, instances } = await buildManager({ typescript: tsPrimary() });
+    const server = instances.get('typescript')!;
+    const filePath = '/tmp/reset.ts';
+    await manager.openFile(filePath, 'const value = 1;');
+    expect(manager.isFileOpen(filePath)).toBe(true);
+
+    const states: LspServerState[] = ['stopped', 'starting', 'running', 'stopping', 'error'];
+    const stopped: string[] = [];
+    const servers = manager.getAllServers();
+    for (const state of states) {
+      const instance = fakeInstance(state, tsPrimary());
+      instance.setState(state);
+      const stop = instance.stop;
+      instance.stop = async () => {
+        stopped.push(state);
+        await stop();
+      };
+      servers.set(state, instance);
+    }
+
+    await manager.shutdown();
+
+    expect(stopped.sort()).toEqual([...states].sort());
+    expect(server.state).toBe('stopped');
+    expect(manager.getAllServers().size).toBe(0);
+    expect(manager.getServersForFile(filePath)).toEqual([]);
+    expect(manager.isFileOpenInServer(pathToFileURL(filePath).href, server.name)).toBe(false);
+  });
+
+  it('ignores pushes from discarded servers after shutdown', async () => {
+    diagnostics.resetAll();
+    const { manager, instances } = await buildManager({ typescript: tsPrimary() });
+    const publish = instances
+      .get('typescript')!
+      .notificationHandlers.get('textDocument/publishDiagnostics')!;
+    await manager.shutdown();
+
+    publish({
+      uri: 'file:///tmp/reset.ts',
+      diagnostics: [
+        {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          message: 'late push',
+        },
+      ],
+    });
+
+    expect(diagnostics.hasDiagnostics()).toBe(false);
+  });
+
+  it('ignores pull responses that finish after shutdown', async () => {
+    diagnostics.resetAll();
+    const { manager, instances } = await buildManager({ typescript: tsPrimary() });
+    const server = instances.get('typescript')!;
+    server.setCapabilities({
+      diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false },
+    });
+    const requested = Promise.withResolvers<void>();
+    const report = Promise.withResolvers<unknown>();
+    server.requestResponses.set('textDocument/diagnostic', () => {
+      requested.resolve();
+      return report.promise;
+    });
+    const opening = manager.openFile('/tmp/reset.ts', 'bad');
+    await requested.promise;
+
+    await manager.shutdown();
+    report.resolve({
+      kind: 'full',
+      items: [
+        {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          message: 'late pull',
+        },
+      ],
+    });
+    await opening;
+
+    expect(diagnostics.hasDiagnostics()).toBe(false);
+  });
 });

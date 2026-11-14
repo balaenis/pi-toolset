@@ -188,6 +188,7 @@ export function createLSPServerManager(
   options: { instanceFactory?: LSPServerInstanceFactory } = {}
 ): LSPServerManager {
   const instanceFactory = options.instanceFactory ?? defaultInstanceFactory;
+  let shuttingDown = false;
 
   // Private state managed via closures
   const servers: Map<string, LSPServerInstance> = new Map();
@@ -297,6 +298,7 @@ export function createLSPServerManager(
         // Route passive diagnostics into the registry. Registered before start()
         // so the handler is queued and applied when the connection comes up.
         instance.onNotification('textDocument/publishDiagnostics', (params: unknown) => {
+          if (shuttingDown) return;
           try {
             const p = params as PublishDiagnosticsParams;
             if (!p || typeof p !== 'object' || !('uri' in p) || !('diagnostics' in p)) {
@@ -327,12 +329,11 @@ export function createLSPServerManager(
 
   /**
    * Shutdown all servers and clear state.
-   * Only servers in 'running' or 'error' state are explicitly stopped.
+   * Include servers with an in-flight start or stop.
    */
   async function shutdown(): Promise<void> {
-    const toStop = Array.from(servers.entries()).filter(
-      ([, s]) => s.state === 'running' || s.state === 'error'
-    );
+    shuttingDown = true;
+    const toStop = Array.from(servers.entries());
 
     const results = await Promise.allSettled(toStop.map(([, server]) => server.stop()));
 
@@ -698,6 +699,7 @@ export function createLSPServerManager(
             PULL_DIAGNOSTICS_TIMEOUT_MS,
             `pull diagnostics timed out after ${PULL_DIAGNOSTICS_TIMEOUT_MS}ms`
           );
+          if (shuttingDown) return;
           const items = extractFullDiagnostics(report);
           if (items === undefined) {
             // 'unchanged' or non-conforming report. Without a previousResultId we
@@ -855,8 +857,10 @@ export async function shutdownManager(): Promise<void> {
     return;
   }
 
+  const manager = managerInstance;
   try {
-    await managerInstance.shutdown();
+    await initializationPromise;
+    await manager.shutdown();
     logForDebugging('LSP server manager shut down successfully');
   } catch (error: unknown) {
     logError(error);

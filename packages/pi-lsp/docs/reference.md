@@ -147,14 +147,13 @@ hidden when all tracked counts are zero.
 
 ## Slash commands
 
-| Command                         | Action                                                                                                                                                                                |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/lsp status`                   | Inspect the current LSP runtime snapshot without starting stopped servers. Manager state, server counts, per-server details.                                                          |
-| `/lsp diagnostics`              | Inspect every tracked diagnostic (pending + delivered), grouped by file, tagged with severity, position, message, code, source, and originating server.                               |
-| `/lsp clean`                    | Re-sync tracked files that have a covering language server; clear entries servers report clean (or unreadable/missing files). Files with no covering server are skipped.              |
-| `/lsp clean force`              | Discard all pending and delivered diagnostics immediately without querying language servers or waiting for manager init.                                                              |
-| `/lsp start`                    | Interactive panel to start/stop any configured server for the session. Arrow keys move, space toggles, esc closes. TUI only.                                                          |
-| `/lsp config <global\|project>` | Interactive panel listing built-in recipes plus that scope's user servers. Space toggles `enabled` and writes it to the scope's `config.json`. TUI only. Reload the session to apply. |
+| Command                         | Action                                                                                                                                                                                  |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/lsp status`                   | Inspect the current LSP runtime snapshot without starting stopped servers. Manager state, server counts, per-server details.                                                            |
+| `/lsp diagnostics`              | Inspect every tracked diagnostic (pending + delivered), grouped by file, tagged with severity, position, message, code, source, and originating server.                                 |
+| `/lsp reset`                    | Stop all servers, clear all LSP runtime state, reload configuration, and refresh the statusline. Servers start on demand. No arguments. Config files and session history do not change. |
+| `/lsp start`                    | Interactive panel to start/stop any configured server for the session. Arrow keys move, space toggles, esc closes. TUI only.                                                            |
+| `/lsp config <global\|project>` | Interactive panel listing built-in recipes plus that scope's user servers. Space toggles `enabled` and writes it to the scope's `config.json`. TUI only. Run `/lsp reset` to apply.     |
 
 ## Environment variables
 
@@ -172,6 +171,6 @@ hidden when all tracked counts are zero.
   same extension, only the first registered server is used. Use a user-defined
   `primary` server to replace a built-in recipe, or set `conflictGroup` to make
   the replacement explicit.
-- **Config changes** - fixing a permanent startup failure currently requires
-  correcting the config or `PATH` and reloading/restarting the Pi session; this
-  version does not watch config changes or expose a reset command.
+- **Config changes** - configuration is not watched. After correcting config or
+  `PATH`, run `/lsp reset` to reload configuration and clear startup failure
+  and retry state.

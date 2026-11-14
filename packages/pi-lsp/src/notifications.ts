@@ -106,7 +106,7 @@ export function maybeNotifyMissingServer(
   }
 }
 
-/** Test-only: clear the dedup set. */
+/** Clear notification dedup state on session shutdown or LSP reset. */
 export function resetMissingServerNotifications(): void {
   notified.clear();
 }

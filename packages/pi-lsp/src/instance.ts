@@ -109,6 +109,7 @@ export function createLSPServerInstance(
   // In-flight start() promise so concurrent callers await the same startup
   // instead of racing a not-yet-healthy server.
   let startingPromise: Promise<void> | undefined;
+  let stoppingPromise: Promise<void> | undefined;
   let startupFailureClassification: StartupFailureClassification | undefined;
   let startupAttemptCount = 0;
   let startupRetryExhausted = false;
@@ -151,6 +152,7 @@ export function createLSPServerInstance(
    * not-yet-healthy server. On failure, sets state to 'error', logs, and throws.
    */
   async function start(): Promise<void> {
+    if (stoppingPromise) await stoppingPromise;
     if (state === 'running') return;
     if (startingPromise) {
       await startingPromise;
@@ -332,16 +334,25 @@ export function createLSPServerInstance(
   /**
    * Stops the LSP server gracefully.
    *
-   * If already stopped or stopping, returns immediately. When `shutdownTimeout`
+   * Waits for in-flight startup or shutdown. When `shutdownTimeout`
    * is configured, the graceful shutdown is raced against a timer; on timeout
    * the process is still killed by `client.stop()`'s finally block, and we
    * mark the server stopped rather than erroring.
    */
   async function stop(): Promise<void> {
-    if (state === 'stopped' || state === 'stopping') {
-      return;
-    }
+    if (startingPromise) await startingPromise.catch(() => {});
+    if (stoppingPromise) return stoppingPromise;
+    if (state === 'stopped') return;
 
+    stoppingPromise = doStop();
+    try {
+      await stoppingPromise;
+    } finally {
+      stoppingPromise = undefined;
+    }
+  }
+
+  async function doStop(): Promise<void> {
     setState('stopping');
     try {
       const timeout = config.shutdownTimeout ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;

@@ -3,7 +3,7 @@
 
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { isEditToolResult, isWriteToolResult } from '@earendil-works/pi-coding-agent';
 import { drainDiagnosticMessage } from './diagnostic-delivery.ts';
 import * as diagnostics from './diagnostics.ts';
@@ -13,7 +13,7 @@ import {
   shutdownManager,
   waitForInitialization,
 } from './manager.ts';
-import { maybeNotifyMissingServer } from './notifications.ts';
+import { maybeNotifyMissingServer, resetMissingServerNotifications } from './notifications.ts';
 import { registerLspCommand } from './command.ts';
 import { formatLspStatus } from './statusline.ts';
 import { registerLspTool } from './tools.ts';
@@ -26,12 +26,17 @@ export default function (pi: ExtensionAPI): void {
   // No process/timer/watcher work in the factory body — registering the tool is
   // pure metadata. All process spawning is deferred to first tool use.
   registerLspTool(pi);
-  registerLspCommand(pi);
+  registerLspCommand(pi, async (ctx) => {
+    await shutdownSession(ctx);
+    initializeSession(ctx);
+    await waitForInitialization();
+    if (!getManager()) throw new Error('LSP manager initialization failed.');
+  });
 
   let unsubscribeLspStatus: (() => void) | undefined;
   let unsubscribeDiagnostics: (() => void) | undefined;
 
-  pi.on('session_start', (_event, ctx) => {
+  function initializeSession(ctx: ExtensionContext): void {
     // Synchronous, non-blocking, idempotent. Servers are lazily started on the
     // first tool call (or the first edit, via syncFileChange), not here.
     initializeManager(ctx.cwd);
@@ -53,9 +58,9 @@ export default function (pi: ExtensionAPI): void {
     unsubscribeDiagnostics?.();
     unsubscribeDiagnostics = diagnostics.onChanged(render);
     render();
-  });
+  }
 
-  pi.on('session_shutdown', async (_event, ctx) => {
+  async function shutdownSession(ctx: ExtensionContext): Promise<void> {
     // Idempotent: fires on quit/reload/new/resume/fork. Tears down all servers
     // and clears diagnostic state so the next session starts clean.
     unsubscribeLspStatus?.();
@@ -67,7 +72,11 @@ export default function (pi: ExtensionAPI): void {
 
     await shutdownManager();
     diagnostics.resetAll();
-  });
+    resetMissingServerNotifications();
+  }
+
+  pi.on('session_start', (_event, ctx) => initializeSession(ctx));
+  pi.on('session_shutdown', (_event, ctx) => shutdownSession(ctx));
 
   // Passive diagnostics are next-run context: drain once at the start of a
   // user-initiated agent run into one durable hidden custom message.

@@ -564,7 +564,7 @@ export function invalidatePendingForFile(uri: string): void {
 /**
  * URIs that currently have pending and/or delivered diagnostics.
  *
- * Used by `/lsp clean` to know which files to re-query from language servers.
+ * Includes both queued snapshots and issues already delivered to the agent.
  */
 export function listTrackedUris(): string[] {
   const uris = new Set<string>();
@@ -603,7 +603,7 @@ export function countTrackedDiagnostics(): {
 /**
  * Clear pending and delivered diagnostics for a single URI across every server.
  *
- * Used when a tracked file no longer exists on disk during `/lsp clean`.
+ * Leaves diagnostic state for other files unchanged.
  */
 export function clearForUri(uri: string): void {
   if (!uri) return;
@@ -624,8 +624,7 @@ export function clearForUri(uri: string): void {
 }
 
 /**
- * Reset all diagnostic state. Called on session shutdown so a new session starts
- * clean and no cross-session leakage occurs.
+ * Reset all diagnostic state on session shutdown or LSP reset.
  */
 export function resetAll(): void {
   const before = diagnosticsPresent();

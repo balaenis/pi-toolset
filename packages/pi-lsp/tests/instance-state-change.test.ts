@@ -27,7 +27,11 @@ type Outcome = 'success' | Error;
 
 function makeFactory(
   outcomes: Outcome[],
-  options: { serverCapabilities?: ServerCapabilities } = {}
+  options: {
+    serverCapabilities?: ServerCapabilities;
+    initializeGate?: Promise<void>;
+    stopGate?: Promise<void>;
+  } = {}
 ): {
   factory: LSPClientFactory;
   triggerCrash(error: Error): void;
@@ -50,6 +54,7 @@ function makeFactory(
       async start() {},
       async initialize(params: InitializeParams): Promise<InitializeResult> {
         initParams.push(params);
+        await options.initializeGate;
         const outcome = outcomes.shift() ?? 'success';
         if (outcome instanceof Error) {
           throw outcome;
@@ -64,6 +69,7 @@ function makeFactory(
       onNotification() {},
       onRequest() {},
       async stop() {
+        await options.stopGate;
         initialized = false;
       },
     };
@@ -144,6 +150,53 @@ describe('LSPServerInstance onStateChange', () => {
     // Second start() call returns immediately; state stays running.
     await server.start();
     expect(transitions).toEqual(['starting', 'running']);
+  });
+
+  it('waits for an in-flight start before stopping the client', async () => {
+    const gate = Promise.withResolvers<void>();
+    const harness = makeFactory(['success'], { initializeGate: gate.promise });
+    const server = createLSPServerInstance('typescript', baseConfig(), harness.factory);
+    const starting = server.start();
+    const stopping = server.stop();
+
+    gate.resolve();
+    await Promise.all([starting, stopping]);
+
+    expect(server.state).toBe('stopped');
+    expect(server.isHealthy()).toBe(false);
+  });
+
+  it('waits for an existing stop instead of returning before cleanup', async () => {
+    const gate = Promise.withResolvers<void>();
+    const harness = makeFactory(['success'], { stopGate: gate.promise });
+    const server = createLSPServerInstance('typescript', baseConfig(), harness.factory);
+    await server.start();
+
+    const first = server.stop();
+    let secondFinished = false;
+    const second = server.stop().then(() => {
+      secondFinished = true;
+    });
+    await Promise.resolve();
+    expect(secondFinished).toBe(false);
+
+    gate.resolve();
+    await Promise.all([first, second]);
+    expect(server.state).toBe('stopped');
+  });
+
+  it('waits for a pending stop before starting again', async () => {
+    const gate = Promise.withResolvers<void>();
+    const harness = makeFactory(['success', 'success'], { stopGate: gate.promise });
+    const server = createLSPServerInstance('typescript', baseConfig(), harness.factory);
+    await server.start();
+    const stopping = server.stop();
+    const starting = server.start();
+
+    gate.resolve();
+    await Promise.all([stopping, starting]);
+    expect(server.state).toBe('running');
+    expect(server.isHealthy()).toBe(true);
   });
 
   it('advertises workspace/configuration and pull diagnostic client capabilities', async () => {
