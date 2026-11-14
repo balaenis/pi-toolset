@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/balaenis/pi-toolset/compare/pi-lsp-v0.3.0...pi-lsp-v0.4.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pi-lsp:** `/lsp clean` and `/lsp clean force` are removed. Use `/lsp reset` instead; it takes no arguments and also resets server state.
+
+### Features
+
+* **pi-lsp:** replace /lsp clean with /lsp reset ([1a70f5d](https://github.com/balaenis/pi-toolset/commit/1a70f5d838d92d9898f319f389404bad7fd830d1))
+
 ## [0.3.0](https://github.com/balaenis/pi-toolset/compare/pi-lsp-v0.2.1...pi-lsp-v0.3.0) (2026-11-02)
 
 
